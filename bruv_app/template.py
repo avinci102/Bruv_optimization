@@ -284,6 +284,22 @@ def _write_table(wb, title: str, header: list[str], rows: list[list]) -> None:
     ws.freeze_panes = "A2"
 
 
+_SHAPE = re.compile(rb"<(?:\w+:)?sp[\s>]")
+
+
+def _warn_about_shapes(path: Path) -> None:
+    """openpyxl drops shapes and text boxes without a warning, so look for them ourselves."""
+    with zipfile.ZipFile(path) as zf:
+        parts = [n for n in zf.namelist() if n.startswith("xl/drawings/") and n.endswith(".xml")]
+        with_shapes = [n for n in parts if _SHAPE.search(zf.read(n))]
+    if with_shapes:
+        log.warning(
+            "The template has shapes or text boxes (%d drawing part(s)); they can't be kept "
+            "in the export, so check the copy against the template.",
+            len(with_shapes),
+        )
+
+
 def export_workbook(
     info: TemplateInfo,
     out_path: Path,
@@ -301,16 +317,25 @@ def export_workbook(
     if out_path.resolve() == Path(info.path).resolve():
         raise ValueError("Refusing to overwrite the original template; choose another file.")
     wb = _load(Path(info.path), report=True)
+    _warn_about_shapes(Path(info.path))
     ws = wb[info.record_sheet]
 
-    # Re-attach dropdowns openpyxl dropped (x14 extension, i.e. cross-sheet lists).
-    for v in info.validations:
-        if v.from_extension and v.formula1 and v.sqref:
-            dv = DataValidation(
-                type=v.type or "list", formula1=v.formula1, allow_blank=v.allow_blank, **v.options
-            )
-            dv.add(v.sqref)
-            ws.add_data_validation(dv)
+    # Re-attach dropdowns openpyxl dropped (x14 extension, i.e. cross-sheet lists), on
+    # every sheet, not only `record` (the info sheet may have them too).
+    for sheet in wb.sheetnames:
+        if sheet in ("MaxN", "app_details"):
+            continue
+        try:
+            raw = read_raw_validations(Path(info.path), sheet)
+        except KeyError:  # a sheet the template doesn't have
+            continue
+        for v in raw:
+            if v.from_extension and v.formula1 and v.sqref:
+                dv = DataValidation(
+                    type=v.type or "list", formula1=v.formula1, allow_blank=v.allow_blank, **v.options
+                )
+                dv.add(v.sqref)
+                wb[sheet].add_data_validation(dv)
 
     start = info.next_row
     example_row = info.header_row + 1

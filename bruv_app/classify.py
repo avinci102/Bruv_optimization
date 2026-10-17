@@ -134,8 +134,9 @@ class BioClip2Classifier:
 def prompt_ensemble(encode, labels: list[str], templates) -> np.ndarray:
     """One embedding per label: the renormalised mean over every prompt template.
 
-    This is how BioCLIP 2's zero-shot evaluation and pybioclip build class embeddings
-    (CLIP's 80 OpenAI ImageNet templates), rather than a single "a photo of ..." prompt.
+    This is how pybioclip builds class embeddings from CLIP's 80 OpenAI ImageNet templates
+    (BioCLIP 2's own evaluation uses the same 80 plus "a photo of {c}."), rather than a
+    single "a photo of ..." prompt.
     """
     out = []
     for label in labels:

@@ -266,9 +266,20 @@ class Pipeline:
         self.project.mark_stage("merge")
         self.progress("merge", len(chains), len(chains))
 
+    def _text_embeddings(self, labels: list[str]):
+        """Label embeddings in chunks, so a long species list shows progress (80 prompts each)."""
+        chunks = []
+        for i in range(0, len(labels), 20):
+            emb = self.classifier.text_embeddings(labels[i : i + 20])
+            if emb is None:
+                return None
+            chunks.append(emb)
+            self.progress("labels", min(i + 20, len(labels)), len(labels))
+        return np.concatenate(chunks)
+
     def classify(self) -> None:
         labels = species_labels(self.project)
-        text_emb = self.classifier.text_embeddings(labels) if labels else None
+        text_emb = self._text_embeddings(labels) if labels else None
         path = text_embedding_path(self.project)
         if text_emb is not None:
             np.save(path, text_emb)

@@ -188,26 +188,34 @@ def make_mock_template(path: Path) -> Path:
     buf = io.BytesIO()
     wb.save(buf)
     # Cross-sheet lists (species, behavior) go in the x14 extension, as Excel 2010+ writes them.
-    ext = (
-        '<extLst><ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}" '
-        'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">'
-        '<x14:dataValidations count="2" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">'
-        f'<x14:dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1">'
-        f"<x14:formula1><xm:f>'{SHEET_DROPDOWN}'!$A$2:$A$50</xm:f></x14:formula1>"
-        "<xm:sqref>N2:N1000</xm:sqref></x14:dataValidation>"
-        f'<x14:dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1">'
-        f"<x14:formula1><xm:f>'{SHEET_DROPDOWN}'!$D$2:$D$50</xm:f></x14:formula1>"
-        "<xm:sqref>W2:W1000</xm:sqref></x14:dataValidation>"
-        "</x14:dataValidations></ext></extLst>"
-    )
-    path = Path(path)
+    lists = [(f"'{SHEET_DROPDOWN}'!$A$2:$A$50", "N2:N1000"), (f"'{SHEET_DROPDOWN}'!$D$2:$D$50", "W2:W1000")]
+    return inject_x14_validations(buf.getvalue(), Path(path), {SHEET_RECORD: lists})
+
+
+def inject_x14_validations(xlsx: bytes, path: Path, lists: dict[str, list[tuple[str, str]]]) -> Path:
+    """Write `xlsx` to `path`, adding x14 list dropdowns {sheet: [(formula, sqref)]}."""
+    def ext(items):
+        body = "".join(
+            '<x14:dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1">'
+            f"<x14:formula1><xm:f>{formula}</xm:f></x14:formula1><xm:sqref>{sqref}</xm:sqref>"
+            "</x14:dataValidation>"
+            for formula, sqref in items
+        )
+        return (
+            '<extLst><ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}" '
+            'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">'
+            f'<x14:dataValidations count="{len(items)}" '
+            'xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">'
+            f"{body}</x14:dataValidations></ext></extLst>"
+        )
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(buf) as src, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as dst:
-        record_part = sheet_xml_paths(src)[SHEET_RECORD]
+    with zipfile.ZipFile(io.BytesIO(xlsx)) as src, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as dst:
+        parts = {sheet_xml_paths(src)[sheet]: items for sheet, items in lists.items()}
         for item in src.infolist():
             data = src.read(item.filename)
-            if item.filename == record_part:
-                data = data.decode().replace("</worksheet>", ext + "</worksheet>").encode()
+            if item.filename in parts:
+                data = data.decode().replace("</worksheet>", ext(parts[item.filename]) + "</worksheet>").encode()
             dst.writestr(item, data)
     return path
 

@@ -128,3 +128,33 @@ def test_export_reports_template_features_it_cannot_keep(mock_template, tmp_path
         export_workbook(info, tmp_path / "out.xlsx", [], ["species"], [], ["fish_id"], [])
     assert any("Conditional Formatting" in r.message for r in caplog.records)
     assert not any("Data Validation" in r.message for r in caplog.records)
+
+
+def test_dropdowns_on_other_sheets_survive_export(tmp_path):
+    template = demo.make_mock_template(tmp_path / "base.xlsx")
+    # Give the info sheet a cross-sheet (x14) dropdown too.
+    path = demo.inject_x14_validations(
+        template.read_bytes(),
+        tmp_path / "with_info_dropdown.xlsx",
+        {demo.SHEET_INFO: [(f"'{demo.SHEET_DROPDOWN}'!$C$2:$C$4", "B3")]},
+    )
+    assert any(v.from_extension for v in read_raw_validations(path, demo.SHEET_INFO))
+    out = tmp_path / "out.xlsx"
+    export_workbook(read_template(path), out, [], ["species"], [], ["fish_id"], [])
+    kept = read_raw_validations(out, demo.SHEET_INFO)
+    assert [(v.formula1, v.sqref) for v in kept] == [(f"'{demo.SHEET_DROPDOWN}'!$C$2:$C$4", "B3")]
+    assert len(read_raw_validations(out, demo.SHEET_RECORD)) == 4
+
+
+def test_export_warns_about_shapes_it_cannot_keep(mock_template, tmp_path, caplog):
+    import logging
+    import zipfile
+
+    path = tmp_path / "with_shape.xlsx"
+    with zipfile.ZipFile(mock_template) as src, zipfile.ZipFile(path, "w") as dst:
+        for item in src.infolist():
+            dst.writestr(item, src.read(item.filename))
+        dst.writestr("xl/drawings/drawing1.xml", "<xdr:wsDr><xdr:twoCellAnchor><xdr:sp><xdr:txBody/></xdr:sp></xdr:twoCellAnchor></xdr:wsDr>")
+    with caplog.at_level(logging.WARNING):
+        export_workbook(read_template(path), tmp_path / "out.xlsx", [], ["species"], [], ["fish_id"], [])
+    assert any("shapes or text boxes" in r.message for r in caplog.records)

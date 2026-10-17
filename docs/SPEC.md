@@ -115,8 +115,9 @@ The visible `record` headers, in order, are: `clip_in`, `time_in`, `clip_out`, `
      authors, and its inference code (Ultralytics) is AGPL.
    - Default: **Nano on CPU**, Small/Medium with a GPU. It sits behind a `Detector`
      interface so it can be swapped for an ONNX/OpenVINO export later (rfdetr 1.11+ ships
-     both exporters). That should help on Intel CPUs (a vendor claim, so benchmark it)
-     and shrinks the installer by dropping torch.
+     both exporters). That should help on Intel CPUs (a vendor claim, so benchmark it).
+     The installer can drop torch only once the classifier is also off torch (BioCLIP 2
+     runs through open_clip, which needs it).
 4. **Tracking.** Use a lightweight in-house tracker: IoU plus centre distance, matched as a
    linear assignment (SciPy's `linear_sum_assignment`, the same optimum as the Hungarian
    algorithm). It avoids an ultralytics dependency so torch can be dropped
@@ -253,17 +254,19 @@ building the MVP:
    code is Apache-2.0. That removes the AGPL concern. (The CFD repo states no license for
    the weights; ask the authors before any commercial distribution.) Nano should also be
    much lighter on CPU, though that hasn't been benchmarked here. Its
-   reported AP (0.596 vs 0.609 for Medium) is the authors' own validation, and they say
-   not to read much into it, so phase 5 should compare Nano against Medium on our own
-   footage.
+   reported AP (0.596 vs 0.609 for Medium) is on the authors' own unpublished validation
+   split. They say the absolute values mean little, but the column is fine for comparing
+   these models. Phase 5 should still compare Nano and Medium on our own footage.
 2. **Excel dropdowns survive export.** Excel stores dropdowns that point at another
    sheet in an `x14` extension block, which openpyxl drops on load (with only a
    warning). The app reads validations from the raw sheet XML (standard, named-range,
-   literal, and x14), and re-attaches any dropped ones to the exported copy with their
-   error and prompt settings, so typed values outside the list are still rejected. Any
-   other template feature openpyxl can't keep (e.g. extended conditional formatting) is
-   now logged at export instead of vanishing silently. *Still to check: open an export
-   in real Excel. LibreOffice reads the re-attached dropdowns correctly.*
+   literal, and x14), and re-attaches any dropped ones on every sheet of the exported
+   copy, with their error and prompt settings, so typed values outside the list are
+   still rejected. Two other kinds of loss are now reported at export: features openpyxl
+   warns about (e.g. extended conditional formatting) are logged, and shapes and text
+   boxes, which openpyxl drops with no warning, are detected and flagged. *Still to
+   check: open an export in real Excel. LibreOffice reads the re-attached dropdowns
+   correctly.*
 3. **Frame timestamps are exact.** ffmpeg's `fps` filter by default returns the frame
    about half a step *after* the timestamp. Sampling now uses `fps=N:round=up`, which a
    test checks.
@@ -283,23 +286,28 @@ building the MVP:
    the project, so a split or merge in the UI recomputes guesses without loading
    torch.
 9. **BioCLIP 2 is called the way its authors call it.** Each label's text embedding is
-   the average over CLIP's 80 prompt templates, as in BioCLIP 2's zero-shot evaluation
-   and Imageomics' `pybioclip`, rather than a single "a photo of …" prompt. Crops are
-   squashed to 224×224, as in `pybioclip`, rather than centre-cropped, which would cut
-   the head and tail off a long fish. Their evaluation also gets better results with
-   full taxonomic names plus common names ("Animalia Chordata … *Lutjanus campechanus*
-   with common name red snapper"). Adding those needs a species-to-taxonomy lookup, so
-   it waits on open question 3.
+   the average over CLIP's 80 prompt templates, as in Imageomics' `pybioclip`, rather
+   than a single "a photo of …" prompt. (BioCLIP 2's own evaluation uses the same 80
+   plus "a photo of {c}.".) Crops are squashed to 224×224, as in `pybioclip`, rather
+   than centre-cropped, which would cut the head and tail off a long fish. For
+   camera-trap and rare-species tests, their evaluation labels classes with full
+   taxonomic names plus common names ("Animalia Chordata … *Lutjanus campechanus* with
+   common name red snapper"). Doing the same needs a species-to-taxonomy lookup, so it
+   waits on open question 3.
 10. **Detector loading is guarded.** If a checkpoint's resolution doesn't match the one
     in its CFD file name, it is reloaded at the right resolution. Older checkpoints would
     otherwise run at the RF-DETR default (Nano 384 instead of 640) without any error.
-    `rfdetr` and `open_clip` are pinned to the versions whose APIs were checked.
+    `rfdetr` and `open_clip` are held to the minor versions whose APIs were checked
+    (1.11.x and 3.3.x). The load error now says when a file may be incomplete, so a
+    re-download is the obvious next step.
 11. **Licensing to sort out before the installer (phase 6).**
     - The ffmpeg that imageio-ffmpeg bundles is a GPLv3 build, so the installer must
       ship the GPL text and offer its source.
-    - `rfdetr` pulls in PyAV through `supervision`. PyAV bundles LGPL FFmpeg plus x264
-      and x265; exclude it from the bundle or comply with those licenses.
-    - BioCLIP 2 is MIT according to its authors.
+    - `rfdetr` pulls in PyAV through `supervision`. PyAV's FFmpeg libraries link x264
+      and x265, which are GPL, so exclude PyAV from the bundle (the app never uses it).
+    - tqdm and certifi are MPL-2.0, so ship their notices.
+    - BioCLIP 2 is MIT according to its authors. Still check the Hugging Face model card
+      and the TreeOfLife-200M terms (one component is CC BY-NC 4.0) before distributing.
     - The CFD weights have no stated license.
 
     Details are in `docs/SOURCES.md`.

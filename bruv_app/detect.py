@@ -84,9 +84,11 @@ class RFDETRDetector:
                 self.model = rfdetr.from_checkpoint(str(weights), device=device, resolution=expected)
         except RuntimeError as exc:  # pragma: no cover - needs weights
             if "trust_checkpoint" in str(exc):
+                detail = str(exc).strip().splitlines()[0]
                 raise RuntimeError(
-                    f"{weights.name} can't be loaded safely. Only use checkpoints downloaded "
-                    "from the Community Fish Detector releases page."
+                    f"{weights.name} couldn't be read with safe loading. It may be incomplete "
+                    "or corrupt (re-download it from the Community Fish Detector releases "
+                    f"page), or it may contain more than model weights. rfdetr said: {detail}"
                 ) from exc
             raise
         self.name = f"cfd-rfdetr:{weights.name}@{self.model.model_config.resolution}"
