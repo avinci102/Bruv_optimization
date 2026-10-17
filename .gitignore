@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Large or private data — never commit
+*.mp4
+*.MP4
+*.mov
+*.MOV
+*.avi
+*.pt
+*.onnx
+*.bin
+models/
+projects/
+data/
+
+# OS
+.DS_Store
+Thumbs.db
