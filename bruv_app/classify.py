@@ -98,14 +98,75 @@ class BioClip2Classifier:
         self.device = device
         # "squash" resizes the whole crop to 224x224, as Imageomics' pybioclip does; the
         # default centre crop would cut the head and tail off a long, thin fish.
-        self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-            self.MODEL_ID, image_resize_mode="squash"
-        )
+        try:
+            self.model, self.preprocess, self._weights = self._build_mapped(open_clip, torch)
+        except Exception as exc:  # noqa: BLE001 — fall back to open_clip's own loader
+            log.info("Loading BioCLIP 2 the standard way (%s)", exc)
+            self.model, _, self.preprocess = open_clip.create_model_and_transforms(
+                self.MODEL_ID, image_resize_mode="squash"
+            )
         self.model.to(device).eval()
         self.tokenizer = open_clip.get_tokenizer(self.MODEL_ID)
         self.templates = open_clip.OPENAI_IMAGENET_TEMPLATES
         self.dim = int(self.model.visual.output_dim)
         self.logit_scale = float(self.model.logit_scale.exp().item())
+        self.short_text = self._short_text_matches()
+
+    def _build_mapped(self, open_clip, torch):  # pragma: no cover - needs weights
+        """The same model and preprocessing, without private memory for the weights.
+
+        open_clip's own load fills the model with random weights and then reads a second
+        full copy of the 1.7 GB checkpoint, and PyTorch keeps the freed memory reserved: it
+        needs ~3.5 GB of Windows' commit limit, which crashed a 16 GB PC with other programs
+        open. Here the model is built on the meta device (nothing allocated) and its weights
+        are views of the checkpoint file mapped read-only, which uses no commit at all.
+        """
+        from open_clip.pretrained import download_pretrained_from_hf  # noqa: PLC0415
+
+        # open_clip warns that the model is "initialized randomly"; the weights come next.
+        def quiet(record):
+            return "initialized randomly" not in record.getMessage()
+
+        logging.getLogger().addFilter(quiet)
+        try:
+            with torch.device("meta"):
+                model, _, preprocess = open_clip.create_model_and_transforms(
+                    self.MODEL_ID, image_resize_mode="squash", load_weights=False, device="meta"
+                )
+        finally:
+            logging.getLogger().removeFilter(quiet)
+        weights, mapping = map_safetensors(download_pretrained_from_hf(self.MODEL_ID.removeprefix("hf-hub:")))
+        model.load_state_dict(weights, strict=True, assign=True)
+        # The one tensor not in the checkpoint: the text tower's causal mask, built as in
+        # open_clip's build_causal_mask (-inf above the diagonal).
+        n = model.attn_mask.shape[0]
+        model.attn_mask = torch.full((n, n), float("-inf")).triu_(1)
+        left = [k for k, t in [*model.named_parameters(), *model.named_buffers()] if t.is_meta]
+        if left:
+            raise RuntimeError(f"not in the checkpoint: {', '.join(left)}")
+        return model, preprocess, mapping
+
+    def _encode_short(self, tokens):  # pragma: no cover - needs weights
+        """encode_text over the prompts' own length instead of the full 77-token context.
+        The text transformer is causal and pools at the end-of-text token (the highest token
+        id), so the padding after it can't change the result; short prompts run ~3x faster."""
+        m = self.model
+        n = int(tokens.argmax(dim=-1).max()) + 1
+        tokens = tokens[:, :n]
+        x = m.token_embedding(tokens) + m.positional_embedding[:n]
+        x = m.ln_final(m.transformer(x, attn_mask=m.attn_mask[:n, :n]))
+        return x[self.torch.arange(x.shape[0]), tokens.argmax(dim=-1)] @ m.text_projection
+
+    def _short_text_matches(self) -> bool:  # pragma: no cover - needs weights
+        """Use the fast path only if it reproduces open_clip's own encode_text here."""
+        try:
+            tokens = self.tokenizer(["a photo of a lionfish.", "a bad photo of the yellowfin goatfish."])
+            with self.torch.no_grad():
+                full = self.model.encode_text(tokens.to(self.device))
+                short = self._encode_short(tokens.to(self.device))
+            return bool(self.torch.allclose(full, short, rtol=1e-3, atol=1e-4))
+        except Exception:  # noqa: BLE001 — a different model layout: use the standard path
+            return False
 
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:  # pragma: no cover - needs weights
         from PIL import Image  # noqa: PLC0415
@@ -123,12 +184,46 @@ class BioClip2Classifier:
     def _encode_text(self, prompts: list[str]) -> np.ndarray:  # pragma: no cover - needs weights
         with self.torch.no_grad():
             tokens = self.tokenizer(prompts).to(self.device)
-            return self.model.encode_text(tokens).float().cpu().numpy()
+            out = self._encode_short(tokens) if self.short_text else self.model.encode_text(tokens)
+            return out.float().cpu().numpy()
 
     def text_embeddings(self, labels: list[str]) -> np.ndarray | None:  # pragma: no cover
         if not labels:
             return None
         return prompt_ensemble(self._encode_text, labels, self.templates)
+
+
+def map_safetensors(path) -> tuple[dict, object]:
+    """Tensors of a .safetensors file as read-only views of the file mapped into memory.
+
+    A read-only file mapping isn't charged against Windows' commit limit (the pages are
+    re-read from the file when needed), so a large checkpoint fits where a copy wouldn't.
+    The views must never be written to. Returns (tensors, mapping); keep the mapping alive
+    as long as the tensors are used.
+    """
+    import json  # noqa: PLC0415
+    import mmap  # noqa: PLC0415
+    import struct  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    dtypes = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16,
+              "I64": torch.int64, "I32": torch.int32, "U8": torch.uint8, "BOOL": torch.bool}
+    with open(path, "rb") as f:
+        mapping = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    (size,) = struct.unpack("<Q", mapping[:8])
+    header = json.loads(mapping[8 : 8 + size])
+    header.pop("__metadata__", None)
+    tensors = {}
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="The given buffer is not writable")
+        for key, meta in header.items():
+            begin, end = meta["data_offsets"]
+            dtype = dtypes[meta["dtype"]]
+            flat = torch.frombuffer(mapping, dtype=dtype, count=(end - begin) // dtype.itemsize, offset=8 + size + begin)
+            tensors[key] = flat.reshape(meta["shape"])
+    return tensors, mapping
 
 
 def prompt_ensemble(encode, labels: list[str], templates) -> np.ndarray:
@@ -153,7 +248,10 @@ def make_classifier(settings, device: str) -> Classifier:
         try:
             return BioClip2Classifier(device=device)
         except Exception as exc:  # noqa: BLE001 — any load failure means "use the fallback"
-            log.warning("BioCLIP 2 unavailable (%s); using colour histograms, no guesses.", exc)
+            hint = ""
+            if isinstance(exc, MemoryError) or "paging file" in str(exc) or "not enough memory" in str(exc):
+                hint = " Close other programs to free memory, then run again to get species guesses."
+            log.warning("BioCLIP 2 unavailable (%s); using colour histograms, no guesses.%s", exc, hint)
             return HistogramClassifier()
     raise ValueError(f"Unknown classifier: {settings.classifier}")
 

@@ -1,7 +1,7 @@
 # BRUV Fish ID Assistant — Spec & Handoff
 
-Status: **MVP built (phases 1–4), tested on synthetic data only.** This document captures
-every decision made so far. Items marked **[Decided]** came from the project owner (Vinci).
+Status: **MVP built (phases 1–4). First real run done on Windows (§9).** This document
+captures every decision made so far. Items marked **[Decided]** came from the project owner (Vinci).
 Items marked **[Proposed]** are Claude's recommended defaults — change them freely. Section
 8 lists what changed after the first code review of this spec.
 
@@ -210,10 +210,10 @@ scripts/  setup_windows.bat, run_windows.bat
 
 ## 6. Open questions (need Vinci)
 
-1. **The real template `.xlsx`.** Add it to `templates/`. It's needed for the hidden
-   columns, the `info` fields, and the dropdown contents.
-2. **A sample clip**, 1–3 minutes of real footage. Don't commit large videos; share via
-   Drive or attach.
+1. **The real template `.xlsx`.** *Received (Oct 2026) and used for the first real run;
+   kept out of the repo.*
+2. **A sample clip**, 1–3 minutes of real footage. *Received: a 2-minute clip, used for
+   the first real run (§9).*
 3. **Species list format.** Scientific names, common names, or codes? Which region?
 4. **What do `type`, `school_min`, and `school_max` mean** in your workflow?
 5. **Analysis window.** Fixed soak time (for example 30 or 60 minutes from settle), or
@@ -264,9 +264,9 @@ building the MVP:
    copy, with their error and prompt settings, so typed values outside the list are
    still rejected. Two other kinds of loss are now reported at export: features openpyxl
    warns about (e.g. extended conditional formatting) are logged, and shapes and text
-   boxes, which openpyxl drops with no warning, are detected and flagged. *Still to
-   check: open an export in real Excel. LibreOffice reads the re-attached dropdowns
-   correctly.*
+   boxes, which openpyxl drops with no warning, are detected and flagged. *Checked in
+   real Excel during the first real run (§9): the re-attached dropdowns work, but two
+   other openpyxl problems made Excel refuse the file until they were fixed.*
 3. **Frame timestamps are exact.** ffmpeg's `fps` filter by default returns the frame
    about half a step *after* the timestamp. Sampling now uses `fps=N:round=up`, which a
    test checks.
@@ -316,13 +316,13 @@ building the MVP:
 
 1. Scaffold — **done.** Package, config, mock template, synthetic video, pytest.
 2. Pipeline — **done.** Resumable detection, tracker, continuity, BioCLIP 2 with a
-   histogram fallback. RF-DETR and BioCLIP code paths are written against their current
-   APIs but **not yet run with real weights** (the build sandbox couldn't download them).
+   histogram fallback. RF-DETR and BioCLIP 2 now run with real weights on Windows (§9).
 3. Review UI — **done.** Cards, keys 1/2/3/U/N/S, searchable species, optional fields,
    split/merge, progress.
 4. Export — **done.** Record rows by header name, MaxN tab, app_details tab with model vs
    user agreement, relative size and the saved best crop.
-5. Validation on real footage — **next.** Needs the real template and a sample clip.
+5. Validation on real footage — **started.** First real run done (§9); the comparison
+   with a manual annotation of the same video is still to do.
 6. Windows installer — not started (`scripts/*.bat` cover setup for now).
 7. Scale markers — not started.
 
@@ -332,7 +332,9 @@ building the MVP:
   together can't merge. If that is slow to review, add "apply this label to the similar
   cards in this time window".
 - **Decode speed.** 4K GoPro HEVC decoded on the CPU can take as long as detection.
-  `-hwaccel auto` is on by default; check that it engages on Vinci's PC.
+  `-hwaccel auto` is on by default. *On Vinci's PC it engages (DXVA2 on Intel UHD
+  graphics): a 2.7K H.264 clip decodes in the same time as on the CPU (~48 s for 2
+  minutes), but with ~6× less CPU time, which leaves the CPU to the detector.*
 - **MaxN at 1 fps** can slightly undercount compared with frame-by-frame manual review.
   Compare it in phase 5, and raise `--fps` if needed.
 
@@ -340,3 +342,95 @@ building the MVP:
 
 7. Should the export **replace the example row 2** in `record`, or append below it as
    it does now?
+
+---
+
+## 9. First real run on Windows (Oct 2026)
+
+Run through `quickstart.bat` on Vinci's PC (Windows 11, Intel i7-10810U with 6 cores,
+16 GB RAM, Intel UHD graphics, no NVIDIA GPU), with a 2-minute 2.7K clip (H.264, 30 fps)
+and the real template.
+
+**Results**
+
+- **73 fish cards** from 759 detections in 120 sampled frames (250 tracklets).
+- **About 18 minutes of processing** for 2 minutes of video, plus a one-off install and
+  model download of about 25 minutes:
+  - detection (RF-DETR Nano at 1 fps, decode included): 1 min 55 s;
+  - tracking: 34 s;
+  - BioCLIP 2 on 486 crops: 12 min 37 s, including ~1 min to load the model;
+  - species-list embeddings and guesses: 2 min 56 s.
+
+  BioCLIP 2 (ViT-L) costs ~1.6 s per crop on this CPU and grows with the number of
+  tracks, so a 1-hour video would take hours. A faster runtime (ONNX/OpenVINO, phase 6),
+  fewer crops per track, or skipping tiny fish are the levers.
+- **Guesses were implausible for most cards.** Most fish in this clip are species the
+  template's list doesn't include. Zero-shot classification restricted to the list has no
+  "none of these" answer, so it names the closest listed species. Given the right
+  names, BioCLIP 2 was confident and correct (two test crops scored 1.00). Cards of
+  listed families got plausible guesses.
+- **Review burden.** About half the detections are small, distant fish (under 40 px
+  across a 1280 px frame) that neither a person nor the model can identify. 3 cards are
+  the rig's bait arm.
+
+**Fixed during the run**
+
+1. `quickstart.bat` installs Python 3.13 through Python's install manager
+   (`py install 3.13`) when it's there. It also treats a crash (a negative exit code) as
+   a failure instead of ending silently.
+2. **Dependent dropdowns are read.** A list like `=INDIRECT(<cell>)`, where each option of
+   a parent list names a range, is now read. The export fills the parent column (e.g.
+   `type`) from the chosen species, and the review page hides that field.
+3. **Clip names default to `auto`.** They become `clip_1, clip_2…` when the template's
+   `clip_in` dropdown lists them.
+4. **A cross-sheet dropdown that covers two ranges no longer crashes the export.** Its
+   `sqref` contains a space.
+5. **BioCLIP 2 no longer exceeds Windows' memory limit.** Loading it crashed a 16 GB PC
+   that had other programs open. open_clip's loader peaks at ~3.5 GB of commit, and
+   PyTorch keeps freed memory reserved. The model is now built on the meta device, with
+   its weights mapped read-only from the checkpoint file. That needs ~1.3 GB and gives
+   identical weights (all 446 tensors checked).
+6. **Species-list embeddings are ~4× faster.** Each prompt is encoded at its own length
+   instead of all 77 tokens. Results are identical, and every load checks this against
+   open_clip's own encoder.
+7. **Fallback runs are rebuilt.** A run that fell back to colour histograms (because
+   BioCLIP 2 couldn't load) is rebuilt with the model on the next run, until reviewing
+   starts.
+8. **Real Excel now opens the export.** Before this fix, Excel refused every export,
+   and even a plain openpyxl re-save of this template. Two openpyxl bugs caused it:
+   - an external link saved with alternate paths loses the relationship it points at;
+   - a rich-text run that holds only spaces loses `xml:space="preserve"`.
+
+   Both are repaired at export. The export also now keeps rich text (bold and italic
+   words inside a cell), and gives new cells their column's format.
+9. **A Windows-only download bug.** A failed model download couldn't delete its `.part`
+   file.
+
+**Checked in real Excel.** The checks used late-bound automation, because the Office
+type library that PowerShell needs is broken on that PC.
+
+- The export opens.
+- These all match the template:
+  - sheets, named ranges and external links;
+  - every value and formula (one example time differs by 1e-16 of a day);
+  - hidden columns, widths and heights;
+  - the dropdown rules at 58 sampled cells;
+  - comments and rich text.
+- All 20 values the export wrote under dropdowns pass Excel's own validation. That
+  includes the dependent species list and the cross-sheet clip list.
+
+openpyxl still loses a few things, all cosmetic:
+
+- one sheet's printer settings;
+- Google Sheets' comment metadata;
+- the dynamic-array flag on two example formulas (they become legacy array formulas with
+  the same result);
+- the external link's alternate paths.
+
+**Open points from this run** (for Vinci, with §6):
+
+- How to export catch-all list entries (e.g. an "other" species). Today they're grouped
+  into one record row and one MaxN row, like a real species.
+- Whether to hide or skip tiny, distant fish.
+- Whether the model should be allowed to name off-list fish as a hint.
+- Where record rows should start when a template holds example rows.

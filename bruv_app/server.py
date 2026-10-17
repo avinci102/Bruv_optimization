@@ -73,6 +73,7 @@ def create_app(project_root: Path) -> FastAPI:
                 "reviewed": sum(counts[s] for s in REVIEWED),
                 "counts": counts,
                 "dropdowns": project.get_meta("dropdowns") or {},
+                "dependent": project.get_meta("dependent") or {},
                 "classifier": project.get_meta("classifier"),
                 "template": project.get_meta("template"),
                 "last_export": project.get_meta("last_export"),

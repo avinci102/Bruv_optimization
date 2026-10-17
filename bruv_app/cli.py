@@ -146,9 +146,10 @@ def download(url: str, dest: Path) -> Path:
                 print(f"\r  {done / 2**20:7.1f} / {total / 2**20:.1f} MB", end="", flush=True)
     print()
     with open(part, "rb") as f:
-        if f.read(1) == b"<":  # an HTML error page, not a checkpoint
-            part.unlink()
-            raise RuntimeError(f"The download from {url} returned a web page, not a model file")
+        is_web_page = f.read(1) == b"<"  # an HTML error page, not a checkpoint
+    if is_web_page:  # (Windows can't delete a file that is still open)
+        part.unlink()
+        raise RuntimeError(f"The download from {url} returned a web page, not a model file")
     part.replace(dest)
     return dest
 
@@ -265,7 +266,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--fps", dest="sample_fps", type=float, help="sampled frames per second")
     p.add_argument("--start", dest="start_s", type=float, help="skip this many seconds (descent)")
     p.add_argument("--duration", dest="duration_s", type=float, help="analyse this many seconds")
-    p.add_argument("--clip-names", choices=["file", "index"], help="GoPro file name or clip_1, clip_2…")
+    p.add_argument(
+        "--clip-names", choices=["auto", "file", "index"],
+        help="GoPro file name or clip_1, clip_2… (auto: clip_N if the template lists them)",
+    )
     p.add_argument("--device", choices=["auto", "cpu", "cuda"])
     p.add_argument("--force", action="store_true", help="rebuild cards even if some are reviewed")
     p.set_defaults(func=cmd_process)

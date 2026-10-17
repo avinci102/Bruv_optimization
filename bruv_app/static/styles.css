@@ -151,6 +151,7 @@ input, select {
 details { margin-top: 16px; }
 details label { display: grid; grid-template-columns: 80px minmax(0, 1fr); align-items: center; gap: 8px; margin-top: 8px; }
 details label input, details label select { width: 100%; min-width: 0; }
+details label[hidden] { display: none; }
 #message { min-height: 1.4em; margin-top: 12px; }
 #message.error { color: var(--box); }
 #message.ok { color: var(--ok); }

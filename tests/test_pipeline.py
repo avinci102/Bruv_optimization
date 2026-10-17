@@ -94,6 +94,34 @@ def test_rerun_keeps_reviews_and_refuses_to_wipe_them(project):
         Pipeline(project, classifier=demo.DemoClassifier()).run()
 
 
+def test_cards_built_without_the_species_model_are_rebuilt_on_the_next_run(project):
+    """A run that fell back to colour histograms (BioCLIP 2 couldn't load) is redone with
+    the model next time, but never once someone has started reviewing."""
+    from bruv_app.classify import HistogramClassifier
+
+    Pipeline(project, classifier=HistogramClassifier()).run(force=True)
+    assert project.get_meta("classifier") == "hsv-histogram"
+    settings = project.load_settings()
+    settings.classifier = "bioclip"
+    project.save_settings(settings)
+    Pipeline(project, classifier=demo.DemoClassifier()).run()
+    assert project.get_meta("classifier") == "demo-colour"
+    assert all(json.loads(f["guesses"]) for f in project.all_fish())
+
+    Pipeline(project, classifier=HistogramClassifier()).run(force=True)
+    project.label_fish(project.all_fish()[0]["id"], "species", species=demo.RED)
+    Pipeline(project, classifier=demo.DemoClassifier()).run()
+    assert project.get_meta("classifier") == "hsv-histogram"  # reviews are never wiped
+
+
+def test_clip_names_follow_the_template_clip_list(tmp_path, synthetic_videos, dependent_template):
+    project = create_project(tmp_path / "p", synthetic_videos, dependent_template, demo_settings())
+    assert project.get_meta("dependent") == {"species": "type"}
+    Pipeline(project, classifier=demo.DemoClassifier()).ingest()
+    # The template's clip_in dropdown lists clip_1, clip_2, ... so use those, in chapter order.
+    assert [c["name"] for c in project.chapters()] == ["clip_1", "clip_2"]
+
+
 def test_analysis_window_limits_frames(tmp_path, synthetic_videos):
     template = demo.make_mock_template(tmp_path / "t.xlsx")
     settings = demo_settings(start_s=5.0, duration_s=10.0, sample_fps=2.0)

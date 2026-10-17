@@ -5,9 +5,10 @@ A model finds and tracks every fish in BRUV footage from a single GoPro, a human
 each species on one card per fish, and the results go into a copy of the Excel viewing
 template: one `record` row per sighting, plus a `MaxN` tab and an `app_details` tab.
 
-Status: **MVP, phases 1–4 built** (scaffold, pipeline, review UI, export), tested on
-synthetic video. Not yet run on real footage or with the real template. See
-[`docs/SPEC.md`](docs/SPEC.md) for the decisions, the architecture and what's next, and
+Status: **MVP, phases 1–4 built** (scaffold, pipeline, review UI, export). First real run
+done on Windows: a 2-minute GoPro clip with the owner's template, real model weights, and
+the export checked in real Excel. Validation against a manual review (phase 5) is next.
+See [`docs/SPEC.md`](docs/SPEC.md) for the decisions, the architecture and what's next, and
 [`docs/SOURCES.md`](docs/SOURCES.md) for every outside source, model and license used.
 
 ## Run it on your own footage (Windows, one step)
@@ -18,14 +19,22 @@ synthetic video. Not yet run on real footage or with the real template. See
 3. Drag that folder onto **`quickstart.bat`** in the unzipped code (or double-click it
    and paste the folder path).
 
-The first run installs everything. It can install Python 3.13 for you if it's missing,
-and it downloads the fish detector and species model, a few GB in all. After that it
-processes the video and opens the review page in your browser. Keep the black window
-open while you review. Exports land in a `bruv_project\exports` folder inside your
+The first run installs everything. It can install Python 3.13 for you if it's missing
+(through Python's install manager, `py install 3.13`, when you have it; otherwise
+winget), and it downloads the fish detector and species model, a few GB in all. After
+that it processes the video and opens the review page in your browser. Keep the black
+window open while you review. Exports land in a `bruv_project\exports` folder inside your
 footage folder, and the original template is never changed. Run it again at any time to
 pick up where you left off.
 
 **Python:** use 3.12, 3.13 or 3.14. 3.15 is too new: PyTorch has no 3.15 build yet.
+
+**Time and memory on a laptop CPU.** On an Intel i7-10810U (6 cores, no NVIDIA GPU), a
+2-minute clip took about 18 minutes: 2 for detection, 13 for the species model on 486
+fish crops, 3 for the species list. The species model's time grows with the number of
+fish tracks, so expect hours for a 1-hour video until the model runs on a faster
+runtime. The species model needs about 1.5 GB of free memory. If the window stops with
+no error message, close other programs and run `quickstart.bat` again: it resumes.
 
 ## Try the demo (no footage or models needed)
 
@@ -62,8 +71,10 @@ On macOS/Linux: `pip install -e . && python -m bruv_app demo`.
    The original template is never modified.
 
 Useful options: `--fps` (default 1 on CPU, 2 with a GPU), `--start`/`--duration` (an
-analysis window, e.g. to skip the descent), `--clip-names index` (use `clip_1, clip_2…`
-instead of the GoPro file name). Everything else is in `<project>\settings.json`.
+analysis window, e.g. to skip the descent), `--clip-names` (`auto`, the default, uses
+`clip_1, clip_2…` when the template's `clip_in` dropdown lists them and the GoPro file
+name otherwise; `file` or `index` force one). Everything else is in
+`<project>\settings.json`.
 
 ## Sharing a test clip
 

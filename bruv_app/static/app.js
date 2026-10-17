@@ -62,6 +62,8 @@ async function init() {
   const dd = state.summary.dropdowns;
   $("species-list").replaceChildren(...(dd.species || []).map((v) => new Option(v)));
   fillSelect($("f-type"), dd.type || []);
+  // When the species list depends on type (=INDIRECT), the export fills type from the species.
+  $("type-field").hidden = Object.values(state.summary.dependent || {}).includes("type");
   fillSelect($("f-sex"), dd.sex || []);
   fillSelect($("f-behavior"), dd.behavior || []);
   if (!state.cards.length) {

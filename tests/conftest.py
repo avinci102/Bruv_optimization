@@ -23,6 +23,47 @@ def mock_template(tmp_path) -> Path:
     return demo.make_mock_template(tmp_path / "template" / "viewing template v.2024.xlsx")
 
 
+# Invented groups and names (not the owner's species list).
+GROUPS = {"mullet": ["mullet family", "bluespot mullet"], "goatfish": ["goatfish family", "yellowfin goatfish"]}
+
+
+@pytest.fixture
+def dependent_template(tmp_path) -> Path:
+    """A dependent species list, species =INDIRECT(type cell), where each type names a range
+    of species, and clip_in/clip_out picked from clip_1… headers on the info sheet through
+    one x14 dropdown that covers both columns."""
+    import io
+
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+    from openpyxl.workbook.defined_name import DefinedName
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    wb = openpyxl.Workbook()
+    dd = wb.active
+    dd.title = demo.SHEET_DROPDOWN
+    for col, (group, species) in enumerate(GROUPS.items(), start=1):
+        letter = get_column_letter(col)
+        dd.cell(1, col, group)
+        for row, name in enumerate(species, start=2):
+            dd.cell(row, col, name)
+        ref = f"'{demo.SHEET_DROPDOWN}'!${letter}$2:${letter}${len(species) + 1}"
+        wb.defined_names[group] = DefinedName(group, attr_text=ref)
+    wb.defined_names["type"] = DefinedName("type", attr_text=f"'{demo.SHEET_DROPDOWN}'!$A$1:$B$1")
+    info = wb.create_sheet(demo.SHEET_INFO)
+    info.append(["date", "clip_1", "clip_2", "clip_3"])
+    rec = wb.create_sheet(demo.SHEET_RECORD)
+    rec.append(["clip_in", "time_in", "clip_out", "time_out", "type", "species", "count"])
+    for formula, cells in (("type", "E2:E1000"), ("INDIRECT(E2)", "F2:F1000")):
+        dv = DataValidation(type="list", formula1=formula, allow_blank=True)
+        dv.add(cells)
+        rec.add_data_validation(dv)
+    buf = io.BytesIO()
+    wb.save(buf)
+    clips = [(f"'{demo.SHEET_INFO}'!$B$1:$D$1", "C2:C1000 A2:A1000")]
+    return demo.inject_x14_validations(buf.getvalue(), tmp_path / "dependent.xlsx", {demo.SHEET_RECORD: clips})
+
+
 def demo_settings(**overrides) -> Settings:
     settings = Settings(detector="color", classifier="histogram")
     for key, value in overrides.items():

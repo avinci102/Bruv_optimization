@@ -24,6 +24,33 @@ def test_reads_dropdowns_from_all_validation_kinds(mock_template):
     assert sum(v.from_extension for v in info.validations) == 2
 
 
+def test_reads_a_dependent_species_list(dependent_template):
+    info = read_template(dependent_template)
+    assert info.options("type") == ["mullet", "goatfish"]
+    # species =INDIRECT(E2): every type's named range, in order.
+    assert info.options("species") == ["mullet family", "bluespot mullet", "goatfish family", "yellowfin goatfish"]
+    parent, groups = info.dependent["species"]
+    assert parent == "type" and groups["yellowfin goatfish"] == "goatfish"
+    # One x14 dropdown covers both clip columns.
+    assert info.options("clip_in") == info.options("clip_out") == ["clip_1", "clip_2", "clip_3"]
+
+
+def test_export_fills_type_from_species_and_keeps_two_range_dropdown(dependent_template, tmp_path):
+    info = read_template(dependent_template)
+    out = tmp_path / "out.xlsx"
+    rows = [
+        {"clip_in": "clip_1", "clip_out": "clip_1", "type": None, "species": "bluespot mullet", "count": 1},
+        {"clip_in": "clip_2", "clip_out": "clip_2", "type": None, "species": None, "count": 1},
+    ]
+    export_workbook(info, out, rows, ["species"], [], ["fish_id"], [])
+    ws = openpyxl.load_workbook(out)[demo.SHEET_RECORD]
+    assert (ws["E2"].value, ws["F2"].value) == ("mullet", "bluespot mullet")
+    assert ws["E3"].value is None  # unknown fish: no species, so no type
+    again = read_template(out)
+    assert again.options("clip_in") == again.options("clip_out") == ["clip_1", "clip_2", "clip_3"]
+    assert again.options("species") == info.options("species")
+
+
 def test_falls_back_to_dropdown_sheet_column_when_no_validation(tmp_path):
     wb = openpyxl.Workbook()
     dd = wb.active
@@ -144,6 +171,81 @@ def test_dropdowns_on_other_sheets_survive_export(tmp_path):
     kept = read_raw_validations(out, demo.SHEET_INFO)
     assert [(v.formula1, v.sqref) for v in kept] == [(f"'{demo.SHEET_DROPDOWN}'!$C$2:$C$4", "B3")]
     assert len(read_raw_validations(out, demo.SHEET_RECORD)) == 4
+
+
+def test_external_link_with_alternate_paths_stays_valid(mock_template, tmp_path):
+    """A link saved with two paths, pointing at the second: openpyxl keeps the first, and
+    Excel refuses a file whose link points at a relationship that isn't there."""
+    import re
+    import zipfile
+
+    path_type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLinkPath"
+    parts = {
+        "xl/externalLinks/externalLink1.xml": (
+            '<externalLink xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<externalBook r:id="rId1"><sheetNames><sheetName val="info"/></sheetNames></externalBook>'
+            "</externalLink>"
+        ),
+        "xl/externalLinks/_rels/externalLink1.xml.rels": (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId2" Type="{path_type}" Target="../old/template.xlsx" TargetMode="External"/>'
+            f'<Relationship Id="rId1" Type="{path_type}" Target="/Users/x/old/template.xlsx" TargetMode="External"/>'
+            "</Relationships>"
+        ),
+    }
+    linked = tmp_path / "linked.xlsx"
+    with zipfile.ZipFile(mock_template) as src, zipfile.ZipFile(linked, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename).decode()
+            if item.filename == "xl/workbook.xml":
+                data = data.replace("</sheets>", '</sheets><externalReferences><externalReference r:id="rIdLink"/></externalReferences>')
+            elif item.filename == "xl/_rels/workbook.xml.rels":
+                data = data.replace("</Relationships>", (
+                    '<Relationship Id="rIdLink" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                    'relationships/externalLink" Target="/xl/externalLinks/externalLink1.xml"/></Relationships>'))
+            elif item.filename == "[Content_Types].xml":
+                data = data.replace("</Types>", (
+                    '<Override PartName="/xl/externalLinks/externalLink1.xml" ContentType="application/'
+                    'vnd.openxmlformats-officedocument.spreadsheetml.externalLink+xml"/></Types>'))
+            dst.writestr(item, data)
+        for name, xml in parts.items():
+            dst.writestr(name, xml)
+
+    out = tmp_path / "out.xlsx"
+    export_workbook(read_template(linked), out, [], ["species"], [], ["fish_id"], [])
+    with zipfile.ZipFile(out) as zf:
+        book_id = re.search(r'externalBook[^>]*r:id="([^"]+)"', zf.read("xl/externalLinks/externalLink1.xml").decode()).group(1)
+        rels = zf.read("xl/externalLinks/_rels/externalLink1.xml.rels").decode()
+    assert f'Id="{book_id}"' in rels
+    assert 'Target="/Users/x/old/template.xlsx"' in rels  # the path the link pointed at
+
+
+@pytest.mark.filterwarnings("ignore:Data Validation extension")  # the setup's own re-save
+def test_export_keeps_rich_text_and_gives_new_cells_their_column_format(tmp_path):
+    from openpyxl.cell.rich_text import CellRichText, TextBlock
+    from openpyxl.cell.text import InlineFont
+    from openpyxl.styles import Alignment
+
+    path = demo.make_mock_template(tmp_path / "plain.xlsx")
+    wb = openpyxl.load_workbook(path)
+    # The italic run holding only a space must keep it (and keep the file valid for Excel).
+    wb[demo.SHEET_INFO]["C1"] = CellRichText(
+        "Read ", TextBlock(InlineFont(b=True), "this"), TextBlock(InlineFont(i=True), " "), "first"
+    )
+    count = next(c.column_letter for c in wb[demo.SHEET_RECORD][1] if c.value == "count")
+    wb[demo.SHEET_RECORD].column_dimensions[count].alignment = Alignment(horizontal="center")
+    styled = tmp_path / "styled.xlsx"
+    wb.save(styled)
+
+    out = tmp_path / "out.xlsx"
+    export_workbook(read_template(styled), out, [{"species": demo.RED, "count": 3}], ["species"], [], ["fish_id"], [])
+    wb = openpyxl.load_workbook(out, rich_text=True)
+    text = wb[demo.SHEET_INFO]["C1"].value
+    assert isinstance(text, CellRichText) and any(getattr(part, "font", None) and part.font.b for part in text)
+    assert str(text) == "Read this first"
+    new = wb[demo.SHEET_RECORD][f"{count}3"]
+    assert new.value == 3 and new.alignment.horizontal == "center"
 
 
 def test_export_warns_about_shapes_it_cannot_keep(mock_template, tmp_path, caplog):

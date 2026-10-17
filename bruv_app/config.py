@@ -22,8 +22,9 @@ class Settings:
     # Analysis window on the combined timeline, in seconds (e.g. skip the descent).
     start_s: float = 0.0
     duration_s: float | None = None
-    # "file" uses the GoPro file name for clip_in/clip_out, "index" uses clip_1, clip_2, ...
-    clip_names: str = "file"
+    # clip_in/clip_out: "file" uses the GoPro file name, "index" uses clip_1, clip_2, ...
+    # "auto" uses index when the template's clip_in dropdown lists clip_1, clip_2, ...
+    clip_names: str = "auto"
 
     # Detection. "rfdetr" = Community Fish Detector (RF-DETR), "color" = synthetic-video fake.
     detector: str = "rfdetr"

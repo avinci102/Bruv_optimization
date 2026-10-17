@@ -6,6 +6,7 @@ from the last saved frame; the later stages are quick and re-run as a block.
 
 from __future__ import annotations
 
+import gc
 import logging
 from pathlib import Path
 from typing import Callable
@@ -15,6 +16,7 @@ import numpy as np
 from . import imaging
 from .classify import (
     Classifier,
+    HistogramClassifier,
     crop_quality,
     histogram_embed,
     l2_normalize,
@@ -49,6 +51,8 @@ def create_project(
         info = read_template(Path(template))
         project.set_meta("template", str(Path(template).resolve()))
         project.set_meta("dropdowns", info.dropdowns)
+        # child header -> parent header, e.g. {"species": "type"} (see TemplateInfo.dependent)
+        project.set_meta("dependent", {child: parent for child, (parent, _) in info.dependent.items()})
     return project
 
 
@@ -120,11 +124,20 @@ class Pipeline:
     def run(self, force: bool = False) -> None:
         self.ingest()
         self.detect()
+        self._detector = None  # free the detector's memory before BioCLIP 2 loads
+        gc.collect()
+        done = all(self.project.stage_done(s) for s in POST_DETECT_STAGES)
         if self.project.reviewed_count() and not force:
-            if not all(self.project.stage_done(s) for s in POST_DETECT_STAGES):
+            if not done:
                 raise RuntimeError("Reviews exist; pass force=True to rebuild cards and lose them.")
             return
-        if force or not all(self.project.stage_done(s) for s in POST_DETECT_STAGES):
+        # Cards built without BioCLIP 2 (it couldn't load, e.g. short of memory) are rebuilt
+        # with it on the next run, as long as nobody has reviewed them yet.
+        fell_back = (
+            self.settings.classifier == "bioclip"
+            and self.project.get_meta("classifier") == HistogramClassifier.name
+        )
+        if force or not done or fell_back:
             for stage in POST_DETECT_STAGES:
                 self.project.mark_stage(stage, False)
             self.track()
@@ -140,7 +153,14 @@ class Pipeline:
         videos = [Path(v) for v in self.project.get_meta("videos", [])]
         if not videos:
             raise RuntimeError("No videos in this project")
-        timeline = build_timeline(videos, self.settings.clip_names)
+        clips = (self.project.get_meta("dropdowns") or {}).get("clip_in", [])
+        naming = self.settings.clip_names
+        if naming == "auto":
+            naming = "index" if "clip_1" in clips else "file"
+        timeline = build_timeline(videos, naming)
+        outside = [c.name for c in timeline.chapters if clips and c.name not in clips]
+        if outside:
+            log.warning("Clip name(s) %s aren't in the template's clip_in list", ", ".join(outside))
         self.project.save_chapters(timeline.chapters)
         self.project.mark_stage("ingest")
         self.progress("ingest", 1, 1)

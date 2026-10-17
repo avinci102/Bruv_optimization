@@ -47,7 +47,8 @@ echo ok> ".venv\bruv_setup_done"
 :run
 call .venv\Scripts\activate.bat
 python -m bruv_app quickstart "%FOLDER%"
-if errorlevel 1 goto fail
+rem A crash (e.g. out of memory) exits with a negative code, which "if errorlevel 1" misses.
+if %errorlevel% neq 0 goto fail
 goto end
 
 :pick_python
@@ -58,6 +59,15 @@ for %%V in (3.13 3.12 3.14) do (
   )
 )
 echo Python 3.12, 3.13 or 3.14 is needed and wasn't found. (3.15 is too new for PyTorch.)
+rem The newer "py" (Python's install manager) can add 3.13 for this user, no admin needed.
+py list >nul 2>nul
+if not errorlevel 1 (
+  choice /m "Install Python 3.13 now"
+  if errorlevel 2 exit /b 1
+  py install -y 3.13 || exit /b 1
+  set "PY=py -3.13"
+  exit /b 0
+)
 where winget >nul 2>nul
 if errorlevel 1 (
   echo Install Python 3.13 from https://www.python.org/downloads/windows/ then run this again.
@@ -73,6 +83,9 @@ exit /b 1
 :fail
 echo.
 echo Something went wrong. Copy the text above (or take a screenshot) and send it to Claude.
+echo If it stopped with no error message, the PC may have run out of memory: close other
+echo programs (browser tabs, games, chat apps) and run quickstart.bat again. It picks up
+echo where it stopped.
 
 :end
 echo.

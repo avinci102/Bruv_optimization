@@ -10,18 +10,20 @@ and any that openpyxl dropped are re-attached, with their settings, to the expor
 
 from __future__ import annotations
 
+import io
 import logging
 import posixpath
 import re
 import warnings
 import zipfile
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import time as dtime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import openpyxl
-from openpyxl.utils import get_column_letter, range_boundaries
+from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
 from openpyxl.worksheet.datavalidation import DataValidation
 
 log = logging.getLogger(__name__)
@@ -61,6 +63,9 @@ class TemplateInfo:
     dropdowns: dict[str, list[str]] = field(default_factory=dict)
     validations: list[RawValidation] = field(default_factory=list)
     next_row: int = 0  # first record row after any existing data (example row included)
+    # Dependent dropdowns, e.g. species =INDIRECT(E2) where column E is a species group:
+    # child header -> (parent header, {child option: the parent option it is listed under}).
+    dependent: dict[str, tuple[str, dict[str, str]]] = field(default_factory=dict)
 
     def options(self, header: str) -> list[str]:
         return self.dropdowns.get(norm(header), [])
@@ -90,6 +95,22 @@ def sheet_xml_paths(zf: zipfile.ZipFile) -> dict[str, str]:
         target = targets[sheet.get(f"{{{NS['r']}}}id")]
         path = target.lstrip("/") if target.startswith("/") else posixpath.join("xl", target)
         out[sheet.get("name")] = posixpath.normpath(path)
+    return out
+
+
+def _external_link_rels(path: Path) -> list[dict]:
+    """For each external link, in workbook order: its relationships by id."""
+    with zipfile.ZipFile(path) as zf:
+        wb = ET.fromstring(zf.read("xl/workbook.xml"))
+        rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+        targets = {r.get("Id"): r.get("Target") for r in rels.findall("pr:Relationship", NS)}
+        out = []
+        for ref in wb.findall("m:externalReferences/m:externalReference", NS):
+            target = targets[ref.get(f"{{{NS['r']}}}id")]
+            part = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("xl", target))
+            link_rels = posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels")
+            found = ET.fromstring(zf.read(link_rels)) if link_rels in zf.namelist() else None
+            out.append({} if found is None else {r.get("Id"): r for r in found.findall("pr:Relationship", NS)})
     return out
 
 
@@ -146,6 +167,8 @@ def read_raw_validations(path: Path, sheet_name: str) -> list[RawValidation]:
 # --- reading ----------------------------------------------------------------------------
 
 _REF = re.compile(r"^(?:(?P<sheet>'(?:[^']|'')+'|[^'!]+)!)?(?P<range>\$?[A-Z]+\$?\d+(?::\$?[A-Z]+\$?\d+)?)$")
+# A dependent list: =INDIRECT(E2) shows the range named by whatever was picked in E2.
+_INDIRECT = re.compile(r"^INDIRECT\(\s*\$?(?P<col>[A-Z]{1,3})\$?\d+\s*\)$", re.IGNORECASE)
 
 
 def _unique(values) -> list[str]:
@@ -192,11 +215,11 @@ def _sqref_columns(sqref: str) -> set[int]:
     return cols
 
 
-def _load(path: Path, data_only: bool = False, report: bool = False):
+def _load(path: Path, data_only: bool = False, report: bool = False, rich_text: bool = False):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         wb = openpyxl.load_workbook(
-            path, data_only=data_only, keep_vba=path.suffix.lower() == ".xlsm"
+            path, data_only=data_only, keep_vba=path.suffix.lower() == ".xlsm", rich_text=rich_text
         )
     if report:
         for w in caught:
@@ -230,8 +253,13 @@ def read_template(path: Path) -> TemplateInfo:
     validations = read_raw_validations(path, record)
     col_to_header = {c: h for h, c in headers.items()}
     dropdowns: dict[str, list[str]] = {}
+    dependent_cols: list[tuple[set[int], int]] = []  # (child columns, parent column)
     for v in validations:
         if v.type != "list":
+            continue
+        if m := _INDIRECT.match(v.formula1.strip().lstrip("=")):
+            parent_col = column_index_from_string(m.group("col").upper())
+            dependent_cols.append((_sqref_columns(v.sqref), parent_col))
             continue
         values = _resolve_formula(v.formula1, wb, record, names)
         if not values:
@@ -252,8 +280,26 @@ def read_template(path: Path) -> TemplateInfo:
                 if values:
                     dropdowns[h] = values
 
+    # Dependent lists: each option of the parent's list (e.g. a species group) names a range
+    # of child options (species). The child list is all of them, and each child option
+    # remembers its parent, so the export can fill the parent column to match.
+    dependent: dict[str, tuple[str, dict[str, str]]] = {}
+    for child_cols, parent_col in dependent_cols:
+        parent = col_to_header.get(parent_col)
+        groups: dict[str, str] = {}
+        for option in dropdowns.get(parent, []):
+            for value in _resolve_formula(option, wb, record, names) or []:
+                groups.setdefault(value, option)
+        for col in child_cols:
+            child = col_to_header.get(col)
+            if groups and child and child not in dropdowns:
+                dropdowns[child] = list(groups)
+                dependent[child] = (parent, groups)
+
     next_row = _first_empty_row(ws, header_row, list(headers.values()))
-    return TemplateInfo(path, record, dropdown, header_row, headers, dropdowns, validations, next_row)
+    return TemplateInfo(
+        path, record, dropdown, header_row, headers, dropdowns, validations, next_row, dependent
+    )
 
 
 # --- writing ----------------------------------------------------------------------------
@@ -300,6 +346,18 @@ def _warn_about_shapes(path: Path) -> None:
         )
 
 
+def _with_parents(info: TemplateInfo, row: dict) -> dict:
+    """Set the parent of each dependent dropdown from its child (type from species), so the
+    child's value is in the list Excel shows for that row."""
+    out = dict(row)
+    keys = {norm(k): k for k in row}
+    for child, (parent, groups) in info.dependent.items():
+        value = row.get(keys.get(child, child))
+        if value in groups:
+            out[keys.get(parent, parent)] = groups[value]
+    return out
+
+
 def export_workbook(
     info: TemplateInfo,
     out_path: Path,
@@ -316,9 +374,19 @@ def export_workbook(
     out_path = Path(out_path)
     if out_path.resolve() == Path(info.path).resolve():
         raise ValueError("Refusing to overwrite the original template; choose another file.")
-    wb = _load(Path(info.path), report=True)
+    # rich_text keeps bold/italic words inside a cell (e.g. on a readme sheet).
+    wb = _load(Path(info.path), report=True, rich_text=True)
     _warn_about_shapes(Path(info.path))
     ws = wb[info.record_sheet]
+
+    # openpyxl keeps only the first relationship of an external link, but the link points
+    # at its own (a link saved with alternate paths lists several). Excel refuses the whole
+    # file as damaged when that relationship is missing, so put it back.
+    for link, rels in zip(wb._external_links, _external_link_rels(Path(info.path))):
+        book, kept = link.externalBook, link.file_link
+        if book is not None and kept is not None and book.id in rels and kept.Id != book.id:
+            kept.Id, kept.Target = book.id, rels[book.id].get("Target")
+            kept.TargetMode = rels[book.id].get("TargetMode")
 
     # Re-attach dropdowns openpyxl dropped (x14 extension, i.e. cross-sheet lists), on
     # every sheet, not only `record` (the info sheet may have them too).
@@ -331,10 +399,12 @@ def export_workbook(
             continue
         for v in raw:
             if v.from_extension and v.formula1 and v.sqref:
+                # sqref may hold several ranges ("C2:C1000 A2:A1000"); the constructor
+                # parses them all, unlike dv.add().
                 dv = DataValidation(
-                    type=v.type or "list", formula1=v.formula1, allow_blank=v.allow_blank, **v.options
+                    type=v.type or "list", formula1=v.formula1, allow_blank=v.allow_blank,
+                    sqref=v.sqref, **v.options,
                 )
-                dv.add(v.sqref)
                 wb[sheet].add_data_validation(dv)
 
     start = info.next_row
@@ -342,7 +412,7 @@ def export_workbook(
     skipped: set[str] = set()
     for i, row in enumerate(record_rows):
         r = start + i
-        for header, value in row.items():
+        for header, value in _with_parents(info, row).items():
             col = info.headers.get(norm(header))
             if col is None:
                 skipped.add(header)
@@ -350,6 +420,12 @@ def export_workbook(
             if value is None or value == "":
                 continue
             cell = ws.cell(r, col)
+            if not cell.has_style:
+                # Excel shows an untouched cell with its row's or column's format (e.g. a
+                # centred count column); openpyxl gives a new cell none, so copy it.
+                row_dim = ws.row_dimensions[r]
+                dim = row_dim if row_dim.customFormat else ws.column_dimensions[get_column_letter(col)]
+                cell._style = copy(dim._style)
             cell.value = value
             fmt = ws.cell(example_row, col).number_format
             if norm(header) in TIME_HEADERS:
@@ -358,6 +434,23 @@ def export_workbook(
     _write_table(wb, "MaxN", maxn_header, maxn_rows)
     _write_table(wb, "app_details", details_header, details_rows)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(out_path)
+    _save(wb, out_path)
     return {"first_row": start, "rows": len(record_rows), "skipped_headers": sorted(skipped)}
+
+
+_BLANK_TEXT = re.compile(rb"<t>(\s+)</t>")
+
+
+def _save(wb, out_path: Path) -> None:
+    """Save, then mark whitespace-only text runs xml:space="preserve". openpyxl leaves it
+    off (e.g. a rich-text run holding one space), Excel reads the run as empty, and then
+    refuses to open the whole file as damaged."""
+    buf = io.BytesIO()
+    wb.save(buf)
+    with zipfile.ZipFile(buf) as zin, zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename.startswith("xl/worksheets/") or item.filename == "xl/sharedStrings.xml":
+                data = _BLANK_TEXT.sub(rb'<t xml:space="preserve">\1</t>', data)
+            zout.writestr(item, data)
 
