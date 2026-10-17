@@ -1,9 +1,9 @@
 # BRUV Fish ID Assistant — Spec & Handoff
 
-Status: **spec only, no code yet.** This document captures every decision made so far so
-work can start in Claude Code without re-asking. Items marked **[Decided]** came from the
-project owner (Vinci). Items marked **[Proposed]** are Claude's recommended defaults —
-change them freely.
+Status: **MVP built (phases 1–4), tested on synthetic data only.** This document captures
+every decision made so far. Items marked **[Decided]** came from the project owner (Vinci).
+Items marked **[Proposed]** are Claude's recommended defaults — change them freely. Section
+8 lists what changed after the first code review of this spec.
 
 ---
 
@@ -102,18 +102,19 @@ The visible `record` headers, in order, are: `clip_in`, `time_in`, `clip_out`, `
    timeline, while keeping each file name for `clip_in` / `clip_out`. Support an
    analysis window (start offset and duration), for example to skip the descent.
 2. **Frame sampling.** Decode with an ffmpeg pipe via `imageio-ffmpeg` (bundled binary,
-   hardware decode where available), with OpenCV as the fallback. Default is **1 fps on
+   hardware decode where available). No OpenCV: the bundled ffmpeg is the only decoder. Default is **1 fps on
    CPU**, 2–5 fps with a GPU. Store a downscaled JPEG of each sampled frame for the review
    UI, at roughly 150 MB per 30 minutes at 960 px.
 3. **Detection.** Use the **Community Fish Detector**
-   (github.com/WildHackers/community-fish-detector).
-   - It is a YOLOv12x model with a single `fish` class.
-   - It was trained on a dataset of over 1.9M images built from 17 open datasets.
-   - The README says it expects `imgsz=1024`. It is **AGPL**, which matters for any
-     commercial distribution.
-   - On CPU, use `imgsz=640` as the default for speed. Put it behind a `Detector`
-     interface so it can be swapped for an ONNX/OpenVINO export later, which is a big win
-     on Intel CPUs and also shrinks the installer by dropping torch.
+   (github.com/filippovarini/community-fish-detector), **RF-DETR release** (see §8).
+   - Single `fish` class, trained on a dataset of over 1.9M images built from 17 open
+     datasets.
+   - Models: RF-DETR Nano (640 px), Small and Medium (1024 px). Inference code is
+     **Apache-2.0**. The older YOLOv12x model is deprecated by its authors and is AGPL.
+   - Default: **Nano on CPU**, Small/Medium with a GPU. It sits behind a `Detector`
+     interface so it can be swapped for an ONNX/OpenVINO export later (rfdetr ships
+     both exporters), which is a big win on Intel CPUs and shrinks the installer by
+     dropping torch.
 4. **Tracking.** Use a lightweight in-house tracker: IoU plus centre distance, matched with
    the Hungarian algorithm. It avoids an ultralytics dependency so torch can be dropped
    later. At 1 fps tracks will fragment; step 5 fixes that.
@@ -233,3 +234,68 @@ scripts/  setup_windows.bat, run_windows.bat
 - **The biggest accuracy levers after human review:**
   - restricting labels to the regional species list;
   - fine-tuning on a few hundred labelled crops from the owner's own footage.
+
+---
+
+## 8. Changes after the first code review (Oct 2026)
+
+The approach and the review-card layout in §4.7 stand. These points changed while
+building the MVP:
+
+1. **Detector: RF-DETR instead of YOLOv12x.** The Community Fish Detector repo now
+   marks YOLOv12x as deprecated, and ships RF-DETR Nano/Small/Medium under Apache-2.0.
+   That removes the AGPL concern. Nano is also far lighter than YOLOv12x on CPU. Its
+   reported AP (0.596 vs 0.609 for Medium) is the authors' own validation, and they say
+   not to read much into it, so phase 5 should compare Nano against Medium on our own
+   footage.
+2. **Excel dropdowns survive export.** Excel stores dropdowns that point at another
+   sheet in an `x14` extension block, which openpyxl silently drops on save. The app
+   reads validations from the raw sheet XML (standard, named-range, literal, and x14),
+   and re-attaches any dropped ones to the exported copy.
+3. **Frame timestamps are exact.** ffmpeg's `fps` filter by default returns the frame
+   about half a step *after* the timestamp. Sampling now uses `fps=N:round=up`, which a
+   test checks.
+4. **The tracker has a cheap colour check.** At 1 fps, a fish passing close to another
+   could be handed the other's track (seen on the synthetic video). A colour-histogram
+   gate (`track_min_appearance`) now blocks obvious swaps. It is cheap and adds no
+   dependencies. A mixed card would put the wrong species into MaxN, so this matters
+   for accuracy.
+5. **Split works at any sighting**, not only between tracklets, so the reviewer can fix
+   a swap inside one track. Merge folds a card into the previous one and sends it back
+   for review.
+6. **Where record rows start.** The export appends after the last filled row of the
+   `record` sheet, so the example row 2 is kept. (See open question 7.)
+7. **Unknown fish** become `record` rows with a blank species and the comment
+   "Unidentified fish". They are left out of the MaxN tab.
+8. **Guesses can be recomputed without the model.** Label text embeddings are cached in
+   the project, so a split or merge in the UI recomputes guesses without loading
+   torch.
+
+### Status by phase
+
+1. Scaffold — **done.** Package, config, mock template, synthetic video, pytest.
+2. Pipeline — **done.** Resumable detection, tracker, continuity, BioCLIP 2 with a
+   histogram fallback. RF-DETR and BioCLIP code paths are written against their current
+   APIs but **not yet run with real weights** (the build sandbox couldn't download them).
+3. Review UI — **done.** Cards, keys 1/2/3/U/N/S, searchable species, optional fields,
+   split/merge, progress.
+4. Export — **done.** Record rows by header name, MaxN tab, app_details tab with model vs
+   user agreement, relative size and the saved best crop.
+5. Validation on real footage — **next.** Needs the real template and a sample clip.
+6. Windows installer — not started (`scripts/*.bat` cover setup for now).
+7. Scale markers — not started.
+
+### Known risks to watch on real footage
+
+- **Schools** create many simultaneous cards (one per fish), since cards on screen
+  together can't merge. If that is slow to review, add "apply this label to the similar
+  cards in this time window".
+- **Decode speed.** 4K GoPro HEVC decoded on the CPU can take as long as detection.
+  `-hwaccel auto` is on by default; check that it engages on Vinci's PC.
+- **MaxN at 1 fps** can slightly undercount compared with frame-by-frame manual review.
+  Compare it in phase 5, and raise `--fps` if needed.
+
+### New open question
+
+7. Should the export **replace the example row 2** in `record`, or append below it as
+   it does now?

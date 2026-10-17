@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bruv-app"
+version = "0.1.0"
+description = "BRUV fish ID assistant: detect and track fish, a human confirms species, export to Excel."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pillow",
+    "imageio-ffmpeg",
+    "openpyxl",
+    "fastapi",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+ml = ["torch", "torchvision", "rfdetr>=1.8.3", "open_clip_torch"]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+bruv = "bruv_app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bruv_app*"]
+
+[tool.setuptools.package-data]
+bruv_app = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

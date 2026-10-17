@@ -1,0 +1,7 @@
+# Models: Community Fish Detector (RF-DETR) and BioCLIP 2. CPU wheels are fine.
+# On Windows without an NVIDIA GPU, install the CPU build of torch first:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+rfdetr>=1.8.3
+open_clip_torch

@@ -1,0 +1,8 @@
+# Core: enough to run the pipeline with the fallback models, the review UI and the export.
+numpy
+scipy
+pillow
+imageio-ffmpeg
+openpyxl
+fastapi
+uvicorn
