@@ -111,6 +111,19 @@ def cmd_export(args) -> None:
     print(f"Saved {path}")
 
 
+def cmd_shrink(args) -> None:
+    from .video import shrink_video  # noqa: PLC0415
+
+    src = Path(args.video)
+    if not src.exists():
+        raise FileNotFoundError(f"Video not found: {src}")
+    # Same file name in a "small" folder, so GoPro chapter naming still works.
+    dst = Path(args.out) if args.out else src.parent / "small" / src.name
+    print(f"Shrinking {src.name} to under {args.max_mb:g} MB…")
+    shrink_video(src, dst, args.max_mb, args.width, args.fps, args.start, args.duration)
+    print(f"Saved {dst} ({dst.stat().st_size / 1024 / 1024:.1f} MB)")
+
+
 def cmd_demo(args) -> None:
     from . import demo  # noqa: PLC0415
     from .pipeline import Pipeline, create_project  # noqa: PLC0415
@@ -159,6 +172,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", required=True)
     p.add_argument("--out", help="output .xlsx (default: <project>/exports/…)")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("shrink", help="make a small copy of a clip to share (e.g. under an upload limit)")
+    p.add_argument("video")
+    p.add_argument("--max-mb", type=float, default=38.0, help="target size in MB (default 38)")
+    p.add_argument("--width", type=int, default=1280, help="max width in pixels (default 1280)")
+    p.add_argument("--fps", type=float, default=10.0, help="frames per second to keep (default 10)")
+    p.add_argument("--start", type=float, default=0.0, help="skip this many seconds")
+    p.add_argument("--duration", type=float, help="keep only this many seconds")
+    p.add_argument("--out", help="output file (default: <video folder>/small/<same name>)")
+    p.set_defaults(func=cmd_shrink)
 
     p = sub.add_parser("demo", help="run the full workflow on a synthetic video")
     p.add_argument("--project", default="projects/demo")

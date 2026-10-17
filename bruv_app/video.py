@@ -82,6 +82,55 @@ def probe(path: Path) -> tuple[float, float]:
     return duration, fps
 
 
+def shrink_video(
+    src: Path,
+    dst: Path,
+    max_mb: float = 38.0,
+    width: int = 1280,
+    fps: float = 10.0,
+    start_s: float = 0.0,
+    duration_s: float | None = None,
+) -> Path:
+    """Re-encode a clip small enough to share: H.264 at a two-pass bitrate that fits `max_mb`.
+
+    The pipeline decodes at 1280 px and samples 1-2 fps, so 1280 px at 10 fps keeps
+    everything it uses. Audio is dropped. Never upscales.
+    """
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    import imageio_ffmpeg  # noqa: PLC0415
+
+    src, dst = Path(src), Path(dst)
+    if dst.resolve() == src.resolve():
+        raise ValueError("The shrunk copy must not overwrite the original")
+    total, _ = probe(src)
+    length = max(0.0, total - start_s)
+    if duration_s is not None:
+        length = min(length, duration_s)
+    if length <= 0:
+        raise ValueError("Nothing to encode: start is past the end of the clip")
+    # 8% headroom for the MP4 container and rate-control overshoot.
+    kbps = int(max_mb * 1024 * 1024 * 8 * 0.92 / length / 1000)
+    if kbps < 200:
+        raise ValueError(f"{max_mb} MB is too small for {length:.0f} s; use --duration to cut it shorter")
+    kbps = min(kbps, 8000)
+
+    exe = imageio_ffmpeg.get_ffmpeg_exe()
+    common = [
+        "-ss", f"{start_s:.3f}", "-i", str(src), "-t", f"{length:.3f}",
+        "-vf", f"fps={fps},scale='min({width},iw)':-2",
+        "-an", "-c:v", "libx264", "-preset", "medium", "-b:v", f"{kbps}k",
+    ]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        log = str(Path(tmp) / "pass")
+        for n, out in ((1, ["-f", "null", "-"]), (2, ["-movflags", "+faststart", str(dst)])):
+            cmd = [exe, "-y", "-loglevel", "error", *common, "-pass", str(n), "-passlogfile", log, *out]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+    return dst
+
+
 def build_timeline(paths: list[Path], clip_names: str = "file", probe_fn=probe) -> Timeline:
     chapters: list[Chapter] = []
     offset = 0.0

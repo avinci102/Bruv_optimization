@@ -82,3 +82,27 @@ def test_expand_videos_accepts_folders_and_wildcards(tmp_path):
     assert len(expand_videos([str(tmp_path / "GX*.MP4")])) == 2
     with pytest.raises(FileNotFoundError):
         expand_videos([str(tmp_path / "missing.MP4")])
+
+
+def test_shrink_fits_the_size_limit_and_keeps_the_name(synthetic_videos, tmp_path):
+    from bruv_app.cli import main
+    from bruv_app.video import probe
+
+    src = next(p for p in synthetic_videos if p.name == "GX010042.MP4")
+    main(["shrink", str(src), "--max-mb", "0.5", "--out", str(tmp_path / "small" / src.name)])
+    out = tmp_path / "small" / src.name
+    assert out.stat().st_size <= 0.5 * 1024 * 1024
+    duration, fps = probe(out)
+    assert duration == pytest.approx(12.0, abs=0.3) and fps == pytest.approx(10.0)
+    # Still a usable input: same GoPro name, frames sample at the right times.
+    frames = list(sample_frames(build_timeline([out]), fps=1.0, width=640))
+    assert out.stem == "GX010042" and len(frames) == 12
+
+
+def test_shrink_refuses_impossible_targets(synthetic_videos, tmp_path):
+    from bruv_app.video import shrink_video
+
+    with pytest.raises(ValueError):
+        shrink_video(synthetic_videos[0], tmp_path / "x.mp4", max_mb=0.001)
+    with pytest.raises(ValueError):
+        shrink_video(synthetic_videos[0], synthetic_videos[0])

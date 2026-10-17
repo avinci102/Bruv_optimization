@@ -47,6 +47,24 @@ Useful options: `--fps` (default 1 on CPU, 2 with a GPU), `--start`/`--duration`
 analysis window, e.g. to skip the descent), `--clip-names index` (use `clip_1, clip_2…`
 instead of the GoPro file name). Everything else is in `<project>\settings.json`.
 
+## Sharing a test clip
+
+GoPro files are large (a 2-minute 4K clip is around 750 MB). To send one over a size-limited
+upload, make a small copy with the bundled ffmpeg:
+
+```bat
+scripts\run_windows.bat shrink D:\GoPro\GX010123.MP4 --max-mb 38
+```
+
+This writes `D:\GoPro\small\GX010123.MP4` under 38 MB: 1280 px wide, 10 fps, H.264, no
+audio. The pipeline itself decodes at 1280 px and samples 1–2 fps, so nothing it uses is
+lost. Keep the GoPro file name so chapter ordering still works. Use `--start`/`--duration`
+to send just part of a clip.
+
+No setup on that PC? HandBrake works too. Pick the "Fast 720p30" preset, set the
+framerate to 10, set the average bitrate to about 2,000 kbps (for 2 minutes), and remove
+the audio track.
+
 ## Review keys
 
 `1` `2` `3` pick a model guess · `/` search species, `Enter` records it · `U` unknown fish ·
