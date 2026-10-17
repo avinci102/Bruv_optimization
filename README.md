@@ -10,7 +10,24 @@ synthetic video. Not yet run on real footage or with the real template. See
 [`docs/SPEC.md`](docs/SPEC.md) for the decisions, the architecture and what's next, and
 [`docs/SOURCES.md`](docs/SOURCES.md) for every outside source, model and license used.
 
-## Try it in two minutes (no footage or models needed)
+## Run it on your own footage (Windows, one step)
+
+1. Get the code: on GitHub, click **Code → Download ZIP**, then unzip it anywhere.
+2. Put your GoPro `.MP4` file(s) and your Excel template (`.xlsx`) together in one
+   folder.
+3. Drag that folder onto **`quickstart.bat`** in the unzipped code (or double-click it
+   and paste the folder path).
+
+The first run installs everything. It can install Python 3.13 for you if it's missing,
+and it downloads the fish detector and species model, a few GB in all. After that it
+processes the video and opens the review page in your browser. Keep the black window
+open while you review. Exports land in a `bruv_project\exports` folder inside your
+footage folder, and the original template is never changed. Run it again at any time to
+pick up where you left off.
+
+**Python:** use 3.12, 3.13 or 3.14. 3.15 is too new: PyTorch has no 3.15 build yet.
+
+## Try the demo (no footage or models needed)
 
 ```bat
 scripts\setup_windows.bat
@@ -22,7 +39,7 @@ opens the review page in your browser. Label the cards, then click **Export to E
 
 On macOS/Linux: `pip install -e . && python -m bruv_app demo`.
 
-## Real footage
+## Real footage, step by step (advanced)
 
 1. Install the models (CPU is fine): `scripts\setup_windows.bat --ml`
 2. Download a Community Fish Detector RF-DETR checkpoint from its

@@ -1,0 +1,79 @@
+@echo off
+rem ---------------------------------------------------------------------------
+rem  BRUV Fish ID - quick start
+rem  Drag your footage folder onto this file, or double-click it and paste the
+rem  folder path. The folder needs your GoPro .MP4 file(s) and the Excel template.
+rem  First run: installs Python packages and downloads the models (a few GB).
+rem ---------------------------------------------------------------------------
+setlocal
+cd /d "%~dp0"
+
+set "FOLDER=%~1"
+if not defined FOLDER set /p "FOLDER=Paste the folder with your video and Excel template, then press Enter: "
+if not defined FOLDER (
+  echo No folder given.
+  goto end
+)
+set "FOLDER=%FOLDER:"=%"
+
+if exist ".venv\bruv_setup_done" goto run
+if exist ".venv\Scripts\python.exe" goto check_venv
+
+call :pick_python
+if errorlevel 1 goto end
+%PY% -m venv .venv || goto fail
+
+:check_venv
+rem PyTorch has no Python 3.15 build yet, and numpy needs 3.12+, so the app needs 3.12-3.14.
+".venv\Scripts\python.exe" -c "import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] <= (3, 14) else 1)"
+if errorlevel 1 (
+  echo The .venv folder was made with an unsupported Python version.
+  echo Delete the .venv folder next to this file, then run quickstart.bat again.
+  goto end
+)
+echo.
+echo First run: installing. This downloads a few GB and can take 10-30 minutes.
+echo Later runs skip this.
+echo.
+call .venv\Scripts\activate.bat
+python -m pip install --upgrade pip || goto fail
+pip install -r requirements.txt || goto fail
+rem CPU build of PyTorch. With an NVIDIA GPU, install the CUDA build from pytorch.org instead.
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu || goto fail
+pip install -r requirements-ml.txt || goto fail
+pip install -e . || goto fail
+echo ok> ".venv\bruv_setup_done"
+
+:run
+call .venv\Scripts\activate.bat
+python -m bruv_app quickstart "%FOLDER%"
+if errorlevel 1 goto fail
+goto end
+
+:pick_python
+for %%V in (3.13 3.12 3.14) do (
+  py -%%V -c "import sys" >nul 2>nul && (
+    set "PY=py -%%V"
+    exit /b 0
+  )
+)
+echo Python 3.12, 3.13 or 3.14 is needed and wasn't found. (3.15 is too new for PyTorch.)
+where winget >nul 2>nul
+if errorlevel 1 (
+  echo Install Python 3.13 from https://www.python.org/downloads/windows/ then run this again.
+  exit /b 1
+)
+choice /m "Install Python 3.13 now"
+if errorlevel 2 exit /b 1
+winget install -e --id Python.Python.3.13 --accept-package-agreements --accept-source-agreements
+echo.
+echo Python is installed. Close this window and run quickstart.bat again.
+exit /b 1
+
+:fail
+echo.
+echo Something went wrong. Copy the text above (or take a screenshot) and send it to Claude.
+
+:end
+echo.
+pause

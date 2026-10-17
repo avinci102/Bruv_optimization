@@ -107,3 +107,51 @@ def test_shrink_refuses_impossible_targets(synthetic_videos, tmp_path):
         shrink_video(synthetic_videos[0], tmp_path / "x.mp4", max_mb=0.001)
     with pytest.raises(ValueError):
         shrink_video(synthetic_videos[0], synthetic_videos[0])
+
+
+def test_quickstart_from_a_folder(synthetic_videos, tmp_path):
+    import shutil
+
+    from bruv_app import demo
+    from bruv_app.cli import main
+    from bruv_app.store import Project
+
+    folder = tmp_path / "BRUV_optimization"
+    folder.mkdir()
+    for p in synthetic_videos:
+        shutil.copy(p, folder / p.name)
+    demo.make_mock_template(folder / "viewing template v.2024.xlsx")
+    (folder / "~$viewing template v.2024.xlsx").write_bytes(b"lock file")  # Excel's lock file
+    main(["quickstart", str(folder), "--detector", "color", "--classifier", "histogram", "--no-review"])
+    project = Project(folder / "bruv_project")
+    assert project.frame_count() == 24 and project.all_fish()
+    # Running it again resumes instead of starting over.
+    main(["quickstart", str(folder), "--detector", "color", "--classifier", "histogram", "--no-review"])
+    assert project.frame_count() == 24
+
+
+def test_quickstart_needs_exactly_one_template(synthetic_videos, tmp_path):
+    import shutil
+
+    from bruv_app import demo
+    from bruv_app.cli import find_inputs
+
+    shutil.copy(synthetic_videos[0], tmp_path / synthetic_videos[0].name)
+    with pytest.raises(FileNotFoundError):
+        find_inputs(tmp_path)
+    demo.make_mock_template(tmp_path / "a.xlsx")
+    demo.make_mock_template(tmp_path / "b.xlsx")
+    with pytest.raises(ValueError):
+        find_inputs(tmp_path)
+
+
+def test_download_rejects_web_pages(tmp_path):
+    from bruv_app.cli import download
+
+    good, page = tmp_path / "good.bin", tmp_path / "page.html"
+    good.write_bytes(b"PK\x03\x04 weights")
+    page.write_bytes(b"<html>Not found</html>")
+    assert download(good.as_uri(), tmp_path / "out" / "w.pth").read_bytes().startswith(b"PK")
+    with pytest.raises(RuntimeError):
+        download(page.as_uri(), tmp_path / "out" / "bad.pth")
+    assert not (tmp_path / "out" / "bad.pth").exists()

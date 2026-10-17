@@ -113,6 +113,112 @@ def cmd_export(args) -> None:
     print(f"Saved {path}")
 
 
+CFD_NANO_URL = (
+    "https://github.com/filippovarini/community-fish-detector/releases/download/"
+    "2026.07.06-release/cfd-rf-detr-nano-640-2026.02.02.cp-011.20260706-release.pth"
+)
+
+
+def model_cache() -> Path:
+    """Per-user folder for downloaded model files (reused across projects)."""
+    import os  # noqa: PLC0415
+
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / ".cache")
+    return Path(base) / "bruv_app" / "models"
+
+
+def download(url: str, dest: Path) -> Path:
+    """Download once to `dest` (via a .part file), printing progress."""
+    import urllib.request  # noqa: PLC0415
+
+    if dest.exists():
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    print(f"Downloading {dest.name}…")
+    with urllib.request.urlopen(url, timeout=60) as resp, open(part, "wb") as out:
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
+        while chunk := resp.read(1 << 20):
+            out.write(chunk)
+            done += len(chunk)
+            if total:
+                print(f"\r  {done / 2**20:7.1f} / {total / 2**20:.1f} MB", end="", flush=True)
+    print()
+    with open(part, "rb") as f:
+        if f.read(1) == b"<":  # an HTML error page, not a checkpoint
+            part.unlink()
+            raise RuntimeError(f"The download from {url} returned a web page, not a model file")
+    part.replace(dest)
+    return dest
+
+
+def find_inputs(folder: Path) -> tuple[list[Path], Path]:
+    """The video file(s) and the one Excel template in a folder."""
+    from .template import read_template  # noqa: PLC0415
+
+    if not folder.is_dir():
+        raise FileNotFoundError(f"Folder not found: {folder}")
+    videos = [p for p in sorted(folder.iterdir()) if p.suffix.lower() in VIDEO_SUFFIXES]
+    if not videos:
+        raise FileNotFoundError(f"No .MP4/.MOV video in {folder}")
+    if any(p.suffix.lower() == ".xls" for p in folder.iterdir()):
+        print("Note: .xls files can't be read; save the template as .xlsx in Excel.")
+    candidates = [
+        p for p in sorted(folder.iterdir())
+        if p.suffix.lower() in (".xlsx", ".xlsm") and not p.name.startswith("~$")
+    ]
+    templates = []
+    for p in candidates:
+        try:
+            read_template(p)
+            templates.append(p)
+        except (ValueError, KeyError, OSError):
+            continue
+    if not templates:
+        raise FileNotFoundError(
+            f"No Excel template with a 'record' sheet (species, time_in, …) in {folder}"
+        )
+    if len(templates) > 1:
+        names = ", ".join(p.name for p in templates)
+        raise ValueError(f"More than one template in the folder ({names}); keep just one")
+    return videos, templates[0]
+
+
+def cmd_quickstart(args) -> None:
+    """Everything in one go: find inputs, fetch the detector, process, open the review page."""
+    from .pipeline import Pipeline, create_project  # noqa: PLC0415
+    from .store import Project  # noqa: PLC0415
+
+    folder = Path(args.folder).expanduser().resolve()
+    videos, template = find_inputs(folder)
+    print(f"Video: {', '.join(p.name for p in videos)}")
+    print(f"Template: {template.name}")
+    root = folder / "bruv_project"
+    settings_path = root / "settings.json"
+    settings = Settings.load(settings_path) if settings_path.exists() else Settings()
+    for key in ("detector", "classifier", "sample_fps"):
+        if getattr(args, key) is not None:
+            setattr(settings, key, getattr(args, key))
+    if settings.detector == "rfdetr":
+        weights = Path(args.weights) if args.weights else download(
+            CFD_NANO_URL, model_cache() / CFD_NANO_URL.rsplit("/", 1)[1]
+        )
+        settings.detector_weights = str(weights.resolve())
+    if (root / "project.db").exists():
+        print(f"Resuming the project in {root}")
+        project = Project(root)
+        project.save_settings(settings)
+    else:
+        project = create_project(root, videos, template, settings)
+    print(f"Processing on {settings.resolved_device()} at {settings.resolved_fps():g} fps…")
+    Pipeline(project, progress=_progress()).run()
+    print(f"Done: {len(project.all_fish())} fish cards. Exports will be saved in {root / 'exports'}")
+    if not args.no_review:
+        print("Keep this window open while you review; close it when you're finished.")
+        serve(root, args.port, not args.no_browser)
+
+
 def cmd_shrink(args) -> None:
     from .video import shrink_video  # noqa: PLC0415
 
@@ -175,6 +281,17 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--out", help="output .xlsx (default: <project>/exports/…)")
     p.set_defaults(func=cmd_export)
 
+    p = sub.add_parser("quickstart", help="one step: a folder with your video(s) + template → review page")
+    p.add_argument("folder", help="folder holding the GoPro .MP4 file(s) and the Excel template")
+    p.add_argument("--weights", help="use this detector .pth instead of downloading CFD Nano")
+    p.add_argument("--detector", choices=["rfdetr", "color"])
+    p.add_argument("--classifier", choices=["bioclip", "histogram"])
+    p.add_argument("--fps", dest="sample_fps", type=float)
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--no-browser", action="store_true")
+    p.add_argument("--no-review", action="store_true")
+    p.set_defaults(func=cmd_quickstart)
+
     p = sub.add_parser("shrink", help="make a small copy of a clip to share (e.g. under an upload limit)")
     p.add_argument("video")
     p.add_argument("--max-mb", type=float, default=38.0, help="target size in MB (default 38)")
@@ -195,7 +312,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         args.func(args)
-    except (RuntimeError, FileNotFoundError, ValueError) as exc:
+    except (RuntimeError, OSError, ValueError) as exc:
         print(f"\nError: {exc}", file=sys.stderr)
         sys.exit(1)
 
