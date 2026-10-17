@@ -44,7 +44,7 @@ def dependent_template(tmp_path) -> Path:
     dd.title = demo.SHEET_DROPDOWN
     for col, (group, species) in enumerate(GROUPS.items(), start=1):
         letter = get_column_letter(col)
-        dd.cell(1, col, group)
+        dd.cell(1, col, group + (" " if group == "goatfish" else ""))  # a stray trailing space
         for row, name in enumerate(species, start=2):
             dd.cell(row, col, name)
         ref = f"'{demo.SHEET_DROPDOWN}'!${letter}$2:${letter}${len(species) + 1}"

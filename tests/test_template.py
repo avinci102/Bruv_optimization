@@ -30,7 +30,9 @@ def test_reads_a_dependent_species_list(dependent_template):
     # species =INDIRECT(E2): every type's named range, in order.
     assert info.options("species") == ["mullet family", "bluespot mullet", "goatfish family", "yellowfin goatfish"]
     parent, groups = info.dependent["species"]
-    assert parent == "type" and groups["yellowfin goatfish"] == "goatfish"
+    # The parent is kept exactly as listed, trailing space included: Excel's type dropdown
+    # only accepts the exact text.
+    assert parent == "type" and groups["yellowfin goatfish"] == "goatfish "
     # One x14 dropdown covers both clip columns.
     assert info.options("clip_in") == info.options("clip_out") == ["clip_1", "clip_2", "clip_3"]
 
@@ -41,11 +43,13 @@ def test_export_fills_type_from_species_and_keeps_two_range_dropdown(dependent_t
     rows = [
         {"clip_in": "clip_1", "clip_out": "clip_1", "type": None, "species": "bluespot mullet", "count": 1},
         {"clip_in": "clip_2", "clip_out": "clip_2", "type": None, "species": None, "count": 1},
+        {"clip_in": "clip_2", "clip_out": "clip_2", "type": None, "species": "yellowfin goatfish", "count": 2},
     ]
     export_workbook(info, out, rows, ["species"], [], ["fish_id"], [])
     ws = openpyxl.load_workbook(out)[demo.SHEET_RECORD]
     assert (ws["E2"].value, ws["F2"].value) == ("mullet", "bluespot mullet")
     assert ws["E3"].value is None  # unknown fish: no species, so no type
+    assert ws["E4"].value == "goatfish "  # exactly as listed
     again = read_template(out)
     assert again.options("clip_in") == again.options("clip_out") == ["clip_1", "clip_2", "clip_3"]
     assert again.options("species") == info.options("species")

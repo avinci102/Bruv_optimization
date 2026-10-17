@@ -171,26 +171,29 @@ _REF = re.compile(r"^(?:(?P<sheet>'(?:[^']|'')+'|[^'!]+)!)?(?P<range>\$?[A-Z]+\$
 _INDIRECT = re.compile(r"^INDIRECT\(\s*\$?(?P<col>[A-Z]{1,3})\$?\d+\s*\)$", re.IGNORECASE)
 
 
-def _unique(values) -> list[str]:
+def _unique(values, strip: bool = True) -> list[str]:
     seen, out = set(), []
     for v in values:
         if v is None:
             continue
-        s = str(v).strip()
-        if s and s not in seen:
+        s = str(v).strip() if strip else str(v)
+        if s.strip() and s not in seen:
             seen.add(s)
             out.append(s)
     return out
 
 
-def _resolve_formula(formula: str, wb, default_sheet: str, names: dict[str, str]) -> list[str] | None:
+def _resolve_formula(
+    formula: str, wb, default_sheet: str, names: dict[str, str], strip: bool = True
+) -> list[str] | None:
+    """A list validation's options. strip=False keeps each option exactly as written."""
     f = formula.strip().lstrip("=")
     if not f:
         return None
     if f.startswith('"') and f.endswith('"'):
-        return _unique(f[1:-1].split(","))
+        return _unique(f[1:-1].split(","), strip)
     if f.lower() in names:
-        return _resolve_formula(names[f.lower()], wb, default_sheet, names)
+        return _resolve_formula(names[f.lower()], wb, default_sheet, names, strip)
     m = _REF.match(f)
     if not m:
         return None  # INDIRECT/OFFSET and other dynamic lists aren't supported
@@ -204,7 +207,7 @@ def _resolve_formula(formula: str, wb, default_sheet: str, names: dict[str, str]
     values = []
     for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
         values.extend(c.value for c in row)
-    return _unique(values)
+    return _unique(values, strip)
 
 
 def _sqref_columns(sqref: str) -> set[int]:
@@ -253,6 +256,7 @@ def read_template(path: Path) -> TemplateInfo:
     validations = read_raw_validations(path, record)
     col_to_header = {c: h for h, c in headers.items()}
     dropdowns: dict[str, list[str]] = {}
+    list_formulas: dict[int, str] = {}  # column -> its list validation's formula
     dependent_cols: list[tuple[set[int], int]] = []  # (child columns, parent column)
     for v in validations:
         if v.type != "list":
@@ -265,6 +269,7 @@ def read_template(path: Path) -> TemplateInfo:
         if not values:
             continue
         for col in _sqref_columns(v.sqref):
+            list_formulas.setdefault(col, v.formula1)
             if col in col_to_header and col_to_header[col] not in dropdowns:
                 dropdowns[col_to_header[col]] = values
 
@@ -282,12 +287,15 @@ def read_template(path: Path) -> TemplateInfo:
 
     # Dependent lists: each option of the parent's list (e.g. a species group) names a range
     # of child options (species). The child list is all of them, and each child option
-    # remembers its parent, so the export can fill the parent column to match.
+    # remembers its parent, so the export can fill the parent column to match. The parent
+    # is kept exactly as listed (a stray trailing space included): Excel's dropdown only
+    # accepts the exact text.
     dependent: dict[str, tuple[str, dict[str, str]]] = {}
     for child_cols, parent_col in dependent_cols:
         parent = col_to_header.get(parent_col)
+        exact = _resolve_formula(list_formulas.get(parent_col, ""), wb, record, names, strip=False)
         groups: dict[str, str] = {}
-        for option in dropdowns.get(parent, []):
+        for option in exact or dropdowns.get(parent, []):
             for value in _resolve_formula(option, wb, record, names) or []:
                 groups.setdefault(value, option)
         for col in child_cols:
