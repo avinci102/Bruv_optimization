@@ -100,3 +100,31 @@ def test_refuses_to_overwrite_the_template(mock_template):
 def test_seconds_to_time():
     assert seconds_to_time(3725.4) == time(1, 2, 5)
     assert seconds_to_time(-3) == time(0, 0, 0)
+
+
+def test_reattached_dropdowns_keep_their_error_settings(mock_template, tmp_path):
+    info = read_template(mock_template)
+    out = tmp_path / "out.xlsx"
+    export_workbook(info, out, [], ["species"], [], ["fish_id"], [])
+    species = next(v for v in read_raw_validations(out, demo.SHEET_RECORD) if v.sqref == "N2:N1000")
+    # Typed values outside the list must still be rejected in Excel.
+    assert species.options.get("showErrorMessage") is True
+    assert species.options.get("showInputMessage") is True
+
+
+def test_export_reports_template_features_it_cannot_keep(mock_template, tmp_path, caplog, monkeypatch):
+    import logging
+    import warnings
+
+    info = read_template(mock_template)
+    real = openpyxl.load_workbook
+
+    def noisy(*args, **kwargs):
+        warnings.warn("Conditional Formatting extension is not supported and will be removed")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(openpyxl, "load_workbook", noisy)
+    with caplog.at_level(logging.WARNING):
+        export_workbook(info, tmp_path / "out.xlsx", [], ["species"], [], ["fish_id"], [])
+    assert any("Conditional Formatting" in r.message for r in caplog.records)
+    assert not any("Data Validation" in r.message for r in caplog.records)

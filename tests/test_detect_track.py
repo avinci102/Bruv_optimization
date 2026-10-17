@@ -50,3 +50,27 @@ def test_appearance_gate_blocks_identity_swap():
     assert len(track_all(frames)) == 2
     frames = [[(0, box(0.5, 0.5, app=red))], [(1, box(0.52, 0.5, app=red))]]
     assert len(track_all(frames)) == 1
+
+
+def test_resolution_from_cfd_file_names():
+    from bruv_app.detect import resolution_from_name
+
+    assert resolution_from_name("cfd-rf-detr-nano-640-2026.02.02.cp-011.20260706-release.pth") == 640
+    assert resolution_from_name("cfd-rf-detr-medium-1024-2026.03.24.cp-011.20260706-release.pth") == 1024
+    assert resolution_from_name("checkpoint_best_total.pth") is None
+
+
+def test_prompt_ensemble_averages_templates():
+    from bruv_app.classify import prompt_ensemble
+
+    templates = (lambda c: f"a photo of {c}.", lambda c: f"a {c} underwater.")
+    seen = []
+
+    def encode(prompts):
+        seen.extend(prompts)
+        return np.array([[1.0, 0.0], [0.0, 1.0]])
+
+    out = prompt_ensemble(encode, ["snapper"], templates)
+    assert seen == ["a photo of snapper.", "a snapper underwater."]
+    assert out.shape == (1, 2)
+    assert np.allclose(out[0], [np.sqrt(0.5), np.sqrt(0.5)])

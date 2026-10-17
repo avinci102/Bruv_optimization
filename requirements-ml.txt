@@ -3,5 +3,6 @@
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
-rfdetr>=1.8.3
-open_clip_torch
+# Pinned to the versions whose APIs were checked (see docs/SOURCES.md).
+rfdetr>=1.11.2,<1.12
+open_clip_torch>=3.3,<4

@@ -5,4 +5,5 @@ pillow
 imageio-ffmpeg
 openpyxl
 fastapi
+pydantic>=2
 uvicorn

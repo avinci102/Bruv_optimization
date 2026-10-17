@@ -15,11 +15,12 @@ dependencies = [
     "imageio-ffmpeg",
     "openpyxl",
     "fastapi",
+    "pydantic>=2",
     "uvicorn",
 ]
 
 [project.optional-dependencies]
-ml = ["torch", "torchvision", "rfdetr>=1.8.3", "open_clip_torch"]
+ml = ["torch", "torchvision", "rfdetr>=1.11.2,<1.12", "open_clip_torch>=3.3,<4"]
 dev = ["pytest", "httpx"]
 
 [project.scripts]

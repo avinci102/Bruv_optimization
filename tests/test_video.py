@@ -13,9 +13,10 @@ def test_order_chapters_new_gopro_naming():
 
 
 def test_order_chapters_old_gopro_naming_and_other_files():
-    names = ["GP020012.MP4", "other.mp4", "GOPR0012.MP4", "GP010012.MP4"]
+    names = ["GP020012.MP4", "other.mp4", "GOPR0012.MP4", "GP010012.MP4", "GL010012.LRV"]
     ordered = [p.name for p in order_chapters([Path(n) for n in names])]
-    assert ordered == ["GOPR0012.MP4", "GP010012.MP4", "GP020012.MP4", "other.mp4"]
+    # GL… is GoPro's low-res proxy: it is not a chapter, so it sorts with the non-GoPro files.
+    assert ordered == ["GOPR0012.MP4", "GP010012.MP4", "GP020012.MP4", "GL010012.LRV", "other.mp4"]
 
 
 def test_timeline_locate_maps_global_time_to_clip():
@@ -76,7 +77,7 @@ def test_sampled_frame_times_are_exact(tmp_path):
 def test_expand_videos_accepts_folders_and_wildcards(tmp_path):
     from bruv_app.cli import expand_videos
 
-    for name in ("GX020001.MP4", "GX010001.MP4", "notes.txt"):
+    for name in ("GX020001.MP4", "GX010001.MP4", "GL010001.LRV", "GX010001.THM", "notes.txt"):
         (tmp_path / name).write_bytes(b"")
     assert {p.name for p in expand_videos([str(tmp_path)])} == {"GX010001.MP4", "GX020001.MP4"}
     assert len(expand_videos([str(tmp_path / "GX*.MP4")])) == 2

@@ -109,14 +109,17 @@ The visible `record` headers, in order, are: `clip_in`, `time_in`, `clip_out`, `
    (github.com/filippovarini/community-fish-detector), **RF-DETR release** (see §8).
    - Single `fish` class, trained on a dataset of over 1.9M images built from 17 open
      datasets.
-   - Models: RF-DETR Nano (640 px), Small and Medium (1024 px). Inference code is
-     **Apache-2.0**. The older YOLOv12x model is deprecated by its authors and is AGPL.
+   - Models: RF-DETR Nano (640 px), Small and Medium (1024 px). The inference code
+     (`rfdetr`) is **Apache-2.0**. The CFD repo states no license for the weights
+     themselves (see `docs/SOURCES.md`). The older YOLOv12x model is deprecated by its
+     authors, and its inference code (Ultralytics) is AGPL.
    - Default: **Nano on CPU**, Small/Medium with a GPU. It sits behind a `Detector`
-     interface so it can be swapped for an ONNX/OpenVINO export later (rfdetr ships
-     both exporters), which is a big win on Intel CPUs and shrinks the installer by
-     dropping torch.
-4. **Tracking.** Use a lightweight in-house tracker: IoU plus centre distance, matched with
-   the Hungarian algorithm. It avoids an ultralytics dependency so torch can be dropped
+     interface so it can be swapped for an ONNX/OpenVINO export later (rfdetr 1.11+ ships
+     both exporters). That should help on Intel CPUs (a vendor claim, so benchmark it)
+     and shrinks the installer by dropping torch.
+4. **Tracking.** Use a lightweight in-house tracker: IoU plus centre distance, matched as a
+   linear assignment (SciPy's `linear_sum_assignment`, the same optimum as the Hungarian
+   algorithm). It avoids an ultralytics dependency so torch can be dropped
    later. At 1 fps tracks will fragment; step 5 fixes that.
 5. **Continuity merge.** Merge tracklet B into A when all of these hold:
    - B starts within N seconds (default 10) after A ends;
@@ -165,7 +168,7 @@ The visible `record` headers, in order, are: `clip_in`, `time_in`, `clip_out`, `
 bruv_app/
   config.py      settings + defaults (fps, imgsz, gap_seconds, thresholds)
   video.py       chapter ordering, timeline, frame sampler
-  detect.py      Detector interface; CFD YOLO impl; fake for tests
+  detect.py      Detector interface; CFD RF-DETR impl; fakes for tests
   track.py       tracker
   continuity.py  merge/split logic
   classify.py    BioCLIP 2 zero-shot; fallback embedder
@@ -225,8 +228,11 @@ scripts/  setup_windows.bat, run_windows.bat
   - **SharkTrack** (arXiv 2407.20623): 89% species-specific MaxN accuracy on unseen
     locations, with about 2 minutes of human time per hour of video.
   - **Reef shark study** (IRD): fully automatic F-measures of 0.43–0.85 rose to 0.82–0.97
-    once a human was in the loop.
-- **Fishial.ai** self-reports 70–90% accuracy; this is a vendor claim.
+    once a human was in the loop. *(Citation missing: no authors, title or DOI were
+    recorded, so this can't be checked yet.)*
+- **Fishial.ai** self-reports 70–90% accuracy; this is a vendor claim. *(Their public
+  GitHub repo reports 93.22% classification accuracy instead. Where 70–90% came from is
+  unknown.)*
 - **VIAME** (NOAA/Kitware) is the established open-source alternative for detection,
   tracking, and annotation, and is worth comparing against.
 - **General vision-language chatbots** score poorly on open-ended fish species ID (the
@@ -243,15 +249,21 @@ The approach and the review-card layout in §4.7 stand. These points changed whi
 building the MVP:
 
 1. **Detector: RF-DETR instead of YOLOv12x.** The Community Fish Detector repo now
-   marks YOLOv12x as deprecated, and ships RF-DETR Nano/Small/Medium under Apache-2.0.
-   That removes the AGPL concern. Nano is also far lighter than YOLOv12x on CPU. Its
+   marks YOLOv12x as deprecated and ships RF-DETR Nano/Small/Medium, whose inference
+   code is Apache-2.0. That removes the AGPL concern. (The CFD repo states no license for
+   the weights; ask the authors before any commercial distribution.) Nano should also be
+   much lighter on CPU, though that hasn't been benchmarked here. Its
    reported AP (0.596 vs 0.609 for Medium) is the authors' own validation, and they say
    not to read much into it, so phase 5 should compare Nano against Medium on our own
    footage.
 2. **Excel dropdowns survive export.** Excel stores dropdowns that point at another
-   sheet in an `x14` extension block, which openpyxl silently drops on save. The app
-   reads validations from the raw sheet XML (standard, named-range, literal, and x14),
-   and re-attaches any dropped ones to the exported copy.
+   sheet in an `x14` extension block, which openpyxl drops on load (with only a
+   warning). The app reads validations from the raw sheet XML (standard, named-range,
+   literal, and x14), and re-attaches any dropped ones to the exported copy with their
+   error and prompt settings, so typed values outside the list are still rejected. Any
+   other template feature openpyxl can't keep (e.g. extended conditional formatting) is
+   now logged at export instead of vanishing silently. *Still to check: open an export
+   in real Excel. LibreOffice reads the re-attached dropdowns correctly.*
 3. **Frame timestamps are exact.** ffmpeg's `fps` filter by default returns the frame
    about half a step *after* the timestamp. Sampling now uses `fps=N:round=up`, which a
    test checks.
@@ -270,6 +282,27 @@ building the MVP:
 8. **Guesses can be recomputed without the model.** Label text embeddings are cached in
    the project, so a split or merge in the UI recomputes guesses without loading
    torch.
+9. **BioCLIP 2 is called the way its authors call it.** Each label's text embedding is
+   the average over CLIP's 80 prompt templates, as in BioCLIP 2's zero-shot evaluation
+   and Imageomics' `pybioclip`, rather than a single "a photo of …" prompt. Crops are
+   squashed to 224×224, as in `pybioclip`, rather than centre-cropped, which would cut
+   the head and tail off a long fish. Their evaluation also gets better results with
+   full taxonomic names plus common names ("Animalia Chordata … *Lutjanus campechanus*
+   with common name red snapper"). Adding those needs a species-to-taxonomy lookup, so
+   it waits on open question 3.
+10. **Detector loading is guarded.** If a checkpoint's resolution doesn't match the one
+    in its CFD file name, it is reloaded at the right resolution. Older checkpoints would
+    otherwise run at the RF-DETR default (Nano 384 instead of 640) without any error.
+    `rfdetr` and `open_clip` are pinned to the versions whose APIs were checked.
+11. **Licensing to sort out before the installer (phase 6).**
+    - The ffmpeg that imageio-ffmpeg bundles is a GPLv3 build, so the installer must
+      ship the GPL text and offer its source.
+    - `rfdetr` pulls in PyAV through `supervision`. PyAV bundles LGPL FFmpeg plus x264
+      and x265; exclude it from the bundle or comply with those licenses.
+    - BioCLIP 2 is MIT according to its authors.
+    - The CFD weights have no stated license.
+
+    Details are in `docs/SOURCES.md`.
 
 ### Status by phase
 

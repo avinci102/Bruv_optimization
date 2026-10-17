@@ -1,4 +1,5 @@
-"""Lightweight tracker: IoU + centre distance, matched with the Hungarian algorithm.
+"""Lightweight tracker: IoU + centre distance + a colour check, solved as a linear assignment
+(SciPy's linear_sum_assignment, a modified Jonker-Volgenant solver; same result as Hungarian).
 
 At 1 fps fish move a long way between frames, so tracks fragment; continuity.py stitches
 the fragments back together for review.

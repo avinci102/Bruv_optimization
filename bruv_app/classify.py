@@ -96,9 +96,15 @@ class BioClip2Classifier:
             ) from exc
         self.torch = torch
         self.device = device
-        self.model, _, self.preprocess = open_clip.create_model_and_transforms(self.MODEL_ID)
+        # "squash" resizes the whole crop to 224x224, as Imageomics' pybioclip does; the
+        # default centre crop would cut the head and tail off a long, thin fish.
+        self.model, _, self.preprocess = open_clip.create_model_and_transforms(
+            self.MODEL_ID, image_resize_mode="squash"
+        )
         self.model.to(device).eval()
         self.tokenizer = open_clip.get_tokenizer(self.MODEL_ID)
+        self.templates = open_clip.OPENAI_IMAGENET_TEMPLATES
+        self.dim = int(self.model.visual.output_dim)
         self.logit_scale = float(self.model.logit_scale.exp().item())
 
     def embed(self, crops: list[np.ndarray]) -> np.ndarray:  # pragma: no cover - needs weights
@@ -112,19 +118,30 @@ class BioClip2Classifier:
                     [self.preprocess(Image.fromarray(c)) for c in crops[i : i + 16]]
                 ).to(self.device)
                 out.append(self.model.encode_image(batch).float().cpu().numpy())
-        return l2_normalize(np.concatenate(out)) if out else np.zeros((0, 768), np.float32)
+        return l2_normalize(np.concatenate(out)) if out else np.zeros((0, self.dim), np.float32)
+
+    def _encode_text(self, prompts: list[str]) -> np.ndarray:  # pragma: no cover - needs weights
+        with self.torch.no_grad():
+            tokens = self.tokenizer(prompts).to(self.device)
+            return self.model.encode_text(tokens).float().cpu().numpy()
 
     def text_embeddings(self, labels: list[str]) -> np.ndarray | None:  # pragma: no cover
         if not labels:
             return None
-        torch = self.torch
-        chunks = []
-        with torch.no_grad():
-            for i in range(0, len(labels), 64):
-                prompts = [f"a photo of {name}." for name in labels[i : i + 64]]
-                tokens = self.tokenizer(prompts).to(self.device)
-                chunks.append(self.model.encode_text(tokens).float().cpu().numpy())
-        return l2_normalize(np.concatenate(chunks))
+        return prompt_ensemble(self._encode_text, labels, self.templates)
+
+
+def prompt_ensemble(encode, labels: list[str], templates) -> np.ndarray:
+    """One embedding per label: the renormalised mean over every prompt template.
+
+    This is how BioCLIP 2's zero-shot evaluation and pybioclip build class embeddings
+    (CLIP's 80 OpenAI ImageNet templates), rather than a single "a photo of ..." prompt.
+    """
+    out = []
+    for label in labels:
+        emb = l2_normalize(encode([t(label) for t in templates]))
+        out.append(l2_normalize(emb.mean(axis=0)))
+    return np.stack(out)
 
 
 def make_classifier(settings, device: str) -> Classifier:

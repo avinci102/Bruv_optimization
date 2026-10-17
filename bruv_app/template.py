@@ -4,12 +4,13 @@ Rules: write by header name (never by column letter), never touch the original f
 take dropdown lists from the sheet's data-validation rules.
 
 Excel stores dropdowns that point at another sheet in an extension block (x14) that
-openpyxl silently drops on load. So validations are read from the raw sheet XML, and any
-that openpyxl dropped are re-attached to the exported copy.
+openpyxl drops on load (it only warns). So validations are read from the raw sheet XML,
+and any that openpyxl dropped are re-attached, with their settings, to the exported copy.
 """
 
 from __future__ import annotations
 
+import logging
 import posixpath
 import re
 import warnings
@@ -22,6 +23,8 @@ from xml.etree import ElementTree as ET
 import openpyxl
 from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.worksheet.datavalidation import DataValidation
+
+log = logging.getLogger(__name__)
 
 NS = {
     "m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -44,6 +47,8 @@ class RawValidation:
     sqref: str
     from_extension: bool
     allow_blank: bool = True
+    # Error/prompt settings (showErrorMessage, errorStyle, prompt, ...) carried to the copy.
+    options: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -96,6 +101,16 @@ def _defined_names(zf: zipfile.ZipFile) -> dict[str, str]:
     }
 
 
+_BOOL_OPTIONS = ("showErrorMessage", "showInputMessage", "showDropDown")
+_TEXT_OPTIONS = ("errorStyle", "promptTitle", "prompt", "errorTitle", "error", "operator")
+
+
+def _options(el) -> dict:
+    opts = {k: el.get(k) in ("1", "true") for k in _BOOL_OPTIONS if el.get(k) is not None}
+    opts.update({k: el.get(k) for k in _TEXT_OPTIONS if el.get(k) is not None})
+    return opts
+
+
 def read_raw_validations(path: Path, sheet_name: str) -> list[RawValidation]:
     with zipfile.ZipFile(path) as zf:
         root = ET.fromstring(zf.read(sheet_xml_paths(zf)[sheet_name]))
@@ -109,6 +124,7 @@ def read_raw_validations(path: Path, sheet_name: str) -> list[RawValidation]:
                 dv.get("sqref", ""),
                 False,
                 dv.get("allowBlank", "0") in ("1", "true"),
+                _options(dv),
             )
         )
     for dv in root.iter(f"{{{NS['x14']}}}dataValidation"):
@@ -121,6 +137,7 @@ def read_raw_validations(path: Path, sheet_name: str) -> list[RawValidation]:
                 (sq.text or "").strip() if sq is not None else "",
                 True,
                 dv.get("allowBlank", "0") in ("1", "true"),
+                _options(dv),
             )
         )
     return out
@@ -175,12 +192,19 @@ def _sqref_columns(sqref: str) -> set[int]:
     return cols
 
 
-def _load(path: Path, data_only: bool = False):
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=".*extension is not supported.*")
-        return openpyxl.load_workbook(
+def _load(path: Path, data_only: bool = False, report: bool = False):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        wb = openpyxl.load_workbook(
             path, data_only=data_only, keep_vba=path.suffix.lower() == ".xlsm"
         )
+    if report:
+        for w in caught:
+            message = str(w.message)
+            if "Data Validation extension" in message:
+                continue  # re-attached by export_workbook
+            log.warning("Template feature openpyxl can't keep in the export: %s", message)
+    return wb
 
 
 def read_template(path: Path) -> TemplateInfo:
@@ -276,13 +300,15 @@ def export_workbook(
     out_path = Path(out_path)
     if out_path.resolve() == Path(info.path).resolve():
         raise ValueError("Refusing to overwrite the original template; choose another file.")
-    wb = _load(Path(info.path))
+    wb = _load(Path(info.path), report=True)
     ws = wb[info.record_sheet]
 
     # Re-attach dropdowns openpyxl dropped (x14 extension, i.e. cross-sheet lists).
     for v in info.validations:
         if v.from_extension and v.formula1 and v.sqref:
-            dv = DataValidation(type=v.type or "list", formula1=v.formula1, allow_blank=v.allow_blank)
+            dv = DataValidation(
+                type=v.type or "list", formula1=v.formula1, allow_blank=v.allow_blank, **v.options
+            )
             dv.add(v.sqref)
             ws.add_data_validation(dv)
 

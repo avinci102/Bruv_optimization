@@ -13,8 +13,9 @@ import numpy as np
 # imageio-ffmpeg warns every time we ask ffmpeg to scale; that's intended here.
 logging.getLogger("imageio_ffmpeg").setLevel(logging.ERROR)
 
-# HERO6+ : GX010123.MP4 / GH010123.MP4 (2-char prefix, 2-digit chapter, 4-digit file number)
-_GOPRO_NEW = re.compile(r"^G[HXL](\d{2})(\d{4})$", re.IGNORECASE)
+# HERO6+ : GX010123.MP4 (HEVC) / GH010123.MP4 (H.264): 2-digit chapter, 4-digit file number.
+# GL010123.LRV is the low-res proxy of the same recording, so it is deliberately not matched.
+_GOPRO_NEW = re.compile(r"^G[HX](\d{2})(\d{4})$", re.IGNORECASE)
 # HERO5 and older: GOPR0123.MP4 is chapter 1, GP010123.MP4 is chapter 2, ...
 _GOPRO_OLD_FIRST = re.compile(r"^GOPR(\d{4})$", re.IGNORECASE)
 _GOPRO_OLD_NEXT = re.compile(r"^GP(\d{2})(\d{4})$", re.IGNORECASE)
@@ -119,7 +120,7 @@ def shrink_video(
     exe = imageio_ffmpeg.get_ffmpeg_exe()
     common = [
         "-ss", f"{start_s:.3f}", "-i", str(src), "-t", f"{length:.3f}",
-        "-vf", f"fps={fps},scale='min({width},iw)':-2",
+        "-vf", f"fps={fps}:round=up,scale='min({width},iw)':-2",
         "-an", "-c:v", "libx264", "-preset", "medium", "-b:v", f"{kbps}k",
     ]
     dst.parent.mkdir(parents=True, exist_ok=True)

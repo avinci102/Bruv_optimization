@@ -7,7 +7,8 @@ template: one `record` row per sighting, plus a `MaxN` tab and an `app_details` 
 
 Status: **MVP, phases 1–4 built** (scaffold, pipeline, review UI, export), tested on
 synthetic video. Not yet run on real footage or with the real template. See
-[`docs/SPEC.md`](docs/SPEC.md) for the decisions, the architecture and what's next.
+[`docs/SPEC.md`](docs/SPEC.md) for the decisions, the architecture and what's next, and
+[`docs/SOURCES.md`](docs/SOURCES.md) for every outside source, model and license used.
 
 ## Try it in two minutes (no footage or models needed)
 

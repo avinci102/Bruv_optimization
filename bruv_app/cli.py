@@ -40,7 +40,9 @@ def expand_videos(items: list[str]) -> list[Path]:
         if path.is_dir():
             out.extend(p for p in sorted(path.iterdir()) if p.suffix.lower() in VIDEO_SUFFIXES)
         elif any(ch in item for ch in "*?["):
-            out.extend(Path(p) for p in sorted(glob.glob(item)))
+            # Skip GoPro's .LRV proxies and .THM thumbnails that a G* pattern also matches.
+            matches = (Path(p) for p in sorted(glob.glob(item)))
+            out.extend(p for p in matches if p.suffix.lower() in VIDEO_SUFFIXES)
         else:
             out.append(path)
     missing = [str(p) for p in out if not p.exists()]

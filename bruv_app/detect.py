@@ -6,11 +6,15 @@ decode or storage resolution.
 
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,8 +44,15 @@ class Detector(Protocol):
         ...
 
 
+def resolution_from_name(filename: str) -> int | None:
+    """CFD release names carry their training resolution, e.g. cfd-rf-detr-nano-640-...pth."""
+    m = re.search(r"rf-detr-[a-z]+-(\d{3,4})(?=[-_.])", filename.lower())
+    return int(m.group(1)) if m else None
+
+
 class RFDETRDetector:
-    """Community Fish Detector, RF-DETR release (Apache-2.0 inference code).
+    """Community Fish Detector, RF-DETR release (Apache-2.0 inference code; the weights'
+    own license isn't stated by the CFD repo — see docs/SOURCES.md).
 
     Weights: github.com/filippovarini/community-fish-detector/releases — Nano (640) for CPU,
     Small/Medium (1024) when a GPU is present.
@@ -56,15 +67,34 @@ class RFDETRDetector:
             raise RuntimeError(
                 "RF-DETR is not installed. Run: pip install -r requirements-ml.txt"
             ) from exc
-        if not Path(weights).exists():
+        weights = Path(weights)
+        if not weights.exists():
             raise FileNotFoundError(f"Detector weights not found: {weights}")
         self.threshold = threshold
-        self.model = rfdetr.from_checkpoint(str(weights), device=device)
-        self.name = f"cfd-rfdetr:{Path(weights).name}"
+        try:  # pragma: no cover - needs weights
+            self.model = rfdetr.from_checkpoint(str(weights), device=device)
+            # Older checkpoints without a saved model_config silently fall back to the
+            # class default (Nano 384, Small 512); force the resolution CFD trained at.
+            expected = resolution_from_name(weights.name)
+            if expected and self.model.model_config.resolution != expected:
+                log.warning(
+                    "%s loaded at %s px; reloading at %s px",
+                    weights.name, self.model.model_config.resolution, expected,
+                )
+                self.model = rfdetr.from_checkpoint(str(weights), device=device, resolution=expected)
+        except RuntimeError as exc:  # pragma: no cover - needs weights
+            if "trust_checkpoint" in str(exc):
+                raise RuntimeError(
+                    f"{weights.name} can't be loaded safely. Only use checkpoints downloaded "
+                    "from the Community Fish Detector releases page."
+                ) from exc
+            raise
+        self.name = f"cfd-rfdetr:{weights.name}@{self.model.model_config.resolution}"
 
     def detect(self, images: list[np.ndarray]) -> list[list[Detection]]:  # pragma: no cover
-        # Same call as CFD's own rf_detr_batch_inference.py.
-        preds = self.model.predict(list(images), threshold=self.threshold)
+        # Equivalent to CFD's rf_detr_batch_inference.py (CFD passes PIL images; uint8 RGB
+        # arrays take the same preprocessing path). Boxes come back in input-image pixels.
+        preds = self.model.predict(list(images), threshold=self.threshold, include_source_image=False)
         if not isinstance(preds, list):
             preds = [preds]
         out: list[list[Detection]] = []
