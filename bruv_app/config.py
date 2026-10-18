@@ -6,10 +6,13 @@ import json
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+DEFAULT_FPS = 4.0  # sampled frames per second; trials run at 3-4 fps
+
 
 @dataclass
 class Settings:
-    # Frame sampling. None means auto: 1 fps on CPU, 2 fps with a GPU.
+    # Frame sampling. None means DEFAULT_FPS. At 3-4 fps fish move little between frames,
+    # which keeps tracking reliable, and MaxN comes closer to a frame-by-frame count.
     sample_fps: float | None = None
     # Width frames are decoded at (detection runs on these).
     decode_width: int = 1280
@@ -36,13 +39,19 @@ class Settings:
     track_min_iou: float = 0.05
     track_max_dist: float = 1.5  # centre distance / larger box diagonal
     track_max_size_ratio: float = 3.0
-    track_max_missed: int = 1  # sampled frames a track may vanish for
+    track_max_missed_s: float = 1.0  # how long a fish may go unseen and keep its track
     track_min_appearance: float = 0.5  # colour-histogram cosine; blocks obvious swaps
+    track_direction: bool = True  # expect a fish to keep its course (keeps crossing fish apart)
 
     # Continuity merge (review dedupe only; never used for counts).
     gap_seconds: float = 10.0
-    merge_min_similarity: float = 0.80
+    # BioCLIP similarity of the two pieces. Most fish score 0.8 or more against each other,
+    # so the bar is above that; with the colour check below it blocked 65% of joins between
+    # different fish and kept 91% between parts of the same fish (docs/SPEC.md §12).
+    merge_min_similarity: float = 0.85
     merge_max_size_ratio: float = 3.0
+    # The two pieces' average colour (cosine of their colour histograms; 1 = identical).
+    merge_min_colour: float = 0.7
     # Tiny fish: smaller than this at their largest (the box's longer side, in pixels of the
     # saved review frames). Too small to identify, they join no other piece and the review
     # page hides them until asked.
@@ -76,9 +85,7 @@ class Settings:
         return "cuda" if gpu_available() else "cpu"
 
     def resolved_fps(self) -> float:
-        if self.sample_fps:
-            return float(self.sample_fps)
-        return 2.0 if self.resolved_device() == "cuda" else 1.0
+        return float(self.sample_fps) if self.sample_fps else DEFAULT_FPS
 
 
 def gpu_available() -> bool:

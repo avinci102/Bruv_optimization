@@ -70,7 +70,8 @@ def dependent_template(tmp_path) -> Path:
 
 
 def demo_settings(**overrides) -> Settings:
-    settings = Settings(detector="color", classifier="histogram")
+    # 1 fps keeps the synthetic runs quick; test_default_rate_* covers the default 4 fps.
+    settings = Settings(detector="color", classifier="histogram", sample_fps=1.0)
     for key, value in overrides.items():
         setattr(settings, key, value)
     return settings

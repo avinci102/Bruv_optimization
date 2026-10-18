@@ -75,6 +75,19 @@ def test_end_to_end_maxn_matches_ground_truth(project, tmp_path):
     assert all(row[10] is True for row in details)  # user agreed with top-1 everywhere
 
 
+def test_default_rate_is_4_fps_with_pure_cards_and_true_maxn(tmp_path, synthetic_videos):
+    template = demo.make_mock_template(tmp_path / "t.xlsx")
+    project = create_project(tmp_path / "p", synthetic_videos, template, demo_settings(sample_fps=None))
+    Pipeline(project, classifier=demo.DemoClassifier()).run()
+    assert project.frame_count() == 96 and project.frame_rate() == 4.0
+    for f in project.all_fish():
+        species = {ground_truth_species(d) for d in project.fish_detections(f["id"])}
+        assert len(species - {None}) == 1, (f["id"], species)
+    label_like_perfect_human(project)
+    wb = openpyxl.load_workbook(export_project(project, tmp_path / "export.xlsx"))
+    assert {r[0]: r[1] for r in wb["MaxN"].iter_rows(min_row=2, values_only=True)} == expected_maxn(fps=4.0)
+
+
 def test_detection_resumes_after_interruption(tmp_path, synthetic_videos):
     template = demo.make_mock_template(tmp_path / "t.xlsx")
     project = create_project(tmp_path / "p", synthetic_videos, template, demo_settings(batch_size=4))

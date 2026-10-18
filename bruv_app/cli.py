@@ -133,6 +133,21 @@ def cmd_export(args) -> None:
     print(f"Saved {path}")
 
 
+def cmd_score(args) -> None:
+    from .score import score_against  # noqa: PLC0415
+    from .store import Project  # noqa: PLC0415
+
+    for folder in (args.project, args.answers):
+        if not (Path(folder) / "project.db").exists():
+            raise ValueError(f"No project in {folder}")
+    score = score_against(Project(Path(args.project)), Project(Path(args.answers)))
+    print(f"{score.cards} cards: {score.cards - score.tiny} to review, {score.tiny} tiny (hidden)")
+    print(f"{score.checked} hold sightings answered in {args.answers}; {len(score.mixed)} of them mix answers:")
+    for card, answers in score.mixed:
+        print(f"  card #{card}: {' / '.join(answers)}")
+    print(f"{score.rejoined} of {score.pulled_apart} groups of sightings you pulled apart are on one card again")
+
+
 CFD_NANO_URL = (
     "https://github.com/filippovarini/community-fish-detector/releases/download/"
     "2026.07.06-release/cfd-rf-detr-nano-640-2026.02.02.cp-011.20260706-release.pth"
@@ -307,6 +322,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", required=True)
     p.add_argument("--out", help="output .xlsx (default: <project>/exports/…)")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("score", help="check a re-run's cards against the answers in another copy")
+    p.add_argument("--project", required=True, help="the project to score (e.g. re-run with new rules)")
+    p.add_argument("--answers", required=True, help="a copy of the same project with reviewed cards")
+    p.set_defaults(func=cmd_score)
 
     p = sub.add_parser("quickstart", help="one step: a folder with your video(s) + template → review page")
     p.add_argument("folder", help="folder holding the GoPro .MP4 file(s) and the Excel template")

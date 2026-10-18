@@ -210,7 +210,8 @@ class Pipeline:
             return
         s = self.settings
         timeline = load_timeline(self.project)
-        fps = s.resolved_fps()
+        # A stopped run resumes at the rate it started with, even if the default has changed.
+        fps = self.project.frame_rate() if self.project.frame_count() >= 2 else s.resolved_fps()
         step = 1.0 / fps
         start = s.start_s
         end = timeline.duration_s if s.duration_s is None else min(timeline.duration_s, start + s.duration_s)
@@ -261,8 +262,9 @@ class Pipeline:
             s.track_min_iou,
             s.track_max_dist,
             s.track_max_size_ratio,
-            s.track_max_missed,
+            max(1, round(s.track_max_missed_s * self.project.frame_rate())),  # in sampled frames
             s.track_min_appearance,
+            s.track_direction,
         )
         n = self.project.frame_count()
         for i, (frame, dets) in enumerate(self.project.frames_with_detections()):
@@ -330,6 +332,7 @@ class Pipeline:
             emb = np.frombuffer(row["embedding"], np.float32) if row["embedding"] else None
             if emb is None:
                 continue
+            apps = [np.frombuffer(d["app"], np.float32) for d in dets if d["app"] is not None]
             summaries.append(
                 TrackletSummary(
                     row["id"],
@@ -339,10 +342,12 @@ class Pipeline:
                     float(np.median(sizes[:3])),
                     float(np.median(sizes[-3:])),
                     max(box_px(d) for d in dets),
+                    l2_normalize(np.mean(apps, axis=0)) if apps else None,
                 )
             )
         chains = merge_tracklets(
-            summaries, s.gap_seconds, s.merge_min_similarity, s.merge_max_size_ratio, s.tiny_fish_px
+            summaries, s.gap_seconds, s.merge_min_similarity, s.merge_max_size_ratio, s.tiny_fish_px,
+            s.merge_min_colour,
         )
         for chain in chains:
             self.project.create_fish(chain)

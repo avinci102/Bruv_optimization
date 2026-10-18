@@ -8,8 +8,8 @@ A = l2_normalize(np.array([1.0, 0.1, 0.0]))
 B = l2_normalize(np.array([0.0, 1.0, 0.1]))
 
 
-def tl(id, start, end, emb=A, size=0.1, px=100.0):
-    return TrackletSummary(id, start, end, emb, size, size, px)
+def tl(id, start, end, emb=A, size=0.1, px=100.0, colour=None):
+    return TrackletSummary(id, start, end, emb, size, size, px, colour)
 
 
 def test_returning_fish_within_gap_is_one_card():
@@ -41,6 +41,14 @@ def test_tiny_fish_join_nothing():
     pieces = [tl(1, 0, 5), tl(2, 7, 9, px=20), tl(3, 11, 14)]
     assert merge_tracklets(pieces) == [[1, 2, 3]]
     assert merge_tracklets(pieces, tiny_px=40) == [[1, 3], [2]]
+
+
+def test_pieces_of_different_colour_dont_join():
+    # The species model sees most fish as alike; their colours can still tell them apart.
+    pieces = [tl(1, 0, 5, colour=A), tl(2, 7, 9, colour=B)]
+    assert merge_tracklets(pieces, min_colour=0.7) == [[1], [2]]
+    pieces[1].colour = A
+    assert merge_tracklets(pieces, min_colour=0.7) == [[1, 2]]
 
 
 def test_best_similarity_wins_and_chains_stay_linear():

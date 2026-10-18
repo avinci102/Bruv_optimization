@@ -124,10 +124,10 @@ def test_quickstart_from_a_folder(synthetic_videos, tmp_path):
     (folder / "~$viewing template v.2024.xlsx").write_bytes(b"lock file")  # Excel's lock file
     main(["quickstart", str(folder), "--detector", "color", "--classifier", "histogram", "--no-review"])
     project = Project(folder / "bruv_project")
-    assert project.frame_count() == 24 and project.all_fish()
+    assert project.frame_count() == 96 and project.all_fish()  # 24 s at the default 4 fps
     # Running it again resumes instead of starting over.
     main(["quickstart", str(folder), "--detector", "color", "--classifier", "histogram", "--no-review"])
-    assert project.frame_count() == 24
+    assert project.frame_count() == 96
 
 
 def test_quickstart_needs_exactly_one_template(synthetic_videos, tmp_path):

@@ -158,6 +158,12 @@ class Project:
     def frame_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM frames").fetchone()[0]
 
+    def frame_rate(self) -> float:
+        """Sampled frames per second, from the stored frames' times (1.0 before any)."""
+        times = [r[0] for r in self.db.execute("SELECT t FROM frames ORDER BY seq")]
+        steps = [b - a for a, b in zip(times, times[1:]) if b > a]
+        return 1.0 / float(np.median(steps)) if steps else 1.0
+
     def frames_with_detections(self):
         """Yield (FrameRow, [(det id, Detection)]) in time order."""
         frames = self.db.execute("SELECT * FROM frames ORDER BY seq").fetchall()

@@ -44,6 +44,16 @@ def test_tracker_survives_one_missed_frame_but_not_three():
     assert sorted(len(t.members) for t in tracks) == [1, 2]
 
 
+def test_crossing_fish_keep_their_own_tracks():
+    # A swims right fast, B left slowly; they pass each other at the third frame. Both look
+    # the same, so only their direction of travel tells them apart afterwards.
+    a = [0.02, 0.20, 0.38, 0.58, 0.78]
+    b = [0.58, 0.50, 0.42, 0.32, 0.22]
+    frames = [[(2 * i, box(xa, 0.5, 0.2, 0.1)), (2 * i + 1, box(xb, 0.5, 0.2, 0.1))] for i, (xa, xb) in enumerate(zip(a, b))]
+    tracks = track_all(frames)
+    assert sorted([k for _, k in t.members] for t in tracks) == [[0, 2, 4, 6, 8], [1, 3, 5, 7, 9]]
+
+
 def test_appearance_gate_blocks_identity_swap():
     red, green = l2_normalize(np.array([1.0, 0.0])), l2_normalize(np.array([0.0, 1.0]))
     frames = [[(0, box(0.5, 0.5, app=red))], [(1, box(0.52, 0.5, app=green))]]
