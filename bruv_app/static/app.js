@@ -3,17 +3,12 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   summary: null, cards: [], index: 0, detail: null, selected: null, selectedIndex: -1,
-  template: new Set(), other: null, otherPending: false,
+  template: new Set(), other: null,
 };
 
 const NOT_IN_TEMPLATE = "not in template";
 const EXTRA_HINT = "Not in the template's species list: exported as its 'other' entry, with this name in the comment.";
-const FILTER_TEXT = {
-  all: "all cards",
-  1: "★ template species 1st",
-  2: "★ template species in top 2",
-  3: "★ template species in top 3",
-};
+const MIN_PX = 40;  // the "Fish ≥ 40 px" toggle: the fish's size at its largest, in frame pixels
 
 const STATUS_TEXT = {
   pending: "Not reviewed yet",
@@ -58,18 +53,31 @@ function templateRank(labels) {
   return i < 0 ? 0 : i + 1;
 }
 
-function visibleCards(rule = $("filter").value) {
-  const pendingOnly = $("pending-only").checked;
+function statusGroup(status) {
+  return status === "pending" || status === "skipped" ? status : "reviewed";
+}
+
+// The cards the header lets through: Status, Show (the rank a template species needs among
+// the guesses, or "all") and the size toggle.
+function visibleCards(status = $("status").value, rule = $("filter").value) {
+  const minPx = $("min-size").checked ? MIN_PX : 0;
   return state.cards.filter((c) => {
-    if (pendingOnly && c.status !== "pending" && c.status !== "skipped") return false;
+    if (status !== "all" && statusGroup(c.status) !== status) return false;
+    if (c.max_px < minPx) return false;
     if (rule === "all") return true;
     const rank = templateRank(c.guesses);
     return rank > 0 && rank <= Number(rule);
   });
 }
 
+// Each choice shows how many cards it would give, with the other controls as they are.
 function updateFilterCounts() {
-  for (const opt of $("filter").options) opt.textContent = `${FILTER_TEXT[opt.value]} (${visibleCards(opt.value).length})`;
+  const count = (opt, n) => {
+    if (!opt.dataset.label) opt.dataset.label = opt.textContent;
+    opt.textContent = `${opt.dataset.label} (${n})`;
+  };
+  for (const opt of $("status").options) count(opt, visibleCards(opt.value, undefined).length);
+  for (const opt of $("filter").options) count(opt, visibleCards(undefined, opt.value).length);
 }
 
 async function loadSummary() {
@@ -89,6 +97,11 @@ async function init() {
   const dd = state.summary.dropdowns;
   state.template = new Set(dd.species || []);
   state.other = (dd.species || []).find((s) => s.trim().toLowerCase().startsWith("other")) || null;
+  // Open on the pending cards, or the skipped ones once nothing is pending.
+  for (const status of ["pending", "skipped", "all"]) {
+    $("status").value = status;
+    if (visibleCards().length) break;
+  }
   updateFilterCounts();
   $("species-list").replaceChildren(
     ...(dd.species || []).map((v) => new Option(v)),
@@ -105,19 +118,16 @@ async function init() {
     $("empty").hidden = false;
     return;
   }
-  const list = visibleCards();
-  if (!list.length) {
-    $("pending-only").checked = false;
-  }
   await show(0);
 }
 
 async function show(index) {
   const list = visibleCards();
   if (!list.length) {
-    message($("filter").value === "all"
-      ? "All cards reviewed. Untick “Pending only” to revisit, or export."
-      : "No cards match. Change “Show” or untick “Pending only”.", "ok");
+    const done = $("status").value === "pending" && !state.cards.some((c) => c.status === "pending");
+    message(done
+      ? "No pending cards left. Pick “Skipped” or “Reviewed” under Status to revisit, or export."
+      : "No cards match. Change Status or Show, or turn off “Fish ≥ 40 px”.", "ok");
     return;
   }
   state.index = Math.max(0, Math.min(index, list.length - 1));
@@ -125,14 +135,14 @@ async function show(index) {
   const d = await api(`/api/fish/${card.id}`);
   state.detail = d;
   state.selected = null;
-  state.otherPending = false;
 
   $("card-pos").textContent = `Card ${state.index + 1} of ${list.length}  ·  #${d.id}`;
   $("best-crop").src = d.best ? `/crop/${d.best.det_id}` : "";
   showFrame(d.best);
   $("meta").textContent =
     `First seen ${d.clip_in} ${fmtTime(d.time_in)} · last seen ${d.clip_out} ${fmtTime(d.time_out)} · ` +
-    `${d.n_detections} detections in ${d.tracklets.length} track${d.tracklets.length === 1 ? "" : "s"}`;
+    `${d.n_detections} detections in ${d.tracklets.length} track${d.tracklets.length === 1 ? "" : "s"} · ` +
+    `${Math.round(card.max_px)} px across at its largest`;
 
   // Status: only the user's own recorded answer is ever highlighted.
   const badge = $("status-badge");
@@ -209,7 +219,7 @@ function renderFilmstrip(d) {
   $("split").disabled = true;
 }
 
-// Show one sighting of the card (click it, or [ and ]); splitting starts there.
+// Show one sighting of the card (click it, or ↑ and ↓); splitting starts there.
 function selectSighting(i) {
   const d = state.detail;
   if (!d || !d.filmstrip.length) return;
@@ -236,6 +246,12 @@ function optionalFields() {
 async function record(status, species = null) {
   const d = state.detail;
   if (!d) return;
+  // The template's catch-all ("other …") is only useful with the fish's name in the comment.
+  if (species && species === state.other && !$("f-comment").value.trim()) {
+    message(`Type the fish's name in Comment, then record “${species}” again.`, "error");
+    $("f-comment").focus();
+    return;
+  }
   try {
     await api(`/api/fish/${d.id}/label`, { status, species, ...optionalFields() });
   } catch (e) {
@@ -247,7 +263,7 @@ async function record(status, species = null) {
   card.species = species;
   updateFilterCounts();
   await loadSummary();
-  // Advance: with "Pending only" the reviewed card drops out, so the same index is next.
+  // Advance: a card that no longer matches Status (e.g. "Pending") drops out, so the same index is next.
   const list = visibleCards();
   const stays = list.some((c) => c.id === d.id);
   await show(stays ? state.index + 1 : state.index);
@@ -269,7 +285,7 @@ async function split() {
   const d = state.detail, sel = state.selected;
   if (!d) return;
   if (!sel || state.selectedIndex <= 0) {
-    message("Pick the sighting where the other fish starts (click it, or use [ and ]), then press X.", "error");
+    message("Pick the sighting where the other fish starts (click it, or use ↑ and ↓), then press X.", "error");
     return;
   }
   if (!confirm(`Split card #${d.id}: sightings from ${fmtTime(sel.local_t)} onward become a new card?`)) return;
@@ -308,7 +324,7 @@ async function multipleFish() {
   const d = state.detail;
   if (!d) return;
   if (d.tracklets.length < 2) {
-    message("This card is one tracked stretch: pick the sighting where the other fish starts ([ and ]) and press X.", "error");
+    message("This card is one tracked stretch: pick the sighting where the other fish starts (↑ and ↓) and press X.", "error");
     return;
   }
   if (!confirm(`Card #${d.id} shows more than one fish: break it into its ${d.tracklets.length} tracked pieces, each its own card?`)) return;
@@ -322,27 +338,6 @@ async function multipleFish() {
   } catch (e) {
     message(e.message, "error");
   }
-}
-
-// A fish on neither list: record the template's "other" entry with its name as the comment.
-function otherFish() {
-  if (!state.other) {
-    message("The template has no “other” species: use Unknown fish (U) and write the name in the comment.", "error");
-    return;
-  }
-  state.otherPending = true;
-  $("f-comment").focus();
-  message(`Type the fish's name, then Enter to record it as “${state.other}”. Esc cancels.`);
-}
-
-function recordOther() {
-  if (!$("f-comment").value.trim()) {
-    message("Type the fish's name first.", "error");
-    return;
-  }
-  state.otherPending = false;
-  $("f-comment").blur();
-  record("species", state.other);
 }
 
 async function exportExcel() {
@@ -360,12 +355,7 @@ document.addEventListener("keydown", (e) => {
   const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName);
   if (typing) {
     if (e.key === "Enter" && document.activeElement.id === "species-input") recordTyped();
-    if (e.key === "Enter" && document.activeElement.id === "f-comment" && state.otherPending) recordOther();
-    if (e.key === "Escape") {
-      if (state.otherPending) message("");
-      state.otherPending = false;
-      document.activeElement.blur();
-    }
+    if (e.key === "Escape") document.activeElement.blur();
     return;
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -380,15 +370,13 @@ document.addEventListener("keydown", (e) => {
     record("skipped");
   } else if (e.key === "m" || e.key === "M") {
     multipleFish();
-  } else if (e.key === "o" || e.key === "O") {
-    otherFish();
   } else if (e.key === "x" || e.key === "X") {
     split();
   } else if (e.key === "p" || e.key === "P") {
     mergePrev();
-  } else if (e.key === "[") {
+  } else if (e.key === "ArrowUp") {
     selectSighting(state.selectedIndex < 0 ? 0 : state.selectedIndex - 1);
-  } else if (e.key === "]") {
+  } else if (e.key === "ArrowDown") {
     selectSighting(state.selectedIndex < 0 ? 1 : state.selectedIndex + 1);
   } else if (e.key === "ArrowRight") {
     show(state.index + 1);
@@ -405,17 +393,18 @@ document.addEventListener("keydown", (e) => {
 
 $("species-save").onclick = recordTyped;
 document.querySelectorAll(".other-buttons button[data-status]").forEach((b) => (b.onclick = () => record(b.dataset.status)));
-document.querySelector('.other-buttons [data-action="other"]').onclick = otherFish;
 document.querySelector('.other-buttons [data-action="multiple"]').onclick = multipleFish;
 $("prev").onclick = () => show(state.index - 1);
 $("next").onclick = () => show(state.index + 1);
 $("split").onclick = split;
 $("merge-prev").onclick = mergePrev;
 $("export").onclick = exportExcel;
-$("pending-only").onchange = () => {
-  updateFilterCounts();
-  show(0);
-};
-$("filter").onchange = () => show(0);
+for (const id of ["status", "filter", "min-size"]) {
+  $(id).onchange = (e) => {
+    e.target.blur();  // so the review keys work straight away
+    updateFilterCounts();
+    show(0);
+  };
+}
 
 init().catch((e) => message(e.message, "error"));

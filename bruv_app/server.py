@@ -85,6 +85,7 @@ def create_app(project_root: Path) -> FastAPI:
     def list_fish():
         with lock:
             timeline = load_timeline(project)
+            sizes = project.fish_sizes()
             out = []
             for f in project.all_fish():
                 clip, local = timeline.locate(f["start_t"])
@@ -100,6 +101,7 @@ def create_app(project_root: Path) -> FastAPI:
                         "species": f["species"],
                         "top": guesses[0][0] if guesses else None,
                         "guesses": [g[0] for g in guesses[:3]],
+                        "max_px": round(sizes.get(f["id"], 0.0), 1),
                     }
                 )
             return out

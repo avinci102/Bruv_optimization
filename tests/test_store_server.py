@@ -125,6 +125,13 @@ def test_api_card_list_has_guesses_and_multiple_fish_works(client, project):
     assert client.post(f"/api/fish/{single['id']}/unmerge", json={}).status_code == 400
 
 
+def test_api_card_list_has_each_fish_at_its_largest(client, project):
+    for card in client.get("/api/fish").json():
+        dets = project.fish_detections(card["id"])
+        largest = max(max((d["x2"] - d["x1"]) * d["width"], (d["y2"] - d["y1"]) * d["height"]) for d in dets)
+        assert card["max_px"] == round(largest, 1) > 0  # for the "fish ≥ 40 px" filter
+
+
 def test_api_split_and_merge(client, project):
     f = multi_tracklet_fish(project)
     detail = client.get(f"/api/fish/{f['id']}").json()

@@ -117,27 +117,33 @@ the audio track.
 ## Review keys
 
 `1` `2` `3` pick a model guess · `/` search species, `Enter` records it · `U` unknown fish ·
-`O` other fish · `N` not a fish · `S` skip · `←` `→` move between cards. Nothing is
-pre-selected.
+`N` not a fish · `S` skip · `←` `→` move between cards. Nothing is pre-selected.
 
-- **Other fish (`O`)** is for a fish on neither list. Type its name in the comment and
-  press `Enter`. It's recorded as the template's "other …" species, with the name in the
-  comment.
+- **A fish on neither list:** type its name in Comment, then pick the template's
+  "other …" species in the search box. The page won't record that entry without a name.
+  All such fish share one row in the `MaxN` tab, so for a fish you see often, add its
+  name to the extra list instead.
 - **When a card is wrong:**
   - `M` (multiple fish): the card mixes different fish. It breaks into its tracked
     pieces, each one a new card to review.
   - `X` (split): one tracked stretch swaps fish. Pick the sighting where the other fish
-    starts (click it, or use `[` `]`) and press `X`. That sighting and the later ones
+    starts (click it, or use `↑` `↓`) and press `X`. That sighting and the later ones
     become a new card.
   - `P` (same fish as the previous card): folds this card into the previous one, which
     then needs reviewing again.
 
   Each fix is logged, and the export lists them on a `corrections` sheet. They show where
   tracking goes wrong, for tuning it and as training data.
-- **Template species first.** The **Show** menu narrows the cards to those where one of
-  the template's own species is the model's 1st guess, or in its top 2 or top 3. Each
-  choice shows how many cards it has. Such a card is marked ★ with that species. The
-  model can be wrong either way, so review the other cards too.
+- **Choosing which cards to see.** Three controls sit at the top of the page, and each
+  choice shows how many cards it would give:
+  - **Status:** pending (not reviewed yet), skipped, reviewed, or all. The page opens on
+    pending, or on skipped once nothing is pending.
+  - **Show:** all cards, or only those where one of the template's own species is the
+    model's 1st guess, or in its top 2 or top 3. Such a card is marked ★ with that
+    species. The model can be wrong either way, so review the other cards too.
+  - **Fish ≥ 40 px:** hides the cards whose fish stays small throughout, under 40 px
+    across at its largest in the 960 px wide frames the page shows. On the first real
+    clip those were distant blobs. Each card shows its fish's size at its largest.
 
 ## Development
 
