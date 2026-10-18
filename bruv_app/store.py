@@ -246,6 +246,16 @@ class Project:
             (fish_id,),
         ).fetchall()
 
+    def fish_sizes(self) -> dict[int, float]:
+        """Each card's fish at its largest: the box's longer side, in pixels of the saved frames."""
+        return dict(
+            self.db.execute(
+                """SELECT t.fish_id, MAX(MAX((d.x2-d.x1)*f.width, (d.y2-d.y1)*f.height)) FROM detections d
+                   JOIN tracklets t ON t.id=d.tracklet_id JOIN frames f ON f.id=d.frame_id
+                   WHERE t.fish_id IS NOT NULL GROUP BY t.fish_id"""
+            ).fetchall()
+        )
+
     def set_fish_guesses(self, fish_id: int, guesses: list, best_det: int | None) -> None:
         self.db.execute(
             "UPDATE fish SET guesses=?, best_det=? WHERE id=?",

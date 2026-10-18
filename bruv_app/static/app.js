@@ -58,10 +58,14 @@ function templateRank(labels) {
   return i < 0 ? 0 : i + 1;
 }
 
-function visibleCards(rule = $("filter").value) {
+// A filter is "<rule>" or "<rule>/<px>": the rank a template species needs among the guesses
+// ("all" for any card), then optionally the size the fish must reach at its largest.
+function visibleCards(filter = $("filter").value) {
+  const [rule, minPx = 0] = filter.split("/");
   const pendingOnly = $("pending-only").checked;
   return state.cards.filter((c) => {
     if (pendingOnly && c.status !== "pending" && c.status !== "skipped") return false;
+    if (c.max_px < Number(minPx)) return false;
     if (rule === "all") return true;
     const rank = templateRank(c.guesses);
     return rank > 0 && rank <= Number(rule);
@@ -69,7 +73,11 @@ function visibleCards(rule = $("filter").value) {
 }
 
 function updateFilterCounts() {
-  for (const opt of $("filter").options) opt.textContent = `${FILTER_TEXT[opt.value]} (${visibleCards(opt.value).length})`;
+  for (const opt of $("filter").options) {
+    const [rule, minPx] = opt.value.split("/");
+    const size = minPx ? `, fish ≥ ${minPx} px` : "";
+    opt.textContent = `${FILTER_TEXT[rule]}${size} (${visibleCards(opt.value).length})`;
+  }
 }
 
 async function loadSummary() {
@@ -132,7 +140,8 @@ async function show(index) {
   showFrame(d.best);
   $("meta").textContent =
     `First seen ${d.clip_in} ${fmtTime(d.time_in)} · last seen ${d.clip_out} ${fmtTime(d.time_out)} · ` +
-    `${d.n_detections} detections in ${d.tracklets.length} track${d.tracklets.length === 1 ? "" : "s"}`;
+    `${d.n_detections} detections in ${d.tracklets.length} track${d.tracklets.length === 1 ? "" : "s"} · ` +
+    `${Math.round(card.max_px)} px across at its largest`;
 
   // Status: only the user's own recorded answer is ever highlighted.
   const badge = $("status-badge");

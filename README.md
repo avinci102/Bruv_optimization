@@ -139,6 +139,11 @@ pre-selected.
   choice shows how many cards it has. Such a card is marked ★ with that species. The
   model can be wrong either way, so review the other cards too.
 
+  The menu's second group, *fish at least 40 px across*, also hides the cards whose fish
+  stays small throughout: under 40 px across at its largest, in the 960 px wide frames
+  the page shows. On the first real clip those were distant blobs. Each card shows its
+  fish's size at its largest.
+
 ## Development
 
 ```bash

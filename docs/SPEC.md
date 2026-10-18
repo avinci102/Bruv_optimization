@@ -543,10 +543,15 @@ model's probability doesn't:
 | Largest sighting ≥ 40 px | 10 | 21 | 24 |
 | Template guess p ≥ 0.3 | 9 | 10 | 10 |
 
-- At 40 px all 16 distant fish drop out, plus one other small card. Below about this
-  size, people can't identify a fish either (§9).
+- Sizes are the box's longer side in the 960 px wide frames the review page saves. 40 px
+  there is about 53 px in the detector's 1280 px frames. That's a little stricter than the
+  size below which nobody can identify a fish (40 px at 1280 px, §9).
+- At 40 px all 16 distant fish drop out, plus one other small card.
 - The distant fish score 0.12–0.33, in the same range as the other 11 cards (0.14–0.70).
   A cut at 0.3 still keeps 4 of them, and drops 6 of the others.
+- **Added:** the Show menu has a second group with the size rule (all cards and the
+  three ★ choices, each limited to fish ≥ 40 px), and each card shows its fish's size at
+  its largest.
 
 **More names.** Vinci suggested 26 more names:
 

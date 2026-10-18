@@ -14,12 +14,20 @@
     <div class="progress" title="Cards reviewed"><div id="bar"></div></div>
     <span id="progress-text">0 of 0 reviewed</span>
     <label class="toggle"><input type="checkbox" id="pending-only" checked> Pending only</label>
-    <label class="toggle" title="Only cards where one of the template's species is among the model's guesses">Show
+    <label class="toggle" title="★: one of the template's species is among the model's guesses. ≥ 40 px: the fish reaches 40 px across at its largest, in the frames shown here.">Show
       <select id="filter">
-        <option value="all">all cards</option>
-        <option value="1">★ template species 1st</option>
-        <option value="2">★ template species in top 2</option>
-        <option value="3">★ template species in top 3</option>
+        <optgroup label="Any size">
+          <option value="all">all cards</option>
+          <option value="1">★ template species 1st</option>
+          <option value="2">★ template species in top 2</option>
+          <option value="3">★ template species in top 3</option>
+        </optgroup>
+        <optgroup label="Fish at least 40 px across">
+          <option value="all/40">all cards</option>
+          <option value="1/40">★ template species 1st</option>
+          <option value="2/40">★ template species in top 2</option>
+          <option value="3/40">★ template species in top 3</option>
+        </optgroup>
       </select>
     </label>
     <button id="export" class="primary">Export to Excel</button>
