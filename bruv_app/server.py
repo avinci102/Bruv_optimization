@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -54,6 +54,13 @@ def create_app(project_root: Path) -> FastAPI:
     app = FastAPI(title="BRUV Fish ID")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+    @app.middleware("http")
+    async def always_current_page(request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"  # after an update, a reload gets it
+        return response
+
     def get_fish(fish_id: int):
         row = project.fish(fish_id)
         if row is None:
@@ -62,7 +69,12 @@ def create_app(project_root: Path) -> FastAPI:
 
     @app.get("/")
     def index():
-        return FileResponse(STATIC_DIR / "index.html")
+        # The script and styles get a new address whenever they change, so a browser never
+        # runs an old copy from its cache after an update.
+        page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        for name in ("app.js", "styles.css"):
+            page = page.replace(f"/static/{name}", f"/static/{name}?v={(STATIC_DIR / name).stat().st_mtime_ns}")
+        return HTMLResponse(page)
 
     @app.get("/api/summary")
     def summary():

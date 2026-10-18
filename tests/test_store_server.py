@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -184,4 +185,9 @@ def test_api_split_and_merge(client, project):
 def test_index_page_served(client):
     res = client.get("/")
     assert res.status_code == 200 and "BRUV Fish ID" in res.text
-    assert client.get("/static/app.js").status_code == 200
+    # The script's address changes with the file, so no browser runs a stale copy, and
+    # browsers check for a newer page on every load.
+    src = re.search(r'src="(/static/app\.js\?v=\d+)"', res.text).group(1)
+    script = client.get(src)
+    assert script.status_code == 200
+    assert res.headers["cache-control"] == script.headers["cache-control"] == "no-cache"

@@ -86,14 +86,21 @@ function updateFilterCounts() {
 
 async function loadSummary() {
   state.summary = await api("/api/summary");
-  const s = state.summary;
-  $("project").textContent = s.project;
-  $("progress-text").textContent = `${s.reviewed} of ${s.total} reviewed`;
-  $("bar").style.width = s.total ? `${(100 * s.reviewed) / s.total}%` : "0";
+  $("project").textContent = state.summary.project;
+  showProgress();
 }
 
 async function loadCards() {
   state.cards = await api("/api/fish");
+  showProgress();
+}
+
+// Tiny fish are optional, so they count towards progress only once reviewed or skipped.
+function showProgress() {
+  const counted = state.cards.filter((c) => c.max_px >= state.tinyPx || c.status !== "pending");
+  const done = counted.filter((c) => c.status !== "pending" && c.status !== "skipped").length;
+  $("progress-text").textContent = `${done} of ${counted.length} reviewed`;
+  $("bar").style.width = counted.length ? `${(100 * done) / counted.length}%` : "0";
 }
 
 async function init() {
@@ -102,6 +109,7 @@ async function init() {
   state.template = new Set(dd.species || []);
   state.other = (dd.species || []).find((s) => s.trim().toLowerCase().startsWith("other")) || null;
   state.tinyPx = state.summary.tiny_fish_px ?? state.tinyPx;
+  showProgress();
   $("tiny-toggle").title =
     `Tiny fish never reach ${state.tinyPx} px across, too small to identify. They're kept off ` +
     "other cards and hidden; tick to review them. Untouched, they stay out of the export.";
