@@ -3,7 +3,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from bruv_app import demo
+from bruv_app import demo, server
 from bruv_app.pipeline import update_extra_species
 from bruv_app.server import create_app
 
@@ -56,6 +56,28 @@ def test_multiple_fish_breaks_a_card_into_its_tracked_pieces(project):
     single = next(f for f in project.all_fish() if len(project.fish_tracklets(f["id"])) == 1)
     with pytest.raises(ValueError):
         project.unmerge_fish(single["id"])
+
+
+def test_ticked_sightings_move_to_a_new_card(project):
+    f = multi_tracklet_fish(project)
+    project.label_fish(f["id"], "species", species=demo.RED)
+    dets = project.fish_detections(f["id"])
+    pieces = {t: [d["id"] for d in dets if d["tracklet_id"] == t] for t in project.fish_tracklets(f["id"])}
+    cut = next(t for t, ids in pieces.items() if len(ids) >= 2)
+    whole = next(t for t in pieces if t != cut)
+    ticked = pieces[whole] + pieces[cut][-1:]  # one whole tracked piece, and part of another
+    new_id = project.move_to_new_fish(f["id"], ticked)
+    assert sorted(d["id"] for d in project.fish_detections(new_id)) == sorted(ticked)
+    assert len(project.fish_tracklets(new_id)) == 2  # the part became a piece of its own
+    assert len(project.fish_detections(f["id"])) == len(dets) - len(ticked)
+    assert project.fish(f["id"])["status"] == "species"  # the card keeps its answer
+    assert project.fish(new_id)["status"] == "pending"
+    log = project.corrections()[-1]
+    assert log["action"] == "move_out" and json.loads(log["details"]) == {"detections": sorted(ticked), "new_card": new_id}
+    with pytest.raises(ValueError):
+        project.move_to_new_fish(f["id"], [])  # nothing ticked
+    with pytest.raises(ValueError):
+        project.move_to_new_fish(f["id"], [d["id"] for d in project.fish_detections(f["id"])])  # all of it
 
 
 def test_splits_and_merges_are_logged(project):
@@ -131,6 +153,19 @@ def test_api_card_list_has_each_fish_at_its_largest(client, project):
         dets = project.fish_detections(card["id"])
         largest = max(max((d["x2"] - d["x1"]) * d["width"], (d["y2"] - d["y1"]) * d["height"]) for d in dets)
         assert card["max_px"] == round(largest, 1) > 0  # for the "fish ≥ 40 px" filter
+
+
+def test_api_moves_ticked_sightings(client, project, monkeypatch):
+    f = multi_tracklet_fish(project)
+    all_ids = [d["id"] for d in project.fish_detections(f["id"])]
+    monkeypatch.setattr(server, "FILMSTRIP_MAX", 2)  # a long card shows every n-th sighting
+    strip = client.get(f"/api/fish/{f['id']}").json()["filmstrip"]
+    assert [i for item in strip for i in item["covers"]] == all_ids  # each stands for its stretch
+    res = client.post(f"/api/fish/{f['id']}/move", json={"det_ids": strip[-1]["covers"]})
+    assert res.status_code == 200
+    assert [d["id"] for d in project.fish_detections(res.json()["new_id"])] == strip[-1]["covers"]
+    assert json.loads(project.fish(res.json()["new_id"])["guesses"])  # recomputed
+    assert client.post(f"/api/fish/{f['id']}/move", json={"det_ids": []}).status_code == 400
 
 
 def test_api_split_and_merge(client, project):

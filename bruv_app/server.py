@@ -39,6 +39,10 @@ class MergeIn(BaseModel):
     other_id: int
 
 
+class MoveIn(BaseModel):
+    det_ids: list[int]
+
+
 def _box(d) -> dict:
     return {"x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"], "score": round(d["score"], 3)}
 
@@ -116,7 +120,8 @@ def create_app(project_root: Path) -> FastAPI:
             best = next((d for d in dets if d["id"] == f["best_det"]), dets[0] if dets else None)
             step = max(1, -(-len(dets) // FILMSTRIP_MAX))
             strip = []
-            for d in dets[::step]:
+            for i in range(0, len(dets), step):
+                d = dets[i]
                 clip, local = timeline.locate(d["t"])
                 strip.append(
                     {
@@ -127,6 +132,9 @@ def create_app(project_root: Path) -> FastAPI:
                         "local_t": local,
                         "tracklet": d["tracklet_id"],
                         "box": _box(d),
+                        # A long card shows every n-th sighting: this one stands for those
+                        # up to the next, so ticking it moves them all.
+                        "covers": [x["id"] for x in dets[i : i + step]],
                     }
                 )
             clip_in, t_in = timeline.locate(f["start_t"])
@@ -180,6 +188,20 @@ def create_app(project_root: Path) -> FastAPI:
             get_fish(fish_id)
             try:
                 new_id = project.split_fish(fish_id, body.from_t)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            refresh_fish_guesses(project, fish_id, settings)
+            refresh_fish_guesses(project, new_id, settings)
+            project.commit()
+            return {"ok": True, "new_id": new_id}
+
+    @app.post("/api/fish/{fish_id}/move")
+    def move(fish_id: int, body: MoveIn):
+        """Ticked sightings go to a new card (e.g. the other fish, after two fish crossed)."""
+        with lock:
+            get_fish(fish_id)
+            try:
+                new_id = project.move_to_new_fish(fish_id, body.det_ids)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             refresh_fish_guesses(project, fish_id, settings)

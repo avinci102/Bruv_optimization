@@ -10,6 +10,7 @@
   --ok: #1f8a4c;
   --warn: #b26a00;
   --selected: #ffd60a;
+  --tick: #ff8a00;
 }
 
 * { box-sizing: border-box; }
@@ -111,7 +112,23 @@ figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
   overflow-x: auto;
   padding: 8px 2px;
 }
-.filmstrip figure { flex: none; text-align: center; cursor: pointer; }
+.filmstrip figure { flex: none; text-align: center; cursor: pointer; position: relative; }
+.filmstrip .tick {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 20px;
+  height: 20px;
+  border: 2px solid #fff;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, .45);
+  color: #fff;
+  font-size: 13px;
+  line-height: 16px;
+}
+.filmstrip figure.ticked .tick { background: var(--tick); border-color: var(--tick); }
+.filmstrip figure.ticked .tick::after { content: "✓"; }
+.filmstrip figure.ticked img { border-color: var(--tick); }
 .filmstrip img {
   display: block;
   width: 92px;

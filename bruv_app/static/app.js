@@ -3,7 +3,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   summary: null, cards: [], index: 0, detail: null, selected: null, selectedIndex: -1,
-  template: new Set(), other: null, tinyPx: 40,
+  template: new Set(), other: null, tinyPx: 40, ticked: new Set(),
 };
 
 const NOT_IN_TEMPLATE = "not in template";
@@ -221,13 +221,24 @@ function renderFilmstrip(d) {
     // Name the clip on the first thumbnail and wherever the chapter changes.
     const clip = item.clip !== lastClip ? `${item.clip} ` : "";
     lastClip = item.clip;
-    fig.innerHTML = `<img loading="lazy" src="/crop/${item.det_id}" alt=""><figcaption>${clip}${fmtTime(item.local_t)}</figcaption>`;
+    fig.innerHTML =
+      `<span class="tick" title="Tick (Space or Ctrl+click). X moves ticked sightings to a new card."></span>` +
+      `<img loading="lazy" src="/crop/${item.det_id}" alt=""><figcaption>${clip}${fmtTime(item.local_t)}</figcaption>`;
     fig.title = `${item.clip} ${fmtTime(item.local_t)} (track ${item.tracklet})`;
-    fig.onclick = () => selectSighting(i);
+    fig.onclick = (e) => {
+      if (e.ctrlKey || e.metaKey) toggleTick(i);
+      else if (e.shiftKey) tickRange(state.selectedIndex < 0 ? i : state.selectedIndex, i);
+      else selectSighting(i);
+    };
+    fig.querySelector(".tick").onclick = (e) => {
+      e.stopPropagation();
+      toggleTick(i);
+    };
     strip.append(fig);
   });
   state.selectedIndex = -1;
-  $("split").disabled = true;
+  state.ticked = new Set();
+  updateSplitButton();
 }
 
 // Show one sighting of the card (click it, or ↑ and ↓); splitting starts there.
@@ -242,7 +253,37 @@ function selectSighting(i) {
   state.selectedIndex = i;
   state.selected = d.filmstrip[i];
   showFrame(state.selected);
-  $("split").disabled = i === 0;
+  updateSplitButton();
+}
+
+// Ticked sightings move to a new card together (e.g. the other fish, after two fish crossed).
+function toggleTick(i) {
+  if (state.ticked.has(i)) state.ticked.delete(i);
+  else state.ticked.add(i);
+  $("filmstrip").querySelectorAll("figure")[i].classList.toggle("ticked", state.ticked.has(i));
+  updateSplitButton();
+}
+
+function tickRange(from, to) {
+  const figs = $("filmstrip").querySelectorAll("figure");
+  for (let i = Math.min(from, to); i <= Math.max(from, to); i++) {
+    state.ticked.add(i);
+    figs[i].classList.add("ticked");
+  }
+  selectSighting(to);
+}
+
+function clearTicks() {
+  state.ticked.clear();
+  $("filmstrip").querySelectorAll("figure.ticked").forEach((f) => f.classList.remove("ticked"));
+  updateSplitButton();
+}
+
+// X moves the ticked sightings if there are any, else splits from the selected sighting on.
+function updateSplitButton() {
+  const n = state.ticked.size;
+  $("split").innerHTML = n ? `Move ${n} ticked to a new card <kbd>X</kbd>` : "Split from selected <kbd>X</kbd>";
+  $("split").disabled = !n && state.selectedIndex <= 0;
 }
 
 function optionalFields() {
@@ -295,6 +336,7 @@ function recordTyped() {
 async function split() {
   const d = state.detail, sel = state.selected;
   if (!d) return;
+  if (state.ticked.size) return moveTicked();
   if (!sel || state.selectedIndex <= 0) {
     message("Pick the sighting where the other fish starts (click it, or use ↑ and ↓), then press X.", "error");
     return;
@@ -307,6 +349,23 @@ async function split() {
     const list = visibleCards();
     await show(Math.max(0, list.findIndex((c) => c.id === d.id)));
     message(`Split off card #${res.new_id}.`, "ok");
+  } catch (e) {
+    message(e.message, "error");
+  }
+}
+
+async function moveTicked() {
+  const d = state.detail;
+  const n = state.ticked.size;
+  const ids = [...state.ticked].flatMap((i) => d.filmstrip[i].covers);
+  if (!confirm(`Move the ${n} ticked sighting${n === 1 ? "" : "s"} of card #${d.id} to a new card?`)) return;
+  try {
+    const res = await api(`/api/fish/${d.id}/move`, { det_ids: ids });
+    await Promise.all([loadCards(), loadSummary()]);
+    updateFilterCounts();
+    const list = visibleCards();
+    await show(Math.max(0, list.findIndex((c) => c.id === d.id)));
+    message(`Moved ${n} sighting${n === 1 ? "" : "s"} to card #${res.new_id}.`, "ok");
   } catch (e) {
     message(e.message, "error");
   }
@@ -389,6 +448,11 @@ document.addEventListener("keydown", (e) => {
     selectSighting(state.selectedIndex < 0 ? 0 : state.selectedIndex - 1);
   } else if (e.key === "ArrowDown") {
     selectSighting(state.selectedIndex < 0 ? 1 : state.selectedIndex + 1);
+  } else if (e.key === " ") {
+    if (state.selectedIndex < 0) selectSighting(0);
+    if (state.selectedIndex >= 0) toggleTick(state.selectedIndex);
+  } else if (e.key === "Escape") {
+    clearTicks();
   } else if (e.key === "ArrowRight") {
     show(state.index + 1);
   } else if (e.key === "ArrowLeft") {
