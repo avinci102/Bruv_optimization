@@ -316,7 +316,12 @@ class Pipeline:
         chosen: dict[int, list] = {}
         todo = []
         for tid in self.project.tracklet_ids():
-            dets = sorted(self.project.tracklet_detections(tid), key=lambda d: d["quality"] or 0.0, reverse=True)
+            dets = self.project.tracklet_detections(tid)
+            # Tiny fish join no other piece, and their blobs can't be identified, so the
+            # species model (the slow step) skips them unless asked to.
+            if not s.guess_tiny_fish and max(box_px(d) for d in dets) < s.tiny_fish_px:
+                continue
+            dets = sorted(dets, key=lambda d: d["quality"] or 0.0, reverse=True)
             chosen[tid] = dets[: s.crops_per_tracklet]
             todo += [d for d in chosen[tid] if not keep or d["embedding"] is None]
         total = sum(len(dets) for dets in chosen.values())
@@ -346,11 +351,15 @@ class Pipeline:
     def merge(self) -> None:
         s = self.settings
         summaries = []
+        alone = []  # pieces the species model skipped (tiny fish): a card each
+        start = {}
         for row in self.project.tracklets():
+            start[row["id"]] = row["start_t"]
             dets = self.project.tracklet_detections(row["id"])
             sizes = [np.sqrt(max(d["x2"] - d["x1"], 0) * max(d["y2"] - d["y1"], 0)) for d in dets]
             emb = np.frombuffer(row["embedding"], np.float32) if row["embedding"] else None
             if emb is None:
+                alone.append([row["id"]])
                 continue
             apps = [np.frombuffer(d["app"], np.float32) for d in dets if d["app"] is not None]
             summaries.append(
@@ -369,6 +378,7 @@ class Pipeline:
             summaries, s.gap_seconds, s.merge_min_similarity, s.merge_max_size_ratio, s.tiny_fish_px,
             s.merge_min_colour,
         )
+        chains = sorted(chains + alone, key=lambda chain: (start[chain[0]], chain[0]))
         for chain in chains:
             self.project.create_fish(chain)
         self.project.commit()

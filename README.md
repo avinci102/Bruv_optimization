@@ -21,7 +21,10 @@ See [`docs/SPEC.md`](docs/SPEC.md) for the decisions, the architecture and what'
 
 The first run installs everything. It can install Python 3.13 for you if it's missing
 (through Python's install manager, `py install 3.13`, when you have it; otherwise
-winget), and it downloads the fish detector and species model, a few GB in all. After
+winget), and it downloads the fish detector and species model, a few GB in all. On a PC
+with an NVIDIA graphics card it installs the GPU version of PyTorch (about 3 GB more),
+which makes processing many times faster; if the card's driver is too old, it says so
+and runs on the CPU. After
 that it processes the video and opens the review page in your browser. Keep the black
 window open while you review. Exports land in a `bruv_project\exports` folder inside your
 footage folder, and the original template is never changed.
@@ -35,13 +38,14 @@ seconds and carries on by itself, up to twice. Your reviews are saved as you mak
 
 **Python:** use 3.12, 3.13 or 3.14. 3.15 is too new: PyTorch has no 3.15 build yet.
 
-**Time and memory on a laptop CPU.** Videos are sampled at 4 frames per second: fish
-move little between frames, which keeps each fish on its own track. On an Intel
-i7-10810U (6 cores, no NVIDIA GPU), a 2-minute clip took about 27 minutes at 4 fps (18
-at 1 fps). Most of it goes to the species model, whose time grows with the number of
-fish tracks. For a 45-minute video, use a PC with an NVIDIA GPU, or expect hours. The
-species model needs about 1.5 GB of free memory. If the window stops with no error
-message, close other programs and run `quickstart.bat` again: it resumes.
+**Time and memory.** Videos are sampled at 4 frames per second: fish move little between
+frames, which keeps each fish on its own track. On a laptop CPU (Intel i7-10810U, no
+NVIDIA GPU), detection takes about 1.2 s per frame and the species model 1.1 s per fish
+crop. Tiny fish skip the species model (on the first clip that was over half its work),
+so a 2-minute clip takes about 16 minutes, and a 45-minute video about 5–6 hours. A PC
+with a recent NVIDIA card should take well under an hour. The species model needs about
+1.5 GB of free memory. If the window stops with no error message, close other programs
+and run `quickstart.bat` again: it resumes.
 
 ## Fish that aren't on your template's list
 

@@ -654,6 +654,29 @@ one tracked stretch; tick and move fixes it in one step. Vinci's project now run
 with these rules; the 1 fps project with the earlier reviews is kept next to it as
 `bruv_project_1fps`.
 
+**Speed-ups for long videos.** Ahead of a full 45-minute run:
+
+- **Tiny fish skip the species model** (`guess_tiny_fish` off). On the first clip at 4 fps
+  they were 363 of the 632 crops it would embed, and their guesses were blobs named after
+  whatever species looked closest. Cards and joins are unchanged (same 236 cards and
+  scores on a re-run); tiny-fish cards just show no guesses.
+- **The setup installs the GPU version of PyTorch** when an NVIDIA card can use it.
+  `bruv_app/gpu.py` asks `nvidia-smi` for the driver and compute capability and picks
+  CUDA 13.0 (RTX 20 series on, driver 580+), CUDA 12.6 (GTX 900 to RTX 40, driver 528+),
+  or the CPU build, with a message when a driver update would help. PyTorch 2.14.1 has
+  Windows builds for Python 3.13 in both, with a matching torchvision. Untested on a GPU
+  so far: the first full run is that test.
+
+Estimate for 45 minutes at 4 fps, scaled from the 2-minute clip (fish activity varies
+along a drop, so ±50%):
+
+| Step | Laptop CPU (measured rates) | NVIDIA GPU PC (typical, not measured) |
+|---|---|---|
+| Detection, 10,800 frames | ~3.5 h | ~10–20 min, mostly decoding |
+| Species model, ~6,000 crops (tiny fish skipped) | ~1.8 h | ~1–2 min |
+| Tracking, joining, guesses | minutes | minutes |
+| Total | ~5–6 h | well under an hour |
+
 **Next**
 
 - Compare with Vinci's manual answer key of the same clip (phase 5).

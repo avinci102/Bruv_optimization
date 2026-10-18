@@ -31,9 +31,16 @@ def test_pipeline_builds_one_card_per_fish_visit(project):
 
 def test_tiny_fish_get_cards_of_their_own(project, tmp_path, synthetic_videos):
     assert len(project.all_fish()) < len(project.tracklet_ids())  # normally, pieces are joined
-    tiny = create_project(tmp_path / "tiny", synthetic_videos, None, demo_settings(tiny_fish_px=1e9))
-    Pipeline(tiny, classifier=demo.DemoClassifier()).run()  # every fish counts as tiny here
-    assert len(tiny.all_fish()) == len(tiny.tracklet_ids())
+    template = demo.make_mock_template(tmp_path / "t.xlsx")
+    embedded = "SELECT COUNT(*) FROM detections WHERE embedding IS NOT NULL"
+    for guess_tiny in (False, True):
+        settings = demo_settings(tiny_fish_px=1e9, guess_tiny_fish=guess_tiny)  # every fish is tiny
+        tiny = create_project(tmp_path / f"tiny{guess_tiny}", synthetic_videos, template, settings)
+        Pipeline(tiny, classifier=demo.DemoClassifier()).run()
+        assert len(tiny.all_fish()) == len(tiny.tracklet_ids())
+        # The species model, the slow step, skips tiny fish unless asked to.
+        assert bool(tiny.db.execute(embedded).fetchone()[0]) == guess_tiny
+        assert all(bool(json.loads(f["guesses"])) == guess_tiny for f in tiny.all_fish())
 
 
 def test_cards_are_pure(project):

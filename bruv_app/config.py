@@ -56,6 +56,9 @@ class Settings:
     # saved review frames). Too small to identify, they join no other piece and the review
     # page hides them until asked.
     tiny_fish_px: float = 40.0
+    # Run the species model on tiny fish too. Off: it's the slow step, and their guesses
+    # were blobs named after whatever species looked closest.
+    guess_tiny_fish: bool = False
 
     # Classification. "bioclip" = BioCLIP 2 zero-shot, "histogram" = no-guess fallback.
     classifier: str = "bioclip"

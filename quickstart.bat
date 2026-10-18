@@ -38,8 +38,11 @@ echo.
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip || goto fail
 pip install -r requirements.txt || goto fail
-rem CPU build of PyTorch. With an NVIDIA GPU, install the CUDA build from pytorch.org instead.
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu || goto fail
+rem PyTorch: the GPU build when an NVIDIA card can use it (bruv_app\gpu.py picks it), else CPU.
+set "TORCH_BUILD=cpu"
+for /f %%B in ('python bruv_app\gpu.py') do set "TORCH_BUILD=%%B"
+if not "%TORCH_BUILD%"=="cpu" echo NVIDIA graphics card found: installing PyTorch for it (%TORCH_BUILD%, about 3 GB).
+pip install torch torchvision --index-url https://download.pytorch.org/whl/%TORCH_BUILD% || goto fail
 pip install -r requirements-ml.txt || goto fail
 pip install -e . || goto fail
 echo ok> ".venv\bruv_setup_done"
