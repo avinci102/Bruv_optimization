@@ -26,7 +26,7 @@ from .classify import (
 from .config import Settings
 from .continuity import TrackletSummary, merge_tracklets
 from .detect import Detector, make_detector
-from .store import Project
+from .store import Project, box_px
 from .template import read_template
 from .track import Tracker
 from .video import Chapter, Timeline, build_timeline, sample_frames
@@ -338,9 +338,12 @@ class Pipeline:
                     emb,
                     float(np.median(sizes[:3])),
                     float(np.median(sizes[-3:])),
+                    max(box_px(d) for d in dets),
                 )
             )
-        chains = merge_tracklets(summaries, s.gap_seconds, s.merge_min_similarity, s.merge_max_size_ratio)
+        chains = merge_tracklets(
+            summaries, s.gap_seconds, s.merge_min_similarity, s.merge_max_size_ratio, s.tiny_fish_px
+        )
         for chain in chains:
             self.project.create_fish(chain)
         self.project.commit()

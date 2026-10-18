@@ -19,6 +19,7 @@ class TrackletSummary:
     embedding: np.ndarray  # L2-normalised
     start_size: float  # sqrt(box area) near the start, as a fraction of the frame
     end_size: float
+    max_px: float = float("inf")  # the fish at its largest: the box's longer side, in pixels
 
 
 def merge_tracklets(
@@ -26,12 +27,15 @@ def merge_tracklets(
     gap_seconds: float = 10.0,
     min_similarity: float = 0.8,
     max_size_ratio: float = 3.0,
+    tiny_px: float = 0.0,
 ) -> list[list[int]]:
     """Greedy best-similarity merge into time-ordered chains of tracklet ids.
 
     B may follow A when B starts after A ends (never overlapping), within `gap_seconds`,
     with similar appearance and a plausible size change. Each tracklet gets at most one
     predecessor and one successor, so a chain can never contain two fish on screen at once.
+    Tiny fish (under `tiny_px` at their largest) join nothing: blurry blobs look alike, so
+    they chained unrelated fish together.
     """
     by_id = {t.id: t for t in tracklets}
     candidates: list[tuple[float, int, int]] = []
@@ -39,6 +43,8 @@ def merge_tracklets(
         for b in tracklets:
             gap = b.start_t - a.end_t
             if a.id == b.id or gap <= 0 or gap > gap_seconds:
+                continue
+            if min(a.max_px, b.max_px) < tiny_px:
                 continue
             ratio = max(a.end_size, b.start_size) / max(min(a.end_size, b.start_size), 1e-9)
             if ratio > max_size_ratio:

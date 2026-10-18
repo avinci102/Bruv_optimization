@@ -29,6 +29,13 @@ def test_pipeline_builds_one_card_per_fish_visit(project):
         assert f["status"] == "pending"  # nothing is pre-selected
 
 
+def test_tiny_fish_get_cards_of_their_own(project, tmp_path, synthetic_videos):
+    assert len(project.all_fish()) < len(project.tracklet_ids())  # normally, pieces are joined
+    tiny = create_project(tmp_path / "tiny", synthetic_videos, None, demo_settings(tiny_fish_px=1e9))
+    Pipeline(tiny, classifier=demo.DemoClassifier()).run()  # every fish counts as tiny here
+    assert len(tiny.all_fish()) == len(tiny.tracklet_ids())
+
+
 def test_cards_are_pure(project):
     """No card mixes species (the tracker's appearance gate stops identity swaps)."""
     for f in project.all_fish():

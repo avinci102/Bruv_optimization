@@ -43,6 +43,10 @@ class Settings:
     gap_seconds: float = 10.0
     merge_min_similarity: float = 0.80
     merge_max_size_ratio: float = 3.0
+    # Tiny fish: smaller than this at their largest (the box's longer side, in pixels of the
+    # saved review frames). Too small to identify, they join no other piece and the review
+    # page hides them until asked.
+    tiny_fish_px: float = 40.0
 
     # Classification. "bioclip" = BioCLIP 2 zero-shot, "histogram" = no-guess fallback.
     classifier: str = "bioclip"

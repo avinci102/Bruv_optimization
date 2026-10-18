@@ -58,6 +58,11 @@ def from_blob(b: bytes | None) -> np.ndarray | None:
     return None if b is None else np.frombuffer(b, dtype=np.float32)
 
 
+def box_px(d) -> float:
+    """A detection's size: its box's longer side, in pixels of the saved frame."""
+    return max((d["x2"] - d["x1"]) * d["width"], (d["y2"] - d["y1"]) * d["height"])
+
+
 @dataclass
 class FrameRow:
     id: int

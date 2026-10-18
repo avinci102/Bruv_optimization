@@ -3,12 +3,11 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   summary: null, cards: [], index: 0, detail: null, selected: null, selectedIndex: -1,
-  template: new Set(), other: null,
+  template: new Set(), other: null, tinyPx: 40,
 };
 
 const NOT_IN_TEMPLATE = "not in template";
 const EXTRA_HINT = "Not in the template's species list: exported as its 'other' entry, with this name in the comment.";
-const MIN_PX = 40;  // the "Fish ≥ 40 px" toggle: the fish's size at its largest, in frame pixels
 
 const STATUS_TEXT = {
   pending: "Not reviewed yet",
@@ -58,16 +57,20 @@ function statusGroup(status) {
 }
 
 // The cards the header lets through: Status, Show (the rank a template species needs among
-// the guesses, or "all") and the size toggle.
-function visibleCards(status = $("status").value, rule = $("filter").value) {
-  const minPx = $("min-size").checked ? MIN_PX : 0;
+// the guesses, or "all") and whether tiny fish are shown.
+function visibleCards(status = $("status").value, rule = $("filter").value, showTiny = $("show-tiny").checked) {
   return state.cards.filter((c) => {
     if (status !== "all" && statusGroup(c.status) !== status) return false;
-    if (c.max_px < minPx) return false;
+    if (!showTiny && c.max_px < state.tinyPx) return false;
     if (rule === "all") return true;
     const rank = templateRank(c.guesses);
     return rank > 0 && rank <= Number(rule);
   });
+}
+
+// Tiny-fish cards that Status and Show let through: shown only when ticked.
+function tinyCount() {
+  return visibleCards(undefined, undefined, true).length - visibleCards(undefined, undefined, false).length;
 }
 
 // Each choice shows how many cards it would give, with the other controls as they are.
@@ -78,6 +81,7 @@ function updateFilterCounts() {
   };
   for (const opt of $("status").options) count(opt, visibleCards(opt.value, undefined).length);
   for (const opt of $("filter").options) count(opt, visibleCards(undefined, opt.value).length);
+  $("tiny-label").textContent = `Show tiny fish (${tinyCount()})`;
 }
 
 async function loadSummary() {
@@ -97,6 +101,10 @@ async function init() {
   const dd = state.summary.dropdowns;
   state.template = new Set(dd.species || []);
   state.other = (dd.species || []).find((s) => s.trim().toLowerCase().startsWith("other")) || null;
+  state.tinyPx = state.summary.tiny_fish_px ?? state.tinyPx;
+  $("tiny-toggle").title =
+    `Tiny fish never reach ${state.tinyPx} px across, too small to identify. They're kept off ` +
+    "other cards and hidden; tick to review them. Untouched, they stay out of the export.";
   // Open on the pending cards, or the skipped ones once nothing is pending.
   for (const status of ["pending", "skipped", "all"]) {
     $("status").value = status;
@@ -124,10 +132,13 @@ async function init() {
 async function show(index) {
   const list = visibleCards();
   if (!list.length) {
-    const done = $("status").value === "pending" && !state.cards.some((c) => c.status === "pending");
-    message(done
-      ? "No pending cards left. Pick “Skipped” or “Reviewed” under Status to revisit, or export."
-      : "No cards match. Change Status or Show, or turn off “Fish ≥ 40 px”.", "ok");
+    const tiny = $("show-tiny").checked ? 0 : tinyCount();
+    const allPending = $("status").value === "pending" && $("filter").value === "all";
+    message(tiny
+      ? `Only tiny fish left here (${tiny}). Tick “Show tiny fish” to review them, or export.`
+      : allPending
+        ? "No pending cards left. Pick “Skipped” or “Reviewed” under Status to revisit, or export."
+        : "No cards match. Change Status or Show.", "ok");
     return;
   }
   state.index = Math.max(0, Math.min(index, list.length - 1));
@@ -142,7 +153,7 @@ async function show(index) {
   $("meta").textContent =
     `First seen ${d.clip_in} ${fmtTime(d.time_in)} · last seen ${d.clip_out} ${fmtTime(d.time_out)} · ` +
     `${d.n_detections} detections in ${d.tracklets.length} track${d.tracklets.length === 1 ? "" : "s"} · ` +
-    `${Math.round(card.max_px)} px across at its largest`;
+    `${Math.round(card.max_px)} px across at its largest${card.max_px < state.tinyPx ? " (tiny fish)" : ""}`;
 
   // Status: only the user's own recorded answer is ever highlighted.
   const badge = $("status-badge");
@@ -399,7 +410,7 @@ $("next").onclick = () => show(state.index + 1);
 $("split").onclick = split;
 $("merge-prev").onclick = mergePrev;
 $("export").onclick = exportExcel;
-for (const id of ["status", "filter", "min-size"]) {
+for (const id of ["status", "filter", "show-tiny"]) {
   $(id).onchange = (e) => {
     e.target.blur();  // so the review keys work straight away
     updateFilterCounts();

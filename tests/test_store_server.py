@@ -84,6 +84,7 @@ def test_api_review_flow(client, project):
     summary = client.get("/api/summary").json()
     assert summary["total"] == len(project.all_fish()) and summary["reviewed"] == 0
     assert summary["dropdowns"]["species"][0] == demo.RED
+    assert summary["tiny_fish_px"] == 40  # the review page hides fish smaller than this
 
     cards = client.get("/api/fish").json()
     detail = client.get(f"/api/fish/{cards[0]['id']}").json()

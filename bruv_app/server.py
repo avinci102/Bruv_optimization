@@ -76,6 +76,7 @@ def create_app(project_root: Path) -> FastAPI:
                 "dependent": project.get_meta("dependent") or {},
                 "extra_species": extra_species(project),
                 "classifier": project.get_meta("classifier"),
+                "tiny_fish_px": settings.tiny_fish_px,
                 "template": project.get_meta("template"),
                 "last_export": project.get_meta("last_export"),
                 "frames": project.frame_count(),
