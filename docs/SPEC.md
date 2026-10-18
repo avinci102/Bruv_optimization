@@ -326,9 +326,9 @@ building the MVP:
 1. Scaffold — **done.** Package, config, mock template, synthetic video, pytest.
 2. Pipeline — **done.** Resumable detection, tracker, continuity, BioCLIP 2 with a
    histogram fallback. RF-DETR and BioCLIP 2 now run with real weights on Windows (§9).
-3. Review UI — **done.** Cards, keys for the guesses, unknown, other, not a fish,
-   multiple fish, skip, split and merge (with a log of corrections), searchable species,
-   optional fields, a template-species filter, progress (§11).
+3. Review UI — **done.** Cards, keys for the guesses, unknown, not a fish, multiple
+   fish, skip, split and merge (with a log of corrections), searchable species, optional
+   fields, status, template-species and size filters, progress (§11).
 4. Export — **done.** Record rows by header name, MaxN tab, app_details tab with model vs
    user agreement, relative size and the saved best crop.
 5. Validation on real footage — **started.** First real run done (§9); the comparison
@@ -520,10 +520,12 @@ The times leave out the species-name embeddings, which the runs shared.
 **Review keys** (see the README):
 
 - `M`, multiple fish: the card goes back to its tracked pieces, each a new pending card.
-- `[` `]` select a sighting, then `X` splits there. `P` folds the card into the previous
-  one.
-- `O`, other fish: records the template's "other …" entry, with the name typed into the
-  comment.
+- `↑` `↓` select a sighting, then `X` splits there. `P` folds the card into the previous
+  one. (`[` `]` came first; the arrows are easier to find.)
+- An `O` key for the template's "other …" entry was tried and dropped. Fish on neither
+  list are rare, and the search box covers them. The page refuses that entry without a
+  name in the comment.
+- "Pending only" became a **Status** menu: pending, skipped, reviewed or all.
 - Every split, merge and "multiple fish" is logged in a `corrections` table (time,
   action, card, details as JSON) and exported as a `corrections` sheet. It shows where
   tracking and stitching fail, for tuning them and as training data.
@@ -549,9 +551,9 @@ model's probability doesn't:
 - At 40 px all 16 distant fish drop out, plus one other small card.
 - The distant fish score 0.12–0.33, in the same range as the other 11 cards (0.14–0.70).
   A cut at 0.3 still keeps 4 of them, and drops 6 of the others.
-- **Added:** the Show menu has a second group with the size rule (all cards and the
-  three ★ choices, each limited to fish ≥ 40 px), and each card shows its fish's size at
-  its largest.
+- **Added:** a "Fish ≥ 40 px" toggle next to the Show menu, and each card shows its
+  fish's size at its largest. (A second group of menu choices came first; the toggle is
+  cleaner.)
 
 **More names.** Vinci suggested 26 more names:
 
