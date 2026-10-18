@@ -15,11 +15,17 @@ build/
 *.MOV
 *.avi
 *.pt
+*.pth
+*.safetensors
 *.onnx
 *.bin
 models/
 projects/
 data/
+bruv_project/
+# The owner's template stays out of git unless they say otherwise.
+templates/*.xlsx
+templates/*.xlsm
 
 # OS
 .DS_Store

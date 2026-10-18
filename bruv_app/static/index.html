@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BRUV Fish ID</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>BRUV Fish ID</h1>
+    <span id="project" class="muted"></span>
+    <div class="progress" title="Cards reviewed"><div id="bar"></div></div>
+    <span id="progress-text">0 of 0 reviewed</span>
+    <label class="toggle"><input type="checkbox" id="pending-only" checked> Pending only</label>
+    <label class="toggle" title="Only cards where one of the template's species is among the model's guesses">Show
+      <select id="filter">
+        <option value="all">all cards</option>
+        <option value="1">★ template species 1st</option>
+        <option value="2">★ template species in top 2</option>
+        <option value="3">★ template species in top 3</option>
+      </select>
+    </label>
+    <button id="export" class="primary">Export to Excel</button>
+  </header>
+
+  <main>
+    <section class="viewer">
+      <div class="images">
+        <figure class="crop-wrap">
+          <img id="best-crop" alt="Best crop of this fish">
+          <figcaption>Best view</figcaption>
+        </figure>
+        <figure class="frame-fig">
+          <div class="frame-wrap">
+            <img id="frame" alt="Full frame">
+            <div id="box"></div>
+          </div>
+          <figcaption id="frame-caption">Full frame</figcaption>
+        </figure>
+      </div>
+      <div id="meta" class="meta"></div>
+      <div class="strip-head">
+        <span>Sightings <span id="strip-count" class="muted"></span></span>
+        <span>
+          <button id="split" disabled title="Select the sighting where the other fish starts (click it, or use [ and ])">Split from selected <kbd>X</kbd></button>
+          <button id="merge-prev" title="Fold this card into the previous one (same fish)">Same fish as previous card <kbd>P</kbd></button>
+        </span>
+      </div>
+      <div id="filmstrip" class="filmstrip"></div>
+    </section>
+
+    <aside class="panel">
+      <div class="card-nav">
+        <button id="prev" title="Previous card (←)">←</button>
+        <span id="card-pos">–</span>
+        <button id="next" title="Next card (→)">→</button>
+      </div>
+      <div id="status-badge" class="badge"></div>
+      <div id="template-hint" class="template-hint" hidden></div>
+
+      <h2>Model guesses</h2>
+      <div id="guesses" class="guesses"></div>
+      <p class="hint">Nothing is pre-selected. Your click is the recorded answer.</p>
+
+      <h2>Species</h2>
+      <div class="species-row">
+        <input id="species-input" list="species-list" placeholder="Search species…  ( / )" autocomplete="off">
+        <datalist id="species-list"></datalist>
+        <button id="species-save" class="primary">Record</button>
+      </div>
+
+      <div class="other-buttons">
+        <button data-status="unknown" title="A fish you can't identify">Unknown fish <kbd>U</kbd></button>
+        <button data-action="other" title="A fish on neither list: records the template's 'other' entry, then type its name">Other fish <kbd>O</kbd></button>
+        <button data-status="not_fish">Not a fish <kbd>N</kbd></button>
+        <button data-action="multiple" title="The card shows more than one fish: break it into its tracked pieces, each its own card">Multiple fish <kbd>M</kbd></button>
+        <button data-status="skipped">Skip <kbd>S</kbd></button>
+      </div>
+
+      <details open>
+        <summary>Optional fields</summary>
+        <label id="type-field">Type <select id="f-type"></select></label>
+        <label>Sex <select id="f-sex"></select></label>
+        <label>Behavior <select id="f-behavior"></select></label>
+        <label>Comment <input id="f-comment" type="text"></label>
+      </details>
+
+      <div id="message" role="status"></div>
+      <p class="hint keys">Keys: <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> guesses · <kbd>/</kbd> search, <kbd>Enter</kbd> record ·
+        <kbd>U</kbd> unknown · <kbd>O</kbd> other · <kbd>N</kbd> not a fish · <kbd>M</kbd> multiple fish · <kbd>S</kbd> skip ·
+        <kbd>[</kbd><kbd>]</kbd> pick a sighting, <kbd>X</kbd> split there · <kbd>P</kbd> same as previous card ·
+        <kbd>←</kbd><kbd>→</kbd> cards</p>
+    </aside>
+  </main>
+
+  <div id="empty" class="empty" hidden>
+    <h2>No fish cards yet</h2>
+    <p>Process a video first: <code>python -m bruv_app process ...</code></p>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
