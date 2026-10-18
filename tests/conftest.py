@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +13,9 @@ from bruv_app.config import Settings
 from bruv_app.pipeline import Pipeline, create_project
 from bruv_app.track import iou
 from bruv_app.detect import Detection
+
+# Tests never read or write the real library of confirmed examples (learn.py).
+os.environ["BRUV_LIBRARY"] = str(Path(tempfile.mkdtemp()) / "library.npz")
 
 
 @pytest.fixture(scope="session")

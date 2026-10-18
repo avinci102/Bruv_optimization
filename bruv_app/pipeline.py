@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gc
 import logging
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
@@ -21,11 +22,12 @@ from .classify import (
     histogram_embed,
     l2_normalize,
     make_classifier,
-    zero_shot_topk,
+    softmax,
 )
 from .config import Settings
 from .continuity import TrackletSummary, merge_tracklets
 from .detect import Detector, make_detector
+from .learn import Check, Library, blend, check, library_stamp, vote
 from .store import Project, box_px
 from .template import read_template
 from .track import Tracker
@@ -123,9 +125,25 @@ def refresh_fish_guesses(project: Project, fish_id: int, settings: Settings | No
         emb = l2_normalize(np.mean([np.frombuffer(d["embedding"], np.float32) for d in embedded], axis=0))
         text_emb = np.load(path)
         scale = float(project.get_meta("logit_scale", 100.0))
-        guesses = [[label, round(p, 4)] for label, p in zero_shot_topk(emb, text_emb, labels, scale, settings.top_k)]
+        probs = softmax(scale * (text_emb @ emb))
+        weight = float(project.get_meta("library_weight") or 0.0)
+        if weight:  # the library passed its check for this project (learn.py)
+            library = _library()
+            probs = blend(probs, vote(emb, library.emb, library.label, labels), weight)
+        guesses = [[labels[i], round(float(probs[i]), 4)] for i in np.argsort(-probs)[: settings.top_k]]
     best = (embedded or ranked)[0]["id"]
     project.set_fish_guesses(fish_id, guesses, best)
+
+
+_LIBRARY: dict = {}
+
+
+def _library() -> Library:
+    """The library, read once per change (the review server refreshes guesses often)."""
+    stamp = library_stamp()
+    if _LIBRARY.get("stamp") != stamp:
+        _LIBRARY.update(stamp=stamp, library=Library.load())
+    return _LIBRARY["library"]
 
 
 class Pipeline:
@@ -173,6 +191,8 @@ class Pipeline:
             and self.settings.classifier == "bioclip"
             and self.project.get_meta("classifier") == HistogramClassifier.name
         )
+        if self.project.get_meta("library_stamp") != library_stamp():
+            self.project.mark_stage("classify", False)  # the library changed: refresh the guesses
         if force or fell_back or not cards_done:
             if reviewed and not force:
                 raise RuntimeError("Reviews exist; pass force=True to rebuild cards and lose them.")
@@ -387,15 +407,21 @@ class Pipeline:
         labels = species_labels(self.project)
         text_emb = self._text_embeddings(labels) if labels else None
         path = text_embedding_path(self.project)
+        result = Check()
         if text_emb is not None:
             np.save(path, text_emb)
             self.project.set_meta("guess_labels", labels)
             self.project.set_meta("logit_scale", self.classifier.logit_scale)
+            # Your confirmed examples join the guesses only if they beat the model alone.
+            result = check(_library(), self.classifier.name, labels, text_emb, self.classifier.logit_scale)
         else:
             path.unlink(missing_ok=True)
             self.project.set_meta("guess_labels", [])
             if not labels:
                 log.warning("No species dropdown found in the template; no guesses will be shown.")
+        self.project.set_meta("library_check", asdict(result))
+        self.project.set_meta("library_weight", result.weight)
+        self.project.set_meta("library_stamp", library_stamp())
         self.project.set_meta("classifier", self.classifier.name)
         fish = self.project.all_fish()
         for i, f in enumerate(fish):

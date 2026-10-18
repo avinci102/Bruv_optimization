@@ -107,6 +107,40 @@ def cmd_process(args) -> None:
         Pipeline(project, progress=_progress()).run(force=args.force)
     print(f"Done: {len(project.all_fish())} fish cards. Review with:")
     print(f"  python -m bruv_app review --project \"{root}\"")
+    print_library_check(project)
+
+
+def print_library_check(project) -> None:
+    """Say whether your library of confirmed examples now shapes this project's guesses."""
+    result = project.get_meta("library_check") or {}
+    if not result.get("examples"):
+        return
+    used = "so guesses use it" if result["weight"] else "so guesses don't use it yet"
+    print(f"Your library, guessing {result['examples']} examples from other videos: the species model alone "
+          f"got {result['zero_shot']:.0%}, with the library {result['blended']:.0%}, {used}.")
+
+
+def cmd_learn(args) -> None:
+    from .learn import Library, add_photos, add_project, library_path, remove_source  # noqa: PLC0415
+    from .store import Project  # noqa: PLC0415
+
+    for folder in args.add or []:
+        if not (Path(folder) / "project.db").exists():
+            raise ValueError(f"No project in {folder}")
+        print(f"Added {add_project(Project(Path(folder)))} confirmed cards from {folder}")
+    if args.add_photos:
+        from .classify import make_classifier  # noqa: PLC0415
+
+        settings = Settings()
+        print(f"Added {add_photos(Path(args.add_photos), make_classifier(settings, settings.resolved_device()))} photos")
+    if args.remove:
+        print(f"Removed {remove_source(str(Path(args.remove).resolve()))} examples")
+    library = Library.load()
+    print(f"Library: {len(library.label)} examples ({library_path()})")
+    for source, counts in library.summary().items():
+        print(f"  {source}: " + ", ".join(f"{label} {n}" for label, n in sorted(counts.items())))
+    print("A project's guesses use the library once it beats the species model alone on videos it")
+    print("didn't learn from. Running process on a project refreshes its guesses; reviews stay.")
 
 
 def serve(root: Path, port: int, open_browser: bool) -> None:
@@ -253,6 +287,7 @@ def cmd_quickstart(args) -> None:
     with keep_awake():
         Pipeline(project, progress=_progress()).run()
     print(f"Done: {len(project.all_fish())} fish cards. Exports will be saved in {root / 'exports'}")
+    print_library_check(project)
     if not args.no_review:
         print("Keep this window open while you review; close it when you're finished.")
         serve(root, args.port, not args.no_browser)
@@ -327,6 +362,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", required=True, help="the project to score (e.g. re-run with new rules)")
     p.add_argument("--answers", required=True, help="a copy of the same project with reviewed cards")
     p.set_defaults(func=cmd_score)
+
+    p = sub.add_parser("learn", help="your library of confirmed fish, which can sharpen the guesses")
+    p.add_argument("--add", nargs="+", metavar="PROJECT", help="add a reviewed project's confirmed cards")
+    p.add_argument("--add-photos", metavar="FOLDER", help="add photos sorted into one folder per species")
+    p.add_argument("--remove", metavar="SOURCE", help="take a project or photo folder back out")
+    p.set_defaults(func=cmd_learn)
 
     p = sub.add_parser("quickstart", help="one step: a folder with your video(s) + template → review page")
     p.add_argument("folder", help="folder holding the GoPro .MP4 file(s) and the Excel template")
