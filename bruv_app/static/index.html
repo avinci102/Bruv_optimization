@@ -14,6 +14,14 @@
     <div class="progress" title="Cards reviewed"><div id="bar"></div></div>
     <span id="progress-text">0 of 0 reviewed</span>
     <label class="toggle"><input type="checkbox" id="pending-only" checked> Pending only</label>
+    <label class="toggle" title="Only cards where one of the template's species is among the model's guesses">Show
+      <select id="filter">
+        <option value="all">all cards</option>
+        <option value="1">★ template species 1st</option>
+        <option value="2">★ template species in top 2</option>
+        <option value="3">★ template species in top 3</option>
+      </select>
+    </label>
     <button id="export" class="primary">Export to Excel</button>
   </header>
 
@@ -36,8 +44,8 @@
       <div class="strip-head">
         <span>Sightings <span id="strip-count" class="muted"></span></span>
         <span>
-          <button id="split" disabled title="Select a later sighting first">Split from selected</button>
-          <button id="merge-prev" title="Fold this card into the previous one (same fish)">Merge with previous card</button>
+          <button id="split" disabled title="Select the sighting where the other fish starts (click it, or use [ and ])">Split from selected <kbd>X</kbd></button>
+          <button id="merge-prev" title="Fold this card into the previous one (same fish)">Same fish as previous card <kbd>P</kbd></button>
         </span>
       </div>
       <div id="filmstrip" class="filmstrip"></div>
@@ -50,6 +58,7 @@
         <button id="next" title="Next card (→)">→</button>
       </div>
       <div id="status-badge" class="badge"></div>
+      <div id="template-hint" class="template-hint" hidden></div>
 
       <h2>Model guesses</h2>
       <div id="guesses" class="guesses"></div>
@@ -63,8 +72,10 @@
       </div>
 
       <div class="other-buttons">
-        <button data-status="unknown">Unknown fish <kbd>U</kbd></button>
+        <button data-status="unknown" title="A fish you can't identify">Unknown fish <kbd>U</kbd></button>
+        <button data-action="other" title="A fish on neither list: records the template's 'other' entry, then type its name">Other fish <kbd>O</kbd></button>
         <button data-status="not_fish">Not a fish <kbd>N</kbd></button>
+        <button data-action="multiple" title="The card shows more than one fish: break it into its tracked pieces, each its own card">Multiple fish <kbd>M</kbd></button>
         <button data-status="skipped">Skip <kbd>S</kbd></button>
       </div>
 
@@ -77,7 +88,10 @@
       </details>
 
       <div id="message" role="status"></div>
-      <p class="hint keys">Keys: <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> guesses · <kbd>Enter</kbd> record typed species · <kbd>←</kbd><kbd>→</kbd> cards</p>
+      <p class="hint keys">Keys: <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> guesses · <kbd>/</kbd> search, <kbd>Enter</kbd> record ·
+        <kbd>U</kbd> unknown · <kbd>O</kbd> other · <kbd>N</kbd> not a fish · <kbd>M</kbd> multiple fish · <kbd>S</kbd> skip ·
+        <kbd>[</kbd><kbd>]</kbd> pick a sighting, <kbd>X</kbd> split there · <kbd>P</kbd> same as previous card ·
+        <kbd>←</kbd><kbd>→</kbd> cards</p>
     </aside>
   </main>
 

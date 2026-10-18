@@ -99,6 +99,7 @@ def create_app(project_root: Path) -> FastAPI:
                         "status": f["status"],
                         "species": f["species"],
                         "top": guesses[0][0] if guesses else None,
+                        "guesses": [g[0] for g in guesses[:3]],
                     }
                 )
             return out
@@ -182,6 +183,20 @@ def create_app(project_root: Path) -> FastAPI:
             refresh_fish_guesses(project, new_id, settings)
             project.commit()
             return {"ok": True, "new_id": new_id}
+
+    @app.post("/api/fish/{fish_id}/unmerge")
+    def unmerge(fish_id: int):
+        """The card mixes different fish: each tracked piece becomes its own card."""
+        with lock:
+            get_fish(fish_id)
+            try:
+                new_ids = project.unmerge_fish(fish_id)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            for fid in (fish_id, *new_ids):
+                refresh_fish_guesses(project, fid, settings)
+            project.commit()
+            return {"ok": True, "new_ids": new_ids}
 
     @app.post("/api/fish/{fish_id}/merge")
     def merge(fish_id: int, body: MergeIn):

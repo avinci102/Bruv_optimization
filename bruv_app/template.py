@@ -374,8 +374,10 @@ def export_workbook(
     maxn_rows: list[list],
     details_header: list[str],
     details_rows: list[list],
+    tables: dict[str, tuple[list[str], list[list]]] | None = None,
 ) -> dict:
-    """Write record rows (by header name) plus MaxN and app_details sheets into a copy.
+    """Write record rows (by header name) plus MaxN and app_details sheets (and any other
+    `tables`, as {sheet name: (header, rows)}) into a copy.
 
     Returns {"first_row": int, "rows": int, "skipped_headers": [...]}.
     """
@@ -441,6 +443,8 @@ def export_workbook(
 
     _write_table(wb, "MaxN", maxn_header, maxn_rows)
     _write_table(wb, "app_details", details_header, details_rows)
+    for title, (header, rows) in (tables or {}).items():
+        _write_table(wb, title, header, rows)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     _save(wb, out_path)
     return {"first_row": start, "rows": len(record_rows), "skipped_headers": sorted(skipped)}

@@ -134,6 +134,7 @@ figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .guesses { display: grid; gap: 6px; }
 .guesses button { display: flex; justify-content: space-between; gap: 8px; text-align: left; }
 .guesses .pct { color: var(--muted); }
+.template-hint { margin-top: 6px; color: var(--accent); font-weight: 600; }
 .tag { margin-left: 6px; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .guesses button.recorded { border-color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
 .hint { color: var(--muted); font-size: 12px; margin: 6px 0; }

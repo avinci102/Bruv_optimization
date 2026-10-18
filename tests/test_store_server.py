@@ -41,6 +41,30 @@ def test_split_needs_detections_on_both_sides(project):
         project.split_fish(f["id"], f["start_t"])
 
 
+def test_multiple_fish_breaks_a_card_into_its_tracked_pieces(project):
+    f = multi_tracklet_fish(project)
+    pieces = project.fish_tracklets(f["id"])
+    project.label_fish(f["id"], "species", species=demo.RED)
+    new_ids = project.unmerge_fish(f["id"])
+    assert len(new_ids) == len(pieces) - 1
+    for fid, tid in zip([f["id"], *new_ids], pieces):
+        assert project.fish_tracklets(fid) == [tid]  # one tracked piece per card
+        assert project.fish(fid)["status"] == "pending"
+    log = project.corrections()
+    assert [c["action"] for c in log] == ["multiple_fish"]
+    assert json.loads(log[0]["details"]) == {"tracklets": pieces, "new_cards": new_ids}
+    single = next(f for f in project.all_fish() if len(project.fish_tracklets(f["id"])) == 1)
+    with pytest.raises(ValueError):
+        project.unmerge_fish(single["id"])
+
+
+def test_splits_and_merges_are_logged(project):
+    f = multi_tracklet_fish(project)
+    new_id = project.split_fish(f["id"], project.fish_detections(f["id"])[-1]["t"])
+    project.merge_fish(f["id"], new_id)
+    assert [c["action"] for c in project.corrections()] == ["split", "merge"]
+
+
 def test_merge_puts_card_back_to_pending(project):
     a, b = project.all_fish()[:2]
     project.label_fish(a["id"], "species", species=demo.RED)
@@ -88,6 +112,17 @@ def test_api_accepts_names_from_the_extra_list(client, project):
     fid = project.all_fish()[0]["id"]
     assert client.post(f"/api/fish/{fid}/label", json={"status": "species", "species": "batfish"}).status_code == 200
     assert client.post(f"/api/fish/{fid}/label", json={"status": "species", "species": "Nemo"}).status_code == 400
+
+
+def test_api_card_list_has_guesses_and_multiple_fish_works(client, project):
+    cards = client.get("/api/fish").json()
+    assert all(len(c["guesses"]) == 3 for c in cards)  # for the template-species filter
+    f = multi_tracklet_fish(project)
+    res = client.post(f"/api/fish/{f['id']}/unmerge", json={})
+    assert res.status_code == 200 and res.json()["new_ids"]
+    assert all(json.loads(project.fish(i)["guesses"]) for i in res.json()["new_ids"])  # recomputed
+    single = next(c for c in client.get("/api/fish").json() if len(project.fish_tracklets(c["id"])) == 1)
+    assert client.post(f"/api/fish/{single['id']}/unmerge", json={}).status_code == 400
 
 
 def test_api_split_and_merge(client, project):

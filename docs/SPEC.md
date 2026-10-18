@@ -326,8 +326,9 @@ building the MVP:
 1. Scaffold — **done.** Package, config, mock template, synthetic video, pytest.
 2. Pipeline — **done.** Resumable detection, tracker, continuity, BioCLIP 2 with a
    histogram fallback. RF-DETR and BioCLIP 2 now run with real weights on Windows (§9).
-3. Review UI — **done.** Cards, keys 1/2/3/U/N/S, searchable species, optional fields,
-   split/merge, progress.
+3. Review UI — **done.** Cards, keys for the guesses, unknown, other, not a fish,
+   multiple fish, skip, split and merge (with a log of corrections), searchable species,
+   optional fields, a template-species filter, progress (§11).
 4. Export — **done.** Record rows by header name, MaxN tab, app_details tab with model vs
    user agreement, relative size and the saved best crop.
 5. Validation on real footage — **started.** First real run done (§9); the comparison
@@ -485,3 +486,73 @@ keeps Windows from idle-sleeping, and `quickstart.bat` retries a crash twice.
 
 **Next topic:** keeping one fish on one card (continuity), and whether sampling more often
 than 1 frame per second helps.
+
+---
+
+## 11. Frame rate, review keys and a template-species filter (Oct 2026)
+
+**Frame-rate test.** The first real clip, processed at 1, 2 and 4 frames per second:
+
+| | 1 fps | 2 fps | 4 fps |
+|---|---|---|---|
+| Cards | 73 | 75 | 89 |
+| Cards stitched from 4+ tracks | 27 | 35 | 45 |
+| Tracks | 250 | 288 | 431 |
+| Single-sighting tracks | 47% | 38% | 42% |
+| Processing time | ~15 min | 23 min | 27 min |
+
+The times leave out the species-name embeddings, which the runs shared.
+
+- **More frames don't fix the main problem: cards that mix different fish,** often of
+  different species. Most cards stitched from several tracks do. One label covers the
+  whole card, so mixing also distorts MaxN.
+- **The cause is weak identity cues, not the frame rate:**
+  - the colour histogram covers the whole box, which is mostly water or reef;
+  - BioCLIP 2 sees most small, blurry fish as alike;
+  - the tracker's missed-frame tolerance (`track_max_missed`) counts frames, so tracks
+    break sooner at higher rates. Scaling it to about one second brought 4 fps back to
+    ~290 tracks, but those tracks still swapped fish.
+- **Decision: stay at 1 fps.** 2 fps may still be worth it on a GPU, for MaxN.
+- **Next lever:** compare colour on the middle of the box (the fish itself), in both the
+  tracker and the stitching, with a stricter stitching threshold. Vinci wants to see how
+  reviewing goes with the new keys first.
+
+**Review keys** (see the README):
+
+- `M`, multiple fish: the card goes back to its tracked pieces, each a new pending card.
+- `[` `]` select a sighting, then `X` splits there. `P` folds the card into the previous
+  one.
+- `O`, other fish: records the template's "other …" entry, with the name typed into the
+  comment.
+- Every split, merge and "multiple fish" is logged in a `corrections` table (time,
+  action, card, details as JSON) and exported as a `corrections` sheet. It shows where
+  tracking and stitching fail, for tuning them and as training data.
+
+**Template-species filter.** The page can show only the cards that have one of the
+template's own species 1st among the guesses, in the top 2, or in the top 3. It marks
+those cards ★. Of the first real run's 72 cards still to review, that's 27, 43 and 50
+cards.
+
+The filter needs one more rule to be useful. 16 of the 27 "1st" cards are distant fish
+that all get the same guess. A rule on the fish's largest sighting separates them; the
+model's probability doesn't:
+
+| Rule | 1st | top 2 | top 3 |
+|---|---|---|---|
+| None | 27 | 43 | 50 |
+| Largest sighting ≥ 40 px | 10 | 21 | 24 |
+| Template guess p ≥ 0.3 | 9 | 10 | 10 |
+
+- At 40 px all 16 distant fish drop out, plus one other small card. Below about this
+  size, people can't identify a fish either (§9).
+- The distant fish score 0.12–0.33, in the same range as the other 11 cards (0.14–0.70).
+  A cut at 0.3 still keeps 4 of them, and drops 6 of the others.
+
+**More names.** Vinci suggested 26 more names:
+
+- 19 were already covered, either on the app's list (e.g. moorish idol, filefish,
+  lizardfish, scorpionfish, lionfish, flounder) or on the template's.
+- Spadefish is the batfish family, so that entry is now "batfish / spadefish". Two names
+  for one fish would split the model's guesses between them.
+- Coral bream and five small sand-dwelling families (sand diver, worm fish, dragonet,
+  pipefish, stargazer) were left out as not critical.

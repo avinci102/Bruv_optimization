@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS fish (
     status TEXT NOT NULL DEFAULT 'pending', species TEXT, type TEXT, sex TEXT,
     behavior TEXT, comment TEXT, reviewed_at TEXT);
 CREATE TABLE IF NOT EXISTS stages (name TEXT PRIMARY KEY, done_at TEXT);
+CREATE TABLE IF NOT EXISTS corrections (
+    id INTEGER PRIMARY KEY, at TEXT, action TEXT, fish_id INTEGER, details TEXT);
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
@@ -310,8 +312,39 @@ class Project:
             moved.append(new_tid)
         new_id = self.create_fish(moved)
         self._refresh_span(fish_id)
+        self.log_correction("split", fish_id, from_t=from_t, new_card=new_id)
         self.db.commit()
         return new_id
+
+    def unmerge_fish(self, fish_id: int) -> list[int]:
+        """The card mixes different fish: give each of its tracklets (the stretches the
+        tracker followed frame by frame) its own unreviewed card. This card keeps the first
+        one and goes back to pending. Returns the new card ids."""
+        tracklets = self.fish_tracklets(fish_id)
+        if len(tracklets) < 2:
+            raise ValueError(
+                "This card is one tracked stretch: select the sighting where the other fish "
+                "starts and split there"
+            )
+        new_ids = [self.create_fish([tid]) for tid in tracklets[1:]]
+        self._refresh_span(fish_id)
+        self.db.execute(
+            "UPDATE fish SET status='pending', species=NULL, reviewed_at=NULL WHERE id=?", (fish_id,)
+        )
+        self.log_correction("multiple_fish", fish_id, tracklets=tracklets, new_cards=new_ids)
+        self.db.commit()
+        return new_ids
+
+    def log_correction(self, action: str, fish_id: int, **details) -> None:
+        """Record a reviewer's fix to the cards (a split, merge or break-up): it shows where
+        tracking and the continuity merge go wrong, for tuning them and for training."""
+        self.db.execute(
+            "INSERT INTO corrections(at, action, fish_id, details) VALUES(?, ?, ?, ?)",
+            (_now(), action, fish_id, json.dumps(details)),
+        )
+
+    def corrections(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM corrections ORDER BY id").fetchall()
 
     def _refresh_tracklet(self, tid: int) -> None:
         rows = self.tracklet_detections(tid)
@@ -336,4 +369,5 @@ class Project:
             "UPDATE fish SET status='pending', species=NULL, reviewed_at=NULL WHERE id=?",
             (keep_id,),
         )
+        self.log_correction("merge", keep_id, merged_card=other_id)
         self.db.commit()

@@ -51,6 +51,9 @@ DETAILS_HEADER = [
 ]
 
 
+CORRECTIONS_HEADER = ["at", "action", "card", "details"]
+
+
 def _most_common(values) -> str | None:
     values = [v for v in values if v]
     return Counter(values).most_common(1)[0][0] if values else None
@@ -85,6 +88,8 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
 
     # Names from the app's extra list go into the template as its catch-all ("other ..."),
     # with the name in the comment, so every value stays inside the template's dropdown.
+    # So does any other name outside the template's list (e.g. one renamed in the list).
+    template_species = set(info.options("species"))
     extras = set(extra_species(project))
     other = next((o for o in info.options("species") if o.strip().lower().startswith("other")), None)
 
@@ -99,7 +104,7 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
         if s.species == UNKNOWN:
             comments.insert(0, "Unidentified fish")
             species = None
-        elif s.species in extras:
+        elif s.species in extras or (template_species and s.species not in template_species):
             comments.insert(0, s.species)
             species = other
         record_rows.append(
@@ -176,6 +181,12 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
             ]
         )
 
-    export_workbook(info, out_path, record_rows, MAXN_HEADER, maxn_rows, DETAILS_HEADER, details_rows)
+    # The reviewer's fixes to the cards (splits, merges, "multiple fish"): where tracking and
+    # the continuity merge go wrong, for tuning them and as training data.
+    corrections = [[c["at"], c["action"], c["fish_id"], c["details"]] for c in project.corrections()]
+    export_workbook(
+        info, out_path, record_rows, MAXN_HEADER, maxn_rows, DETAILS_HEADER, details_rows,
+        {"corrections": (CORRECTIONS_HEADER, corrections)},
+    )
     project.set_meta("last_export", str(out_path))
     return out_path

@@ -146,10 +146,32 @@ def test_extra_names_are_guessed_picked_and_exported_as_other(tmp_path, syntheti
     assert {"batfish", "triggerfish", "bluespot mullet"} <= maxn
 
 
+def test_names_dropped_from_the_lists_still_export_as_other(tmp_path, synthetic_videos, dependent_template):
+    """A card recorded with a name later renamed in the extra list stays valid in Excel."""
+    project = create_project(tmp_path / "p", synthetic_videos, dependent_template, demo_settings(), ["batfish"])
+    Pipeline(project, classifier=demo.DemoClassifier()).run()
+    first = project.all_fish()[0]["id"]
+    project.label_fish(first, "species", species="batfish")
+    update_extra_species(project, ["batfish / spadefish"])
+    wb = openpyxl.load_workbook(export_project(project, tmp_path / "out.xlsx"))
+    ws = wb[demo.SHEET_RECORD]
+    col = {cell.value: cell.column for cell in ws[1]}
+    assert (ws.cell(2, col["species"]).value, ws.cell(2, col["comment"]).value) == ("other (indicate in comment)", "batfish")
+
+
+def test_export_has_the_corrections_log(project, tmp_path):
+    f = next(f for f in project.all_fish() if len(project.fish_tracklets(f["id"])) > 1)
+    project.unmerge_fish(f["id"])
+    wb = openpyxl.load_workbook(export_project(project, tmp_path / "out.xlsx"))
+    rows = list(wb["corrections"].iter_rows(values_only=True))
+    assert rows[0] == ("at", "action", "card", "details")
+    assert rows[1][1:3] == ("multiple_fish", f["id"])
+
+
 def test_extra_species_file_next_to_the_template_wins(tmp_path):
     default = load_extra_species(None)
-    assert len(default) == 33 and {"triggerfish", "fusilier", "moorish idol"} <= set(default)
-    assert not {"salmon", "cod"} & set(default)
+    assert len(default) == 33 and {"triggerfish", "fusilier", "moorish idol", "batfish / spadefish"} <= set(default)
+    assert not {"salmon", "cod", "batfish"} & set(default)
     (tmp_path / "extra_species.txt").write_text("# my region\nkelpfish\n\nkelpfish\nsea perch\n")
     assert load_extra_species(tmp_path / "template.xlsx") == ["kelpfish", "sea perch"]
 

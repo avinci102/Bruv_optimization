@@ -13,7 +13,7 @@ triggerfish
 angelfish
 damselfish
 surgeonfish
-batfish
+batfish / spadefish
 butterflyfish
 clownfish
 unicornfish
