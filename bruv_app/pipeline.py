@@ -42,7 +42,11 @@ def _quiet(stage: str, done: int, total: int) -> None:
 
 
 def create_project(
-    root: Path, videos: list[Path], template: Path | None, settings: Settings
+    root: Path,
+    videos: list[Path],
+    template: Path | None,
+    settings: Settings,
+    extra_species: list[str] = (),
 ) -> Project:
     project = Project(root)
     project.save_settings(settings)
@@ -53,7 +57,30 @@ def create_project(
         project.set_meta("dropdowns", info.dropdowns)
         # child header -> parent header, e.g. {"species": "type"} (see TemplateInfo.dependent)
         project.set_meta("dependent", {child: parent for child, (parent, _) in info.dependent.items()})
+    update_extra_species(project, list(extra_species))
     return project
+
+
+EXTRA_SPECIES_FILE = "extra_species.txt"
+
+
+def load_extra_species(template: Path | None) -> list[str]:
+    """Names to guess and pick beyond the template's species list: a file named
+    extra_species.txt next to the template if there is one, else the app's default list."""
+    candidates = [Path(template).parent / EXTRA_SPECIES_FILE] if template else []
+    candidates.append(Path(__file__).parent / EXTRA_SPECIES_FILE)
+    for path in candidates:
+        if path.is_file():
+            lines = (line.strip() for line in path.read_text(encoding="utf-8").splitlines())
+            return list(dict.fromkeys(line for line in lines if line and not line.startswith("#")))
+    return []
+
+
+def update_extra_species(project: Project, names: list[str]) -> None:
+    """Store the extra names. When they change, only the guesses need recomputing."""
+    if project.get_meta("extra_species") != names:
+        project.set_meta("extra_species", names)
+        project.mark_stage("classify", False)
 
 
 def load_timeline(project: Project) -> Timeline:
@@ -65,8 +92,15 @@ def load_timeline(project: Project) -> Timeline:
     )
 
 
+def extra_species(project: Project) -> list[str]:
+    """The project's extra names that aren't already in the template's species list."""
+    known = {s.strip().lower() for s in (project.get_meta("dropdowns") or {}).get("species", [])}
+    return [s for s in project.get_meta("extra_species") or [] if s.strip().lower() not in known]
+
+
 def species_labels(project: Project) -> list[str]:
-    return list((project.get_meta("dropdowns") or {}).get("species", []))
+    """Everything a card can be recorded as: the template's species list, then the extras."""
+    return list((project.get_meta("dropdowns") or {}).get("species", [])) + extra_species(project)
 
 
 def text_embedding_path(project: Project) -> Path:
@@ -95,6 +129,10 @@ def refresh_fish_guesses(project: Project, fish_id: int, settings: Settings | No
 
 
 class Pipeline:
+    # Work saved together; a stop loses at most one chunk of crops or of species names.
+    EMBED_CHUNK = 64
+    LABEL_CHUNK = 20
+
     def __init__(
         self,
         project: Project,
@@ -126,24 +164,26 @@ class Pipeline:
         self.detect()
         self._detector = None  # free the detector's memory before BioCLIP 2 loads
         gc.collect()
-        done = all(self.project.stage_done(s) for s in POST_DETECT_STAGES)
-        if self.project.reviewed_count() and not force:
-            if not done:
-                raise RuntimeError("Reviews exist; pass force=True to rebuild cards and lose them.")
-            return
+        reviewed = self.project.reviewed_count()
+        cards_done = all(self.project.stage_done(s) for s in ("track", "embed", "merge"))
         # Cards built without BioCLIP 2 (it couldn't load, e.g. short of memory) are rebuilt
         # with it on the next run, as long as nobody has reviewed them yet.
         fell_back = (
-            self.settings.classifier == "bioclip"
+            not reviewed
+            and self.settings.classifier == "bioclip"
             and self.project.get_meta("classifier") == HistogramClassifier.name
         )
-        if force or not done or fell_back:
+        if force or fell_back or not cards_done:
+            if reviewed and not force:
+                raise RuntimeError("Reviews exist; pass force=True to rebuild cards and lose them.")
             for stage in POST_DETECT_STAGES:
                 self.project.mark_stage(stage, False)
             self.track()
             self.embed()
             self.merge()
             self.classify()
+        elif not self.project.stage_done("classify"):
+            self.classify()  # e.g. new species names: the guesses change, cards and reviews stay
 
     # --- stages ------------------------------------------------------------------------
 
@@ -235,26 +275,47 @@ class Pipeline:
         self.progress("track", n, n)
 
     def embed(self) -> None:
+        """Embed each tracklet's best crops. Embeddings are saved chunk by chunk and kept
+        across runs (a crop's embedding doesn't depend on tracking), so a run that was
+        stopped embeds only the crops it hadn't done yet."""
         s = self.settings
-        ids = self.project.tracklet_ids()
-        jobs: list[tuple[int, int]] = []  # (tracklet id, detection id)
-        crops: list[np.ndarray] = []
-        for tid in ids:
-            dets = sorted(self.project.tracklet_detections(tid), key=lambda d: d["quality"] or 0.0, reverse=True)
-            for d in dets[: s.crops_per_tracklet]:
-                image = imaging.load_rgb(str(self.project.root / d["path"]))
-                crops.append(imaging.crop_box(image, d["x1"], d["y1"], d["x2"], d["y2"], s.crop_pad))
-                jobs.append((tid, d["id"]))
+        key = f"{self.classifier.name} pad={s.crop_pad}"
+        # A stand-in (BioCLIP 2 couldn't load) neither reuses nor overwrites the stored
+        # embeddings, so the next run with BioCLIP 2 still finds them.
+        keep = not (isinstance(self.classifier, HistogramClassifier) and s.classifier != "histogram")
+        stored = self.project.get_meta("embedding_key")
+        if stored is None and self.project.get_meta("embedder"):  # projects from before the key
+            stored = f"{self.project.get_meta('embedder')} pad={s.crop_pad}"
+        if keep and stored != key:
+            self.project.clear_embeddings()  # made by another model or crop setting
+        if keep:
+            self.project.set_meta("embedding_key", key)
 
-        per_tracklet: dict[int, list[np.ndarray]] = {}
-        chunk = 64
-        for i in range(0, len(crops), chunk):
-            embs = self.classifier.embed(crops[i : i + chunk])
-            for (tid, det_id), emb in zip(jobs[i : i + chunk], embs):
-                self.project.set_detection_embedding(det_id, emb)
-                per_tracklet.setdefault(tid, []).append(emb)
-            self.progress("embed", min(i + chunk, len(crops)), len(crops))
-        for tid, embs in per_tracklet.items():
+        chosen: dict[int, list] = {}
+        todo = []
+        for tid in self.project.tracklet_ids():
+            dets = sorted(self.project.tracklet_detections(tid), key=lambda d: d["quality"] or 0.0, reverse=True)
+            chosen[tid] = dets[: s.crops_per_tracklet]
+            todo += [d for d in chosen[tid] if not keep or d["embedding"] is None]
+        total = sum(len(dets) for dets in chosen.values())
+        done = total - len(todo)
+        self.progress("embed", done, total)
+
+        made: dict[int, np.ndarray] = {}
+        for i in range(0, len(todo), self.EMBED_CHUNK):
+            part = todo[i : i + self.EMBED_CHUNK]
+            crops = [
+                imaging.crop_box(imaging.load_rgb(str(self.project.root / d["path"])), d["x1"], d["y1"], d["x2"], d["y2"], s.crop_pad)
+                for d in part
+            ]
+            for d, emb in zip(part, self.classifier.embed(crops)):
+                made[d["id"]] = emb
+                if keep:
+                    self.project.set_detection_embedding(d["id"], emb)
+            self.project.commit()
+            self.progress("embed", done + i + len(part), total)
+        for tid, dets in chosen.items():
+            embs = [made[d["id"]] if d["id"] in made else np.frombuffer(d["embedding"], np.float32) for d in dets]
             self.project.set_tracklet_embedding(tid, l2_normalize(np.mean(embs, axis=0)))
         self.project.set_meta("embedder", self.classifier.name)
         self.project.commit()
@@ -287,15 +348,32 @@ class Pipeline:
         self.progress("merge", len(chains), len(chains))
 
     def _text_embeddings(self, labels: list[str]):
-        """Label embeddings in chunks, so a long species list shows progress (80 prompts each)."""
-        chunks = []
-        for i in range(0, len(labels), 20):
-            emb = self.classifier.text_embeddings(labels[i : i + 20])
+        """Label embeddings (80 prompts each), saved as they're made. A stopped run picks up
+        where it was, and a longer list only encodes its new names."""
+        path = self.project.root / "label_embeddings.npz"
+        name = self.classifier.name
+        cache: dict[str, np.ndarray] = {}
+        if path.exists():
+            with np.load(path) as saved:
+                if str(saved["model"]) == name:
+                    cache = dict(zip(saved["labels"].tolist(), saved["emb"]))
+        elif text_embedding_path(self.project).exists() and self.project.get_meta("classifier") == name:
+            # A project from before this cache: reuse its last label embeddings.
+            old = np.load(text_embedding_path(self.project))
+            cache = dict(zip(self.project.get_meta("guess_labels") or [], old))
+        missing = [label for label in labels if label not in cache]
+        self.progress("labels", len(labels) - len(missing), len(labels))
+        for i in range(0, len(missing), self.LABEL_CHUNK):
+            part = missing[i : i + self.LABEL_CHUNK]
+            emb = self.classifier.text_embeddings(part)
             if emb is None:
                 return None
-            chunks.append(emb)
-            self.progress("labels", min(i + 20, len(labels)), len(labels))
-        return np.concatenate(chunks)
+            cache.update(zip(part, emb))
+            tmp = path.with_name("label_embeddings.tmp.npz")
+            np.savez(tmp, model=np.array(name), labels=np.array(list(cache)), emb=np.stack(list(cache.values())))
+            tmp.replace(path)
+            self.progress("labels", len(labels) - len(missing) + i + len(part), len(labels))
+        return np.stack([cache[label] for label in labels])
 
     def classify(self) -> None:
         labels = species_labels(self.project)

@@ -3,6 +3,9 @@
 const $ = (id) => document.getElementById(id);
 const state = { summary: null, cards: [], index: 0, detail: null, selected: null };
 
+const NOT_IN_TEMPLATE = "not in template";
+const EXTRA_HINT = "Not in the template's species list: exported as its 'other' entry, with this name in the comment.";
+
 const STATUS_TEXT = {
   pending: "Not reviewed yet",
   species: "Recorded",
@@ -60,7 +63,11 @@ async function loadCards() {
 async function init() {
   await Promise.all([loadSummary(), loadCards()]);
   const dd = state.summary.dropdowns;
-  $("species-list").replaceChildren(...(dd.species || []).map((v) => new Option(v)));
+  $("species-list").replaceChildren(
+    ...(dd.species || []).map((v) => new Option(v)),
+    // Extra names aren't in the template: the export writes its "other" entry plus the name.
+    ...(state.summary.extra_species || []).map((v) => Object.assign(new Option(v), { label: NOT_IN_TEMPLATE })),
+  );
   fillSelect($("f-type"), dd.type || []);
   // When the species list depends on type (=INDIRECT), the export fills type from the species.
   $("type-field").hidden = Object.values(state.summary.dependent || {}).includes("type");
@@ -107,9 +114,11 @@ async function show(index) {
   if (!d.guesses.length) {
     guesses.innerHTML = '<p class="hint">No model guesses for this card — pick from the list.</p>';
   }
+  const extra = new Set(state.summary.extra_species || []);
   d.guesses.forEach(([label, p], i) => {
     const b = document.createElement("button");
-    b.innerHTML = `<span><kbd>${i + 1}</kbd> ${label}</span><span class="pct">${Math.round(p * 100)}%</span>`;
+    const tag = extra.has(label) ? `<span class="tag" title="${EXTRA_HINT}">${NOT_IN_TEMPLATE}</span>` : "";
+    b.innerHTML = `<span><kbd>${i + 1}</kbd> ${label}${tag}</span><span class="pct">${Math.round(p * 100)}%</span>`;
     if (d.status === "species" && d.species === label) b.classList.add("recorded");
     b.onclick = () => record("species", label);
     guesses.append(b);
@@ -202,7 +211,7 @@ async function record(status, species = null) {
 
 function recordTyped() {
   const value = $("species-input").value.trim();
-  const options = state.summary.dropdowns.species || [];
+  const options = [...(state.summary.dropdowns.species || []), ...(state.summary.extra_species || [])];
   const match = options.find((o) => o.toLowerCase() === value.toLowerCase());
   if (!match) {
     message(value ? `“${value}” isn't in the template's species list.` : "Type or pick a species first.", "error");

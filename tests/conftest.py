@@ -23,8 +23,12 @@ def mock_template(tmp_path) -> Path:
     return demo.make_mock_template(tmp_path / "template" / "viewing template v.2024.xlsx")
 
 
-# Invented groups and names (not the owner's species list).
-GROUPS = {"mullet": ["mullet family", "bluespot mullet"], "goatfish": ["goatfish family", "yellowfin goatfish"]}
+# Invented groups and names (not the owner's species list), plus a catch-all group.
+GROUPS = {
+    "mullet": ["mullet family", "bluespot mullet"],
+    "goatfish": ["goatfish family", "yellowfin goatfish"],
+    "interest": ["other (indicate in comment)"],
+}
 
 
 @pytest.fixture
@@ -49,11 +53,12 @@ def dependent_template(tmp_path) -> Path:
             dd.cell(row, col, name)
         ref = f"'{demo.SHEET_DROPDOWN}'!${letter}$2:${letter}${len(species) + 1}"
         wb.defined_names[group] = DefinedName(group, attr_text=ref)
-    wb.defined_names["type"] = DefinedName("type", attr_text=f"'{demo.SHEET_DROPDOWN}'!$A$1:$B$1")
+    last = get_column_letter(len(GROUPS))
+    wb.defined_names["type"] = DefinedName("type", attr_text=f"'{demo.SHEET_DROPDOWN}'!$A$1:${last}$1")
     info = wb.create_sheet(demo.SHEET_INFO)
     info.append(["date", "clip_1", "clip_2", "clip_3"])
     rec = wb.create_sheet(demo.SHEET_RECORD)
-    rec.append(["clip_in", "time_in", "clip_out", "time_out", "type", "species", "count"])
+    rec.append(["clip_in", "time_in", "clip_out", "time_out", "type", "species", "count", "comment"])
     for formula, cells in (("type", "E2:E1000"), ("INDIRECT(E2)", "F2:F1000")):
         dv = DataValidation(type="list", formula1=formula, allow_blank=True)
         dv.add(cells)

@@ -4,8 +4,15 @@ import openpyxl
 import pytest
 
 from bruv_app import demo
+from bruv_app.cli import keep_awake
 from bruv_app.export import export_project
-from bruv_app.pipeline import Pipeline, create_project
+from bruv_app.pipeline import (
+    Pipeline,
+    create_project,
+    extra_species,
+    load_extra_species,
+    update_extra_species,
+)
 from bruv_app.detect import ColorBlobDetector
 
 from .conftest import demo_settings, expected_maxn, ground_truth_species, label_like_perfect_human
@@ -112,6 +119,106 @@ def test_cards_built_without_the_species_model_are_rebuilt_on_the_next_run(proje
     project.label_fish(project.all_fish()[0]["id"], "species", species=demo.RED)
     Pipeline(project, classifier=demo.DemoClassifier()).run()
     assert project.get_meta("classifier") == "hsv-histogram"  # reviews are never wiped
+
+
+def test_extra_names_are_guessed_picked_and_exported_as_other(tmp_path, synthetic_videos, dependent_template):
+    extra = ["batfish", "triggerfish", "bluespot mullet"]
+    project = create_project(tmp_path / "p", synthetic_videos, dependent_template, demo_settings(), extra)
+    assert extra_species(project) == ["batfish", "triggerfish"]  # a template name isn't an extra
+    Pipeline(project, classifier=demo.DemoClassifier()).run()
+    assert project.get_meta("guess_labels")[-2:] == ["batfish", "triggerfish"]
+
+    a, b, c = project.all_fish()[:3]
+    project.label_fish(a["id"], "species", species="batfish")
+    project.label_fish(b["id"], "species", species="triggerfish", comment="near the bait")
+    project.label_fish(c["id"], "species", species="bluespot mullet")
+    wb = openpyxl.load_workbook(export_project(project, tmp_path / "out.xlsx"))
+    ws = wb[demo.SHEET_RECORD]
+    col = {cell.value: cell.column for cell in ws[1]}
+    rows = [{h: ws.cell(r, c).value for h, c in col.items()} for r in range(2, ws.max_row + 1)]
+    by_comment = {r["comment"]: r for r in rows}
+    # Extra names stay inside the template's dropdown: its catch-all, with the name in the comment.
+    assert (by_comment["batfish"]["species"], by_comment["batfish"]["type"]) == ("other (indicate in comment)", "interest")
+    assert by_comment["triggerfish; near the bait"]["species"] == "other (indicate in comment)"
+    assert any(r["species"] == "bluespot mullet" and r["type"] == "mullet" for r in rows)
+    # MaxN counts each name on its own instead of lumping them under "other".
+    maxn = {r[0] for r in wb["MaxN"].iter_rows(min_row=2, values_only=True)}
+    assert {"batfish", "triggerfish", "bluespot mullet"} <= maxn
+
+
+def test_extra_species_file_next_to_the_template_wins(tmp_path):
+    default = load_extra_species(None)
+    assert len(default) == 33 and {"triggerfish", "fusilier", "moorish idol"} <= set(default)
+    assert not {"salmon", "cod"} & set(default)
+    (tmp_path / "extra_species.txt").write_text("# my region\nkelpfish\n\nkelpfish\nsea perch\n")
+    assert load_extra_species(tmp_path / "template.xlsx") == ["kelpfish", "sea perch"]
+
+
+def test_embedding_resumes_after_a_stop(tmp_path, synthetic_videos, monkeypatch):
+    monkeypatch.setattr(Pipeline, "EMBED_CHUNK", 8)
+
+    class Counting(demo.DemoClassifier):
+        def __init__(self, stop_after=None):
+            self.calls, self.crops, self.stop_after = 0, 0, stop_after
+
+        def embed(self, crops):
+            self.calls += 1
+            if self.stop_after is not None and self.calls > self.stop_after:
+                raise KeyboardInterrupt
+            self.crops += len(crops)
+            return super().embed(crops)
+
+    template = demo.make_mock_template(tmp_path / "t.xlsx")
+    project = create_project(tmp_path / "p", synthetic_videos, template, demo_settings())
+    first = Counting(stop_after=2)
+    with pytest.raises(KeyboardInterrupt):
+        Pipeline(project, classifier=first).run()
+    assert first.crops == 16  # two chunks done and saved before the stop
+    second = Counting()
+    Pipeline(project, classifier=second).run()
+    embedded = project.db.execute("SELECT COUNT(*) FROM detections WHERE embedding IS NOT NULL").fetchone()[0]
+    assert second.crops == embedded - 16  # nothing embedded twice
+
+    fresh = create_project(tmp_path / "q", synthetic_videos, template, demo_settings())
+    Pipeline(fresh, classifier=demo.DemoClassifier()).run()
+    assert [json.loads(f["guesses"]) for f in project.all_fish()] == [json.loads(f["guesses"]) for f in fresh.all_fish()]
+
+
+def test_new_species_names_resume_and_keep_reviews(project, monkeypatch):
+    """New extra names only recompute the guesses: cards and reviews stay. The names are
+    saved as they're encoded, so a stopped run carries on with the rest."""
+    monkeypatch.setattr(Pipeline, "LABEL_CHUNK", 2)
+
+    class CountingText(demo.DemoClassifier):
+        def __init__(self, stop_after=None):
+            self.encoded, self.calls, self.stop_after = [], 0, stop_after
+
+        def text_embeddings(self, labels):
+            self.calls += 1
+            if self.stop_after is not None and self.calls > self.stop_after:
+                raise KeyboardInterrupt
+            self.encoded += labels
+            return super().text_embeddings(labels)
+
+    reviewed = project.all_fish()[0]["id"]
+    project.label_fish(reviewed, "species", species=demo.RED)
+    cards = [f["id"] for f in project.all_fish()]
+    update_extra_species(project, ["batfish", "goby", "wrasse"])
+    first = CountingText(stop_after=1)
+    with pytest.raises(KeyboardInterrupt):
+        Pipeline(project, classifier=first).run()
+    assert first.encoded == ["batfish", "goby"]  # the template's names came from the saved ones
+    second = CountingText()
+    Pipeline(project, classifier=second).run()
+    assert second.encoded == ["wrasse"]
+    assert project.get_meta("guess_labels")[-3:] == ["batfish", "goby", "wrasse"]
+    assert [f["id"] for f in project.all_fish()] == cards
+    assert project.fish(reviewed)["species"] == demo.RED
+
+
+def test_keep_awake_is_safe():
+    with keep_awake():
+        pass
 
 
 def test_clip_names_follow_the_template_clip_list(tmp_path, synthetic_videos, dependent_template):

@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bruv_app import demo
+from bruv_app.pipeline import update_extra_species
 from bruv_app.server import create_app
 
 
@@ -79,6 +80,14 @@ def test_api_review_flow(client, project):
 
     res = client.post("/api/export")
     assert res.status_code == 200 and res.json()["path"].endswith(".xlsx")
+
+
+def test_api_accepts_names_from_the_extra_list(client, project):
+    update_extra_species(project, ["batfish"])
+    assert client.get("/api/summary").json()["extra_species"] == ["batfish"]
+    fid = project.all_fish()[0]["id"]
+    assert client.post(f"/api/fish/{fid}/label", json={"status": "species", "species": "batfish"}).status_code == 200
+    assert client.post(f"/api/fish/{fid}/label", json={"status": "species", "species": "Nemo"}).status_code == 400
 
 
 def test_api_split_and_merge(client, project):

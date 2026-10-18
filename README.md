@@ -24,8 +24,14 @@ The first run installs everything. It can install Python 3.13 for you if it's mi
 winget), and it downloads the fish detector and species model, a few GB in all. After
 that it processes the video and opens the review page in your browser. Keep the black
 window open while you review. Exports land in a `bruv_project\exports` folder inside your
-footage folder, and the original template is never changed. Run it again at any time to
-pick up where you left off.
+footage folder, and the original template is never changed.
+
+**Long runs and interruptions.** Every slow step saves its work as it goes, so a run that
+stops (a crash, a restart, the window closed) picks up where it left off when you run
+`quickstart.bat` again: detection every 4 frames, the species model every 64 fish crops,
+the species names every 20. While it processes, it keeps Windows from going to sleep
+(closing a laptop's lid still does). If processing crashes, `quickstart.bat` waits 30
+seconds and carries on by itself, up to twice. Your reviews are saved as you make them.
 
 **Python:** use 3.12, 3.13 or 3.14. 3.15 is too new: PyTorch has no 3.15 build yet.
 
@@ -35,6 +41,20 @@ fish crops, 3 for the species list. The species model's time grows with the numb
 fish tracks, so expect hours for a 1-hour video until the model runs on a faster
 runtime. The species model needs about 1.5 GB of free memory. If the window stops with
 no error message, close other programs and run `quickstart.bat` again: it resumes.
+
+## Fish that aren't on your template's list
+
+The review page and the species model also offer the names in
+[`bruv_app/extra_species.txt`](bruv_app/extra_species.txt): 33 reef-fish families
+(triggerfish, butterflyfish, batfish, fusilier and so on), marked "not in template" on the
+page. Your template stays as it is. A card recorded with one of these names is exported as
+the template's "other …" species, with the name in the comment, and the `MaxN` tab counts
+each name on its own.
+
+To change the list, edit that file (one name per line). To use a different list for a
+project, for example in another region, put a file named `extra_species.txt` next to its
+Excel template. Changing the list only recomputes the model's guesses, about 2 seconds
+per new name; your cards and reviews stay.
 
 ## Try the demo (no footage or models needed)
 

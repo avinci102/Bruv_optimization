@@ -26,9 +26,11 @@ def test_reads_dropdowns_from_all_validation_kinds(mock_template):
 
 def test_reads_a_dependent_species_list(dependent_template):
     info = read_template(dependent_template)
-    assert info.options("type") == ["mullet", "goatfish"]
+    assert info.options("type") == ["mullet", "goatfish", "interest"]
     # species =INDIRECT(E2): every type's named range, in order.
-    assert info.options("species") == ["mullet family", "bluespot mullet", "goatfish family", "yellowfin goatfish"]
+    assert info.options("species") == [
+        "mullet family", "bluespot mullet", "goatfish family", "yellowfin goatfish", "other (indicate in comment)"
+    ]
     parent, groups = info.dependent["species"]
     # The parent is kept exactly as listed, trailing space included: Excel's type dropdown
     # only accepts the exact text.

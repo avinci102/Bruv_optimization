@@ -45,6 +45,14 @@ plus human review, not by training from scratch.
   treat it as the same fish. The window should be configurable.
 - **[Decided] Required outputs per sighting:** the timestamp when the fish appears, its
   size, and its species.
+- **[Decided] Extra species list (Oct 2026).** The app keeps its own list of 33 reef-fish
+  families (`bruv_app/extra_species.txt`) on top of the template's species list, and the
+  template stays unchanged.
+  - A card recorded with an extra name is exported as the template's "other" entry, with
+    the name in the comment.
+  - MaxN counts each extra name on its own.
+  - Cold-water families (salmon, cod) are left out; fusiliers are their own name rather
+    than part of "snapper family".
 
 ### Important nuance on counting
 
@@ -132,7 +140,8 @@ The visible `record` headers, in order, are: `clip_in`, `time_in`, `clip_out`, `
    **split** a wrong merge.
 6. **Classification.** Use **BioCLIP 2** zero-shot through open_clip:
    - Load it with `open_clip.create_model_and_transforms('hf-hub:imageomics/bioclip-2')`.
-   - **Restrict the labels to the template's species dropdown.**
+   - **Restrict the labels to the template's species dropdown.** *Plus the app's extra
+     list since Oct 2026 (§2, §10).*
    - Per merged fish, take the top 3–5 crops (scored on detection confidence, size, and
      sharpness), average their image embeddings, and compute softmax over the cached text
      embeddings.
@@ -430,7 +439,49 @@ openpyxl still loses a few things, all cosmetic:
 **Open points from this run** (for Vinci, with §6):
 
 - How to export catch-all list entries (e.g. an "other" species). Today they're grouped
-  into one record row and one MaxN row, like a real species.
+  into one record row and one MaxN row, like a real species. *Mostly answered by §10:
+  extra names are exported as "other" but kept apart.*
 - Whether to hide or skip tiny, distant fish.
-- Whether the model should be allowed to name off-list fish as a hint.
+- Whether the model should be allowed to name off-list fish as a hint. *Answered: yes,
+  through the extra list (§10).*
 - Where record rows should start when a template holds example rows.
+
+---
+
+## 10. Extra species and resuming long runs (Oct 2026)
+
+**Extra species.** Vinci proposed 47 more families. 35 of them weren't in the template's
+list; the others are already covered at species level (e.g. reef sharks, stingrays,
+remora, sea chub). Salmon and cod were left out as cold-water families, which leaves 33,
+in `bruv_app/extra_species.txt`.
+
+- **The model needs no training for them.** BioCLIP 2 works from the names alone. On the
+  first real run's 73 cards, adding the names changed the share of clearly identifiable
+  cards with the right family as top guess:
+  - before: 2 of 23;
+  - after: 13 of 23 (17 of 23 in the top two).
+- **Look-alike families are the remaining errors:** batfish vs angelfish, butterflyfish vs
+  angelfish or wrasse, and some triggerfish guessed as surgeonfish.
+- **Family names in the prompts made things worse,** so the labels are common names.
+- **Next lever, if needed:** a small classifier trained on BioCLIP embeddings of the
+  owner's own confirmed cards (seconds on a CPU once there are ~20–50 cards per family).
+  Retraining BioCLIP itself isn't needed.
+
+**Resuming.** Every slow stage now saves as it goes:
+
+- detection every 4 frames (as before);
+- crop embeddings every 64 crops, kept across reruns (they don't depend on tracking);
+- species-name embeddings every 20 names, also reused when the list grows.
+
+A changed name list recomputes only the guesses, so cards and reviews stay. Processing
+keeps Windows from idle-sleeping, and `quickstart.bat` retries a crash twice.
+
+*Checked on a copy of the real project:*
+
+- adding the 33 names took 2 minutes and gave the same top guess as the experiment on all
+  73 cards;
+- a run killed hard at crop 128 of 486 restarted at 128, not 0. It finished in 10 minutes
+  with the same 73 cards and top guesses as an uninterrupted run.
+
+**Next topic:** keeping one fish on one card (continuity), and whether sampling more often
+than 1 frame per second helps.

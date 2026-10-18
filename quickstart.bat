@@ -46,8 +46,25 @@ echo ok> ".venv\bruv_setup_done"
 
 :run
 call .venv\Scripts\activate.bat
-python -m bruv_app quickstart "%FOLDER%"
-rem A crash (e.g. out of memory) exits with a negative code, which "if errorlevel 1" misses.
+set TRIES=0
+:process
+rem Processing resumes where it stopped, so a crash (e.g. out of memory) is retried twice.
+python -m bruv_app quickstart "%FOLDER%" --no-review
+set CODE=%errorlevel%
+if %CODE% equ 0 goto review
+rem Exit code 1 is an error the app explained (e.g. no template): retrying won't help.
+if %CODE% equ 1 goto fail
+set /a TRIES+=1
+if %TRIES% geq 3 goto fail
+echo.
+echo Processing stopped unexpectedly. Picking up where it left off in 30 seconds...
+ping -n 31 127.0.0.1 >nul
+goto process
+
+:review
+echo Keep this window open while you review; close it when you're finished.
+python -m bruv_app review --project "%FOLDER%\bruv_project"
+rem A crash exits with a negative code, which "if errorlevel 1" would miss.
 if %errorlevel% neq 0 goto fail
 goto end
 

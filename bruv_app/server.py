@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from . import imaging
 from .export import export_project
-from .pipeline import load_timeline, refresh_fish_guesses
+from .pipeline import extra_species, load_timeline, refresh_fish_guesses, species_labels
 from .store import REVIEWED, STATUSES, Project
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -74,6 +74,7 @@ def create_app(project_root: Path) -> FastAPI:
                 "counts": counts,
                 "dropdowns": project.get_meta("dropdowns") or {},
                 "dependent": project.get_meta("dependent") or {},
+                "extra_species": extra_species(project),
                 "classifier": project.get_meta("classifier"),
                 "template": project.get_meta("template"),
                 "last_export": project.get_meta("last_export"),
@@ -160,9 +161,9 @@ def create_app(project_root: Path) -> FastAPI:
     def label(fish_id: int, body: LabelIn):
         with lock:
             get_fish(fish_id)
-            species_list = (project.get_meta("dropdowns") or {}).get("species", [])
+            species_list = species_labels(project)  # the template's list plus the extra names
             if body.status == "species" and species_list and body.species not in species_list:
-                raise HTTPException(400, "Pick a species from the template's list")
+                raise HTTPException(400, "Pick a species from the list")
             try:
                 project.label_fish(fish_id, body.status, **body.model_dump(exclude={"status"}))
             except ValueError as exc:

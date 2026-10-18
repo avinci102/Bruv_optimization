@@ -165,9 +165,14 @@ class Project:
     # --- tracklets & fish ------------------------------------------------------------------
 
     def reset_tracking(self) -> None:
-        self.db.execute("UPDATE detections SET tracklet_id=NULL, embedding=NULL")
+        # Crop embeddings stay: they don't depend on tracking, so a rerun can reuse them.
+        self.db.execute("UPDATE detections SET tracklet_id=NULL")
         self.db.execute("DELETE FROM tracklets")
         self.db.execute("DELETE FROM fish")
+        self.db.commit()
+
+    def clear_embeddings(self) -> None:
+        self.db.execute("UPDATE detections SET embedding=NULL")
         self.db.commit()
 
     def save_tracklets(self, tracklets) -> None:

@@ -56,6 +56,7 @@ Status labels used below:
 | The owner's Excel viewing template (`…V viewing template v.2024`) | Sheet names, `record` headers, hidden columns K/L/P/Q/U, example row 2 | Known **only from a photo** described in the spec. The real file isn't in the repo. The mock template (`bruv_app/demo.py`) **invents** the A–F header names, the `info` fields and the type/sex/behavior lists. |
 | The owner's message: a ~750 MB 2-minute clip and a ~40 MB upload limit | The `shrink` command's default `--max-mb 38`, and the README example | A request from the owner, not an external source. |
 | The owner's real viewing template and a 2-minute clip, on the owner's PC (Oct 2026) | The first real run (SPEC §9): template reading (dependent dropdowns, clip list), the export, and the Excel checks | Read on the owner's PC only. Neither is in the repo; the tests use invented names. |
+| The owner's list of fish families, with common and family names (chat, Oct 2026) | `bruv_app/extra_species.txt` (SPEC §10): the 33 names that weren't in the template, minus salmon and cod as the owner agreed | The owner's own list. Which names the template already covers was checked by hand from general knowledge of the families (e.g. that whiprays are stingrays, Dasyatidae). |
 
 ## 2. Other apps, services and production systems
 
@@ -137,6 +138,10 @@ Status labels used below:
     (~1.6 s per crop).
   - The `safetensors` reader's own memory map failed with "paging file is too small"
     when free commit was low. That is why the checkpoint is read directly.
+- **Extra species (SPEC §10).** The 73 real cards were re-scored from their stored image
+  embeddings with the new names added. Accuracy was judged by eye on contact sheets of
+  all 73 cards, on the 23 cards whose family was clear from the image (Claude's own IDs,
+  not checked by an expert).
 - **Short-context text encoding.** At every load, `encode_text` and the short path are
   compared on two prompts (they agree within 1e-4). The short path took 2.6 s per label
   (80 prompts), against 9.8 s for the full context.

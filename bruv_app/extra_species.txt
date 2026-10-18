@@ -1,0 +1,44 @@
+# Extra names the reviewer can pick and the model can guess, on top of the Excel template's
+# species list. One name per line; lines starting with # are ignored.
+#
+# The template stays as it is: a card recorded with one of these names is exported as the
+# template's "other ..." species, with the name written in the comment. The MaxN tab counts
+# each name on its own.
+#
+# To use a different list for a project (e.g. another region), put a file named
+# extra_species.txt next to that project's Excel template.
+
+# Reef fish families
+triggerfish
+angelfish
+damselfish
+surgeonfish
+batfish
+butterflyfish
+clownfish
+unicornfish
+goatfish
+wrasse
+trumpetfish
+pufferfish
+porcupinefish
+boxfish
+goby
+blenny
+fusilier
+threadfin / monocle bream
+filefish
+squirrelfish / soldierfish
+cardinalfish
+hawkfish
+scorpionfish / lionfish
+lizardfish
+cornetfish
+moorish idol
+bigeye
+sandperch
+tilefish
+flathead
+flounder
+needlefish
+frogfish

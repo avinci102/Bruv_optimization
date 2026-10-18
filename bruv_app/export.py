@@ -11,7 +11,7 @@ import numpy as np
 
 from . import imaging
 from .metrics import UNKNOWN, FishLabel, compute_maxn, compute_sightings, per_frame_counts
-from .pipeline import load_timeline
+from .pipeline import extra_species, load_timeline
 from .store import Project
 from .template import export_workbook, read_template, seconds_to_time
 
@@ -83,6 +83,11 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
     maxn = compute_maxn(counts)
     sightings = compute_sightings(fish_labels, detections, settings.gap_seconds)
 
+    # Names from the app's extra list go into the template as its catch-all ("other ..."),
+    # with the name in the comment, so every value stays inside the template's dropdown.
+    extras = set(extra_species(project))
+    other = next((o for o in info.options("species") if o.strip().lower().startswith("other")), None)
+
     by_id = {f["id"]: f for f in fish_rows}
     record_rows = []
     for s in sightings:
@@ -90,8 +95,13 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
         clip_in, t_in = timeline.locate(s.t_in)
         clip_out, t_out = timeline.locate(s.t_out)
         comments = list(dict.fromkeys(m["comment"] for m in members if m["comment"]))
+        species = s.species
         if s.species == UNKNOWN:
             comments.insert(0, "Unidentified fish")
+            species = None
+        elif s.species in extras:
+            comments.insert(0, s.species)
+            species = other
         record_rows.append(
             {
                 "clip_in": clip_in,
@@ -99,7 +109,7 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
                 "clip_out": clip_out,
                 "time_out": seconds_to_time(t_out),
                 "type": _most_common(m["type"] for m in members),
-                "species": None if s.species == UNKNOWN else s.species,
+                "species": species,
                 "count": s.count,
                 "sex": _most_common(m["sex"] for m in members),
                 "behavior": _most_common(m["behavior"] for m in members),

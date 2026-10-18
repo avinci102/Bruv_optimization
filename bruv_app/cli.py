@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import webbrowser
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import Settings
@@ -53,8 +54,24 @@ def expand_videos(items: list[str]) -> list[Path]:
     return out
 
 
+@contextmanager
+def keep_awake():
+    """Ask Windows not to sleep while processing runs (closing a laptop's lid still does)."""
+    if sys.platform != "win32":
+        yield
+        return
+    import ctypes  # noqa: PLC0415
+
+    es_continuous, es_system_required = 0x80000000, 0x00000001
+    ctypes.windll.kernel32.SetThreadExecutionState(es_continuous | es_system_required)
+    try:
+        yield
+    finally:
+        ctypes.windll.kernel32.SetThreadExecutionState(es_continuous)
+
+
 def cmd_process(args) -> None:
-    from .pipeline import Pipeline, create_project  # noqa: PLC0415
+    from .pipeline import Pipeline, create_project, load_extra_species, update_extra_species  # noqa: PLC0415
 
     root = Path(args.project)
     settings_path = root / "settings.json"
@@ -77,14 +94,17 @@ def cmd_process(args) -> None:
             raise ValueError("--template is required for a new project (it holds the species list)")
         if not args.template:
             args.template = Project(root).get_meta("template")
-        project = create_project(root, expand_videos(args.videos), args.template, settings)
+        extra = load_extra_species(args.template)
+        project = create_project(root, expand_videos(args.videos), args.template, settings, extra)
     else:
         from .store import Project  # noqa: PLC0415
 
         project = Project(root)
         project.save_settings(settings)
+        update_extra_species(project, load_extra_species(project.get_meta("template")))
     print(f"Processing on {settings.resolved_device()} at {settings.resolved_fps():g} fps…")
-    Pipeline(project, progress=_progress()).run(force=args.force)
+    with keep_awake():
+        Pipeline(project, progress=_progress()).run(force=args.force)
     print(f"Done: {len(project.all_fish())} fish cards. Review with:")
     print(f"  python -m bruv_app review --project \"{root}\"")
 
@@ -188,7 +208,7 @@ def find_inputs(folder: Path) -> tuple[list[Path], Path]:
 
 def cmd_quickstart(args) -> None:
     """Everything in one go: find inputs, fetch the detector, process, open the review page."""
-    from .pipeline import Pipeline, create_project  # noqa: PLC0415
+    from .pipeline import Pipeline, create_project, load_extra_species, update_extra_species  # noqa: PLC0415
     from .store import Project  # noqa: PLC0415
 
     folder = Path(args.folder).expanduser().resolve()
@@ -206,14 +226,17 @@ def cmd_quickstart(args) -> None:
             CFD_NANO_URL, model_cache() / CFD_NANO_URL.rsplit("/", 1)[1]
         )
         settings.detector_weights = str(weights.resolve())
+    extra = load_extra_species(template)
     if (root / "project.db").exists():
         print(f"Resuming the project in {root}")
         project = Project(root)
         project.save_settings(settings)
+        update_extra_species(project, extra)
     else:
-        project = create_project(root, videos, template, settings)
+        project = create_project(root, videos, template, settings, extra)
     print(f"Processing on {settings.resolved_device()} at {settings.resolved_fps():g} fps…")
-    Pipeline(project, progress=_progress()).run()
+    with keep_awake():
+        Pipeline(project, progress=_progress()).run()
     print(f"Done: {len(project.all_fish())} fish cards. Exports will be saved in {root / 'exports'}")
     if not args.no_review:
         print("Keep this window open while you review; close it when you're finished.")
