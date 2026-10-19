@@ -3,12 +3,11 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   summary: null, cards: [], index: 0, detail: null, selected: null, selectedIndex: -1,
-  template: new Set(), other: null,
+  template: new Set(), other: null, tinyPx: 40, ticked: new Set(),
 };
 
 const NOT_IN_TEMPLATE = "not in template";
 const EXTRA_HINT = "Not in the template's species list: exported as its 'other' entry, with this name in the comment.";
-const MIN_PX = 40;  // the "Fish ≥ 40 px" toggle: the fish's size at its largest, in frame pixels
 
 const STATUS_TEXT = {
   pending: "Not reviewed yet",
@@ -58,16 +57,20 @@ function statusGroup(status) {
 }
 
 // The cards the header lets through: Status, Show (the rank a template species needs among
-// the guesses, or "all") and the size toggle.
-function visibleCards(status = $("status").value, rule = $("filter").value) {
-  const minPx = $("min-size").checked ? MIN_PX : 0;
+// the guesses, or "all") and whether tiny fish are shown.
+function visibleCards(status = $("status").value, rule = $("filter").value, showTiny = $("show-tiny").checked) {
   return state.cards.filter((c) => {
     if (status !== "all" && statusGroup(c.status) !== status) return false;
-    if (c.max_px < minPx) return false;
+    if (!showTiny && c.max_px < state.tinyPx) return false;
     if (rule === "all") return true;
     const rank = templateRank(c.guesses);
     return rank > 0 && rank <= Number(rule);
   });
+}
+
+// Tiny-fish cards that Status and Show let through: shown only when ticked.
+function tinyCount() {
+  return visibleCards(undefined, undefined, true).length - visibleCards(undefined, undefined, false).length;
 }
 
 // Each choice shows how many cards it would give, with the other controls as they are.
@@ -78,18 +81,26 @@ function updateFilterCounts() {
   };
   for (const opt of $("status").options) count(opt, visibleCards(opt.value, undefined).length);
   for (const opt of $("filter").options) count(opt, visibleCards(undefined, opt.value).length);
+  $("tiny-label").textContent = `Show tiny fish (${tinyCount()})`;
 }
 
 async function loadSummary() {
   state.summary = await api("/api/summary");
-  const s = state.summary;
-  $("project").textContent = s.project;
-  $("progress-text").textContent = `${s.reviewed} of ${s.total} reviewed`;
-  $("bar").style.width = s.total ? `${(100 * s.reviewed) / s.total}%` : "0";
+  $("project").textContent = state.summary.project;
+  showProgress();
 }
 
 async function loadCards() {
   state.cards = await api("/api/fish");
+  showProgress();
+}
+
+// Tiny fish are optional, so they count towards progress only once reviewed or skipped.
+function showProgress() {
+  const counted = state.cards.filter((c) => c.max_px >= state.tinyPx || c.status !== "pending");
+  const done = counted.filter((c) => c.status !== "pending" && c.status !== "skipped").length;
+  $("progress-text").textContent = `${done} of ${counted.length} reviewed`;
+  $("bar").style.width = counted.length ? `${(100 * done) / counted.length}%` : "0";
 }
 
 async function init() {
@@ -97,6 +108,11 @@ async function init() {
   const dd = state.summary.dropdowns;
   state.template = new Set(dd.species || []);
   state.other = (dd.species || []).find((s) => s.trim().toLowerCase().startsWith("other")) || null;
+  state.tinyPx = state.summary.tiny_fish_px ?? state.tinyPx;
+  showProgress();
+  $("tiny-toggle").title =
+    `Tiny fish never reach ${state.tinyPx} px across, too small to identify. They're kept off ` +
+    "other cards and hidden; tick to review them. Untouched, they stay out of the export.";
   // Open on the pending cards, or the skipped ones once nothing is pending.
   for (const status of ["pending", "skipped", "all"]) {
     $("status").value = status;
@@ -124,10 +140,13 @@ async function init() {
 async function show(index) {
   const list = visibleCards();
   if (!list.length) {
-    const done = $("status").value === "pending" && !state.cards.some((c) => c.status === "pending");
-    message(done
-      ? "No pending cards left. Pick “Skipped” or “Reviewed” under Status to revisit, or export."
-      : "No cards match. Change Status or Show, or turn off “Fish ≥ 40 px”.", "ok");
+    const tiny = $("show-tiny").checked ? 0 : tinyCount();
+    const allPending = $("status").value === "pending" && $("filter").value === "all";
+    message(tiny
+      ? `Only tiny fish left here (${tiny}). Tick “Show tiny fish” to review them, or export.`
+      : allPending
+        ? "No pending cards left. Pick “Skipped” or “Reviewed” under Status to revisit, or export."
+        : "No cards match. Change Status or Show.", "ok");
     return;
   }
   state.index = Math.max(0, Math.min(index, list.length - 1));
@@ -142,7 +161,7 @@ async function show(index) {
   $("meta").textContent =
     `First seen ${d.clip_in} ${fmtTime(d.time_in)} · last seen ${d.clip_out} ${fmtTime(d.time_out)} · ` +
     `${d.n_detections} detections in ${d.tracklets.length} track${d.tracklets.length === 1 ? "" : "s"} · ` +
-    `${Math.round(card.max_px)} px across at its largest`;
+    `${Math.round(card.max_px)} px across at its largest${card.max_px < state.tinyPx ? " (tiny fish)" : ""}`;
 
   // Status: only the user's own recorded answer is ever highlighted.
   const badge = $("status-badge");
@@ -210,13 +229,24 @@ function renderFilmstrip(d) {
     // Name the clip on the first thumbnail and wherever the chapter changes.
     const clip = item.clip !== lastClip ? `${item.clip} ` : "";
     lastClip = item.clip;
-    fig.innerHTML = `<img loading="lazy" src="/crop/${item.det_id}" alt=""><figcaption>${clip}${fmtTime(item.local_t)}</figcaption>`;
+    fig.innerHTML =
+      `<span class="tick" title="Tick (Space or Ctrl+click). X moves ticked sightings to a new card."></span>` +
+      `<img loading="lazy" src="/crop/${item.det_id}" alt=""><figcaption>${clip}${fmtTime(item.local_t)}</figcaption>`;
     fig.title = `${item.clip} ${fmtTime(item.local_t)} (track ${item.tracklet})`;
-    fig.onclick = () => selectSighting(i);
+    fig.onclick = (e) => {
+      if (e.ctrlKey || e.metaKey) toggleTick(i);
+      else if (e.shiftKey) tickRange(state.selectedIndex < 0 ? i : state.selectedIndex, i);
+      else selectSighting(i);
+    };
+    fig.querySelector(".tick").onclick = (e) => {
+      e.stopPropagation();
+      toggleTick(i);
+    };
     strip.append(fig);
   });
   state.selectedIndex = -1;
-  $("split").disabled = true;
+  state.ticked = new Set();
+  updateSplitButton();
 }
 
 // Show one sighting of the card (click it, or ↑ and ↓); splitting starts there.
@@ -231,7 +261,37 @@ function selectSighting(i) {
   state.selectedIndex = i;
   state.selected = d.filmstrip[i];
   showFrame(state.selected);
-  $("split").disabled = i === 0;
+  updateSplitButton();
+}
+
+// Ticked sightings move to a new card together (e.g. the other fish, after two fish crossed).
+function toggleTick(i) {
+  if (state.ticked.has(i)) state.ticked.delete(i);
+  else state.ticked.add(i);
+  $("filmstrip").querySelectorAll("figure")[i].classList.toggle("ticked", state.ticked.has(i));
+  updateSplitButton();
+}
+
+function tickRange(from, to) {
+  const figs = $("filmstrip").querySelectorAll("figure");
+  for (let i = Math.min(from, to); i <= Math.max(from, to); i++) {
+    state.ticked.add(i);
+    figs[i].classList.add("ticked");
+  }
+  selectSighting(to);
+}
+
+function clearTicks() {
+  state.ticked.clear();
+  $("filmstrip").querySelectorAll("figure.ticked").forEach((f) => f.classList.remove("ticked"));
+  updateSplitButton();
+}
+
+// X moves the ticked sightings if there are any, else splits from the selected sighting on.
+function updateSplitButton() {
+  const n = state.ticked.size;
+  $("split").innerHTML = n ? `Move ${n} ticked to a new card <kbd>X</kbd>` : "Split from selected <kbd>X</kbd>";
+  $("split").disabled = !n && state.selectedIndex <= 0;
 }
 
 function optionalFields() {
@@ -284,6 +344,7 @@ function recordTyped() {
 async function split() {
   const d = state.detail, sel = state.selected;
   if (!d) return;
+  if (state.ticked.size) return moveTicked();
   if (!sel || state.selectedIndex <= 0) {
     message("Pick the sighting where the other fish starts (click it, or use ↑ and ↓), then press X.", "error");
     return;
@@ -296,6 +357,23 @@ async function split() {
     const list = visibleCards();
     await show(Math.max(0, list.findIndex((c) => c.id === d.id)));
     message(`Split off card #${res.new_id}.`, "ok");
+  } catch (e) {
+    message(e.message, "error");
+  }
+}
+
+async function moveTicked() {
+  const d = state.detail;
+  const n = state.ticked.size;
+  const ids = [...state.ticked].flatMap((i) => d.filmstrip[i].covers);
+  if (!confirm(`Move the ${n} ticked sighting${n === 1 ? "" : "s"} of card #${d.id} to a new card?`)) return;
+  try {
+    const res = await api(`/api/fish/${d.id}/move`, { det_ids: ids });
+    await Promise.all([loadCards(), loadSummary()]);
+    updateFilterCounts();
+    const list = visibleCards();
+    await show(Math.max(0, list.findIndex((c) => c.id === d.id)));
+    message(`Moved ${n} sighting${n === 1 ? "" : "s"} to card #${res.new_id}.`, "ok");
   } catch (e) {
     message(e.message, "error");
   }
@@ -378,6 +456,11 @@ document.addEventListener("keydown", (e) => {
     selectSighting(state.selectedIndex < 0 ? 0 : state.selectedIndex - 1);
   } else if (e.key === "ArrowDown") {
     selectSighting(state.selectedIndex < 0 ? 1 : state.selectedIndex + 1);
+  } else if (e.key === " ") {
+    if (state.selectedIndex < 0) selectSighting(0);
+    if (state.selectedIndex >= 0) toggleTick(state.selectedIndex);
+  } else if (e.key === "Escape") {
+    clearTicks();
   } else if (e.key === "ArrowRight") {
     show(state.index + 1);
   } else if (e.key === "ArrowLeft") {
@@ -399,7 +482,7 @@ $("next").onclick = () => show(state.index + 1);
 $("split").onclick = split;
 $("merge-prev").onclick = mergePrev;
 $("export").onclick = exportExcel;
-for (const id of ["status", "filter", "min-size"]) {
+for (const id of ["status", "filter", "show-tiny"]) {
   $(id).onchange = (e) => {
     e.target.blur();  // so the review keys work straight away
     updateFilterCounts();

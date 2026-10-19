@@ -21,7 +21,10 @@ See [`docs/SPEC.md`](docs/SPEC.md) for the decisions, the architecture and what'
 
 The first run installs everything. It can install Python 3.13 for you if it's missing
 (through Python's install manager, `py install 3.13`, when you have it; otherwise
-winget), and it downloads the fish detector and species model, a few GB in all. After
+winget), and it downloads the fish detector and species model, a few GB in all. On a PC
+with an NVIDIA graphics card it installs the GPU version of PyTorch (about 3 GB more),
+which makes processing many times faster; if the card's driver is too old, it says so
+and runs on the CPU. After
 that it processes the video and opens the review page in your browser. Keep the black
 window open while you review. Exports land in a `bruv_project\exports` folder inside your
 footage folder, and the original template is never changed.
@@ -35,12 +38,14 @@ seconds and carries on by itself, up to twice. Your reviews are saved as you mak
 
 **Python:** use 3.12, 3.13 or 3.14. 3.15 is too new: PyTorch has no 3.15 build yet.
 
-**Time and memory on a laptop CPU.** On an Intel i7-10810U (6 cores, no NVIDIA GPU), a
-2-minute clip took about 18 minutes: 2 for detection, 13 for the species model on 486
-fish crops, 3 for the species list. The species model's time grows with the number of
-fish tracks, so expect hours for a 1-hour video until the model runs on a faster
-runtime. The species model needs about 1.5 GB of free memory. If the window stops with
-no error message, close other programs and run `quickstart.bat` again: it resumes.
+**Time and memory.** Videos are sampled at 4 frames per second: fish move little between
+frames, which keeps each fish on its own track. On a laptop CPU (Intel i7-10810U, no
+NVIDIA GPU), detection takes about 1.2 s per frame and the species model 1.1 s per fish
+crop. Tiny fish skip the species model (on the first clip that was over half its work),
+so a 2-minute clip takes about 16 minutes, and a 45-minute video about 5–6 hours. A PC
+with a recent NVIDIA card should take well under an hour. The species model needs about
+1.5 GB of free memory. If the window stops with no error message, close other programs
+and run `quickstart.bat` again: it resumes.
 
 ## Fish that aren't on your template's list
 
@@ -90,7 +95,7 @@ On macOS/Linux: `pip install -e . && python -m bruv_app demo`.
 5. Export from the page, or with `scripts\run_windows.bat export --project projects\site1`.
    The original template is never modified.
 
-Useful options: `--fps` (default 1 on CPU, 2 with a GPU), `--start`/`--duration` (an
+Useful options: `--fps` (default 4), `--start`/`--duration` (an
 analysis window, e.g. to skip the descent), `--clip-names` (`auto`, the default, uses
 `clip_1, clip_2…` when the template's `clip_in` dropdown lists them and the GoPro file
 name otherwise; `file` or `index` force one). Everything else is in
@@ -106,7 +111,7 @@ scripts\run_windows.bat shrink D:\GoPro\GX010123.MP4 --max-mb 38
 ```
 
 This writes `D:\GoPro\small\GX010123.MP4` under 38 MB: 1280 px wide, 10 fps, H.264, no
-audio. The pipeline itself decodes at 1280 px and samples 1–2 fps, so nothing it uses is
+audio. The pipeline itself decodes at 1280 px and samples 4 fps, so nothing it uses is
 lost. Keep the GoPro file name so chapter ordering still works. Use `--start`/`--duration`
 to send just part of a clip.
 
@@ -129,6 +134,10 @@ the audio track.
   - `X` (split): one tracked stretch swaps fish. Pick the sighting where the other fish
     starts (click it, or use `↑` `↓`) and press `X`. That sighting and the later ones
     become a new card.
+  - **Tick and move:** for the other fish's sightings, e.g. after two fish crossed. Tick
+    them (the box on each thumbnail, `Space` on the selected one, `Ctrl`+click, or
+    `Shift`+click for a range), then press `X`: they all move to one new card. `Esc`
+    clears the ticks.
   - `P` (same fish as the previous card): folds this card into the previous one, which
     then needs reviewing again.
 
@@ -141,9 +150,43 @@ the audio track.
   - **Show:** all cards, or only those where one of the template's own species is the
     model's 1st guess, or in its top 2 or top 3. Such a card is marked ★ with that
     species. The model can be wrong either way, so review the other cards too.
-  - **Fish ≥ 40 px:** hides the cards whose fish stays small throughout, under 40 px
-    across at its largest in the 960 px wide frames the page shows. On the first real
-    clip those were distant blobs. Each card shows its fish's size at its largest.
+  - **Show tiny fish:** tiny fish never reach 40 px across (in the 960 px wide frames the
+    page shows), so nobody can identify them. They get cards of their own, never joined
+    to other fish, and stay hidden until you tick this. Left unreviewed, they stay out
+    of the export and out of the progress count. Each card shows its fish's size at its
+    largest.
+
+## Teaching it your fish
+
+The species model never changes, but your confirmed fish can sharpen its guesses. Add
+examples to a library on your PC: reviewed projects you trust, or photos sorted into one
+folder per species (folder names as in your species list).
+
+```bat
+scripts\run_windows.bat learn --add projects\site1
+scripts\run_windows.bat learn --add-photos D:\fish_photos
+scripts\run_windows.bat learn
+```
+
+The last command lists what the library holds. Guesses blend in the nearest confirmed
+examples only once that has beaten the species model alone on videos it didn't learn
+from (at least 20 examples, by 5 points), so a thin or patchy library can't make guesses
+worse. Processing a project tells you whether its guesses use the library. Adding to the
+library refreshes a project's guesses the next time it's processed; reviews stay.
+`--remove <folder>` takes a project or photo folder back out.
+
+## Checking new rules against your answers
+
+To see whether a change (new settings, a new version) builds better cards, re-run a copy
+of a project you've reviewed and score it against the original:
+
+```bat
+scripts\run_windows.bat score --project projects\site1_rerun --answers projects\site1
+```
+
+It counts the cards that now mix sightings you answered differently, and the groups of
+sightings you pulled apart (splits, moves, "Multiple fish") that are on one card again.
+It matches sightings by frame time and box, so it works across frame rates too.
 
 ## Development
 

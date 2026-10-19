@@ -324,15 +324,19 @@ building the MVP:
 ### Status by phase
 
 1. Scaffold — **done.** Package, config, mock template, synthetic video, pytest.
-2. Pipeline — **done.** Resumable detection, tracker, continuity, BioCLIP 2 with a
-   histogram fallback. RF-DETR and BioCLIP 2 now run with real weights on Windows (§9).
+2. Pipeline — **done.** Resumable detection at 4 fps, a tracker that follows each fish's
+   course, continuity with tiny fish kept apart, BioCLIP 2 with a histogram fallback, and
+   a library of confirmed fish that can sharpen the guesses (§12). RF-DETR and BioCLIP 2
+   run with real weights on Windows (§9).
 3. Review UI — **done.** Cards, keys for the guesses, unknown, not a fish, multiple
-   fish, skip, split and merge (with a log of corrections), searchable species, optional
-   fields, status, template-species and size filters, progress (§11).
+   fish, skip, split, tick-and-move and merge (with a log of corrections), searchable
+   species, optional fields, status and template-species filters, tiny fish hidden until
+   asked for, progress (§11, §12).
 4. Export — **done.** Record rows by header name, MaxN tab, app_details tab with model vs
    user agreement, relative size and the saved best crop.
-5. Validation on real footage — **started.** First real run done (§9); the comparison
-   with a manual annotation of the same video is still to do.
+5. Validation on real footage — **started.** First real run done (§9); a `score` command
+   checks re-runs against reviewed copies (§12). The comparison with Vinci's manual
+   annotation of the same video is still to do.
 6. Windows installer — not started (`scripts/*.bat` cover setup for now).
 7. Scale markers — not started.
 
@@ -513,9 +517,11 @@ The times leave out the species-name embeddings, which the runs shared.
     break sooner at higher rates. Scaling it to about one second brought 4 fps back to
     ~290 tracks, but those tracks still swapped fish.
 - **Decision: stay at 1 fps.** 2 fps may still be worth it on a GPU, for MaxN.
+  *Superseded (§12): trials now run at 3–4 fps, and tracking adapts to the rate.*
 - **Next lever:** compare colour on the middle of the box (the fish itself), in both the
   tracker and the stitching, with a stricter stitching threshold. Vinci wants to see how
-  reviewing goes with the new keys first.
+  reviewing goes with the new keys first. *Tested in §12: colour from the middle of the
+  box didn't help; the whole box's colour does, when joining pieces.*
 
 **Review keys** (see the README):
 
@@ -553,7 +559,8 @@ model's probability doesn't:
   A cut at 0.3 still keeps 4 of them, and drops 6 of the others.
 - **Added:** a "Fish ≥ 40 px" toggle next to the Show menu, and each card shows its
   fish's size at its largest. (A second group of menu choices came first; the toggle is
-  cleaner.)
+  cleaner.) *Then (§12): tiny fish are kept apart and hidden by default, behind a "Show
+  tiny fish" toggle.*
 
 **More names.** Vinci suggested 26 more names:
 
@@ -563,3 +570,126 @@ model's probability doesn't:
   for one fish would split the model's guesses between them.
 - Coral bream and five small sand-dwelling families (sand diver, worm fish, dragonet,
   pipefish, stargazer) were left out as not critical.
+
+---
+
+## 12. Keeping one fish on one card (Oct 2026)
+
+**What the first corrections showed.** Vinci's first 6 corrections (4 "Multiple fish", 2
+splits) broke 21 joins between tracked pieces:
+
+- BioCLIP 2 rated the broken joins 0.82–0.97 similar, so a stricter similarity bar alone
+  can't separate them;
+- 13 of the 21 had a fish under 40 px on one side;
+- a shorter time window (5 s instead of 10 s) only reshuffled the joins: the same 28 cards
+  still had 4 or more pieces.
+
+Those answers are few (9 reviewed cards), and Vinci asked not to lean on them. So the rules
+below were set from comparisons that need no answers: two fish in the same frame are always
+different fish, and two halves of one tracked stretch are the same fish. Vinci's answers
+were a cross-check.
+
+**Built**
+
+1. **Tiny fish** (under 40 px at their largest, `tiny_fish_px`) join no other piece, and
+   the review page hides their cards until "Show tiny fish" is ticked. Left unreviewed,
+   they stay out of the export and out of the progress count.
+2. **Tick and move.** Ticked sightings move to a new card with X (`move_out` in the
+   corrections), e.g. the other fish after two fish crossed.
+3. **4 fps by default.** Trials now run at 3–4 fps. How long a fish may go unseen and keep
+   its track is set in seconds (`track_max_missed_s`, 1 s), not frames.
+4. **Direction of travel in the tracker** (`track_direction`). A match is scored against
+   where the fish was or where it was heading, whichever fits better, so two crossing fish
+   keep their own tracks. A first version scored against the heading only; at 1 fps fish
+   turn so much that it joined a butterflyfish to a triggerfish.
+5. **Colour check when joining pieces** (`merge_min_colour` 0.7, the whole box's colour),
+   and a higher BioCLIP similarity bar (`merge_min_similarity` 0.85, was 0.80).
+6. **`score` command.** It scores a re-run against a reviewed copy: cards mixing
+   different answers, and groups of sightings the reviewer pulled apart that are joined
+   again. Sightings are matched by frame time and box, so it works across frame rates.
+7. **Training loop** (`learn` command, `learn.py`). A library on the PC holds confirmed
+   examples: reviewed projects, and photos sorted by species. Guesses blend in a vote of
+   the nearest examples only once that beats the model alone on sources it didn't learn
+   from (at least 20 examples, by 5 points). BioCLIP 2 itself is never retrained.
+
+**Tested and not adopted**
+
+- **Colour from the middle of the box** (Vinci's colour rule) told same-fish pairs from
+  different-fish pairs slightly worse than the whole box: AUC 0.79 against 0.82, for
+  nearby fish of 40 px or more (0.77 for the middle 40%). A fish's own pixels change more
+  between frames than its surroundings as it turns.
+- **A speed limit across gaps.** Fish moved up to about a tenth of the frame width per
+  second, so after a 5–10 s gap they could be almost anywhere. The limit cut 4 of the 18
+  bad joins, for 10 more cards, and exceptions for fish that left by an edge or swam off
+  let most of them back in. The same idea works better inside the tracker (item 4).
+- **Comparing pieces by species guess** (the overlap of their guess probabilities): AUC
+  0.82, against 0.86 for the raw BioCLIP similarity, and almost no gain on top of
+  similarity and colour.
+
+**Joining rules**, for fish of 40 px or more on the 4 fps copy of the first clip (32
+same-fish pairs, 622 different-fish pairs):
+
+| Rule | Same-fish joins kept | Different-fish joins blocked |
+|---|---|---|
+| Similarity ≥ 0.80 (before) | 100% | 40% |
+| Similarity ≥ 0.80, colour ≥ 0.7 | 100% | 53% |
+| Similarity ≥ 0.85, colour ≥ 0.7 (now) | 91% | 65% |
+| Similarity ≥ 0.90, colour ≥ 0.7 | 75% | 83% |
+
+The same-fish pairs are parts of one tracked stretch, so a fish that returns after a gap
+is probably kept less often than shown.
+
+**The first clip at 4 fps, scored against Vinci's 1 fps answers** (all new rows: tiny fish
+apart, colour ≥ 0.7):
+
+| Rules | Cards to review | Tiny fish (hidden) | Cards mixing answers | Pulled-apart groups joined again |
+|---|---|---|---|---|
+| Old | 89 | – | 2 | 8 of 23 |
+| New, similarity 0.80, no direction of travel | 48 | 182 | 2 | 9 of 23 |
+| New, similarity 0.80 | 48 | 177 | 1 | 6 of 23 |
+| New, similarity 0.85 (the defaults) | 59 | 177 | 1 | 5 of 23 |
+
+The remaining mixed card joins a triggerfish with something answered "not a fish" inside
+one tracked stretch; tick and move fixes it in one step. Vinci's project now runs at 4 fps
+with these rules; the 1 fps project with the earlier reviews is kept next to it as
+`bruv_project_1fps`.
+
+**Speed-ups for long videos.** Ahead of a full 45-minute run:
+
+- **Tiny fish skip the species model** (`guess_tiny_fish` off). On the first clip at 4 fps
+  they were 363 of the 632 crops it would embed, and their guesses were blobs named after
+  whatever species looked closest. Cards and joins are unchanged (same 236 cards and
+  scores on a re-run); tiny-fish cards just show no guesses.
+- **The setup installs the GPU version of PyTorch** when an NVIDIA card can use it.
+  `bruv_app/gpu.py` asks `nvidia-smi` for the driver and compute capability and picks
+  CUDA 13.0 (RTX 20 series on, driver 580+), CUDA 12.6 (GTX 900 to RTX 40, driver 528+),
+  or the CPU build, with a message when a driver update would help. PyTorch 2.14.1 has
+  Windows builds for Python 3.13 in both, with a matching torchvision. Untested on a GPU
+  so far: the first full run is that test.
+
+Estimate for 45 minutes at 4 fps, scaled from the 2-minute clip (fish activity varies
+along a drop, so ±50%):
+
+| Step | Laptop CPU (measured rates) | NVIDIA GPU PC (typical, not measured) |
+|---|---|---|
+| Detection, 10,800 frames | ~3.5 h | ~10–20 min, mostly decoding |
+| Species model, ~6,000 crops (tiny fish skipped) | ~1.8 h | ~1–2 min |
+| Tracking, joining, guesses | minutes | minutes |
+| Total | ~5–6 h | well under an hour |
+
+**Next**
+
+- Compare with Vinci's manual answer key of the same clip (phase 5).
+- More examples. Fully reviewed videos make the scores trustworthy; confirmed fish or
+  photos per species feed the library.
+
+**Field habits that help the model** (suggested to BRUV users):
+
+- a marker at a set distance (a rough size for fish near it, a real counting zone, and a
+  visibility check);
+- the same camera settings on every drop: linear lens, stabilisation off, white balance
+  locked;
+- a level, still rig, good light and a clean lens;
+- ropes and the bait arm away from the middle of the view (the detector took the bait arm
+  for a fish 3 times on the first clip);
+- a slate or hand signal when the divers leave, which marks where the analysis starts.

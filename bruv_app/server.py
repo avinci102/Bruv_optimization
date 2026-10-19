@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
@@ -39,6 +39,10 @@ class MergeIn(BaseModel):
     other_id: int
 
 
+class MoveIn(BaseModel):
+    det_ids: list[int]
+
+
 def _box(d) -> dict:
     return {"x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"], "score": round(d["score"], 3)}
 
@@ -50,6 +54,13 @@ def create_app(project_root: Path) -> FastAPI:
     app = FastAPI(title="BRUV Fish ID")
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+    @app.middleware("http")
+    async def always_current_page(request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"  # after an update, a reload gets it
+        return response
+
     def get_fish(fish_id: int):
         row = project.fish(fish_id)
         if row is None:
@@ -58,7 +69,12 @@ def create_app(project_root: Path) -> FastAPI:
 
     @app.get("/")
     def index():
-        return FileResponse(STATIC_DIR / "index.html")
+        # The script and styles get a new address whenever they change, so a browser never
+        # runs an old copy from its cache after an update.
+        page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        for name in ("app.js", "styles.css"):
+            page = page.replace(f"/static/{name}", f"/static/{name}?v={(STATIC_DIR / name).stat().st_mtime_ns}")
+        return HTMLResponse(page)
 
     @app.get("/api/summary")
     def summary():
@@ -76,6 +92,7 @@ def create_app(project_root: Path) -> FastAPI:
                 "dependent": project.get_meta("dependent") or {},
                 "extra_species": extra_species(project),
                 "classifier": project.get_meta("classifier"),
+                "tiny_fish_px": settings.tiny_fish_px,
                 "template": project.get_meta("template"),
                 "last_export": project.get_meta("last_export"),
                 "frames": project.frame_count(),
@@ -115,7 +132,8 @@ def create_app(project_root: Path) -> FastAPI:
             best = next((d for d in dets if d["id"] == f["best_det"]), dets[0] if dets else None)
             step = max(1, -(-len(dets) // FILMSTRIP_MAX))
             strip = []
-            for d in dets[::step]:
+            for i in range(0, len(dets), step):
+                d = dets[i]
                 clip, local = timeline.locate(d["t"])
                 strip.append(
                     {
@@ -126,6 +144,9 @@ def create_app(project_root: Path) -> FastAPI:
                         "local_t": local,
                         "tracklet": d["tracklet_id"],
                         "box": _box(d),
+                        # A long card shows every n-th sighting: this one stands for those
+                        # up to the next, so ticking it moves them all.
+                        "covers": [x["id"] for x in dets[i : i + step]],
                     }
                 )
             clip_in, t_in = timeline.locate(f["start_t"])
@@ -179,6 +200,20 @@ def create_app(project_root: Path) -> FastAPI:
             get_fish(fish_id)
             try:
                 new_id = project.split_fish(fish_id, body.from_t)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            refresh_fish_guesses(project, fish_id, settings)
+            refresh_fish_guesses(project, new_id, settings)
+            project.commit()
+            return {"ok": True, "new_id": new_id}
+
+    @app.post("/api/fish/{fish_id}/move")
+    def move(fish_id: int, body: MoveIn):
+        """Ticked sightings go to a new card (e.g. the other fish, after two fish crossed)."""
+        with lock:
+            get_fish(fish_id)
+            try:
+                new_id = project.move_to_new_fish(fish_id, body.det_ids)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             refresh_fish_guesses(project, fish_id, settings)

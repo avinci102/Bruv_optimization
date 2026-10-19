@@ -29,6 +29,20 @@ def test_pipeline_builds_one_card_per_fish_visit(project):
         assert f["status"] == "pending"  # nothing is pre-selected
 
 
+def test_tiny_fish_get_cards_of_their_own(project, tmp_path, synthetic_videos):
+    assert len(project.all_fish()) < len(project.tracklet_ids())  # normally, pieces are joined
+    template = demo.make_mock_template(tmp_path / "t.xlsx")
+    embedded = "SELECT COUNT(*) FROM detections WHERE embedding IS NOT NULL"
+    for guess_tiny in (False, True):
+        settings = demo_settings(tiny_fish_px=1e9, guess_tiny_fish=guess_tiny)  # every fish is tiny
+        tiny = create_project(tmp_path / f"tiny{guess_tiny}", synthetic_videos, template, settings)
+        Pipeline(tiny, classifier=demo.DemoClassifier()).run()
+        assert len(tiny.all_fish()) == len(tiny.tracklet_ids())
+        # The species model, the slow step, skips tiny fish unless asked to.
+        assert bool(tiny.db.execute(embedded).fetchone()[0]) == guess_tiny
+        assert all(bool(json.loads(f["guesses"])) == guess_tiny for f in tiny.all_fish())
+
+
 def test_cards_are_pure(project):
     """No card mixes species (the tracker's appearance gate stops identity swaps)."""
     for f in project.all_fish():
@@ -66,6 +80,19 @@ def test_end_to_end_maxn_matches_ground_truth(project, tmp_path):
     details = list(wb["app_details"].iter_rows(min_row=2, values_only=True))
     assert len(details) == len(project.all_fish())
     assert all(row[10] is True for row in details)  # user agreed with top-1 everywhere
+
+
+def test_default_rate_is_4_fps_with_pure_cards_and_true_maxn(tmp_path, synthetic_videos):
+    template = demo.make_mock_template(tmp_path / "t.xlsx")
+    project = create_project(tmp_path / "p", synthetic_videos, template, demo_settings(sample_fps=None))
+    Pipeline(project, classifier=demo.DemoClassifier()).run()
+    assert project.frame_count() == 96 and project.frame_rate() == 4.0
+    for f in project.all_fish():
+        species = {ground_truth_species(d) for d in project.fish_detections(f["id"])}
+        assert len(species - {None}) == 1, (f["id"], species)
+    label_like_perfect_human(project)
+    wb = openpyxl.load_workbook(export_project(project, tmp_path / "export.xlsx"))
+    assert {r[0]: r[1] for r in wb["MaxN"].iter_rows(min_row=2, values_only=True)} == expected_maxn(fps=4.0)
 
 
 def test_detection_resumes_after_interruption(tmp_path, synthetic_videos):

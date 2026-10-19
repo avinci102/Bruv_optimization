@@ -58,6 +58,11 @@ def from_blob(b: bytes | None) -> np.ndarray | None:
     return None if b is None else np.frombuffer(b, dtype=np.float32)
 
 
+def box_px(d) -> float:
+    """A detection's size: its box's longer side, in pixels of the saved frame."""
+    return max((d["x2"] - d["x1"]) * d["width"], (d["y2"] - d["y1"]) * d["height"])
+
+
 @dataclass
 class FrameRow:
     id: int
@@ -152,6 +157,12 @@ class Project:
 
     def frame_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM frames").fetchone()[0]
+
+    def frame_rate(self) -> float:
+        """Sampled frames per second, from the stored frames' times (1.0 before any)."""
+        times = [r[0] for r in self.db.execute("SELECT t FROM frames ORDER BY seq")]
+        steps = [b - a for a, b in zip(times, times[1:]) if b > a]
+        return 1.0 / float(np.median(steps)) if steps else 1.0
 
     def frames_with_detections(self):
         """Yield (FrameRow, [(det id, Detection)]) in time order."""
@@ -303,27 +314,44 @@ class Project:
         dets = self.fish_detections(fish_id)
         if not any(d["t"] < from_t for d in dets) or not any(d["t"] >= from_t for d in dets):
             raise ValueError("Split point must leave detections on both sides")
+        new_id = self._move_detections(fish_id, {d["id"] for d in dets if d["t"] >= from_t})
+        self.log_correction("split", fish_id, from_t=from_t, new_card=new_id)
+        self.db.commit()
+        return new_id
+
+    def move_to_new_fish(self, fish_id: int, det_ids: list[int]) -> int:
+        """Move some of a card's detections (the ticked sightings) onto a new, unreviewed
+        card: e.g. the other fish's sightings after two fish crossed and the tracker swapped
+        them. The card keeps its answer. Returns the new card's id."""
+        dets = {d["id"] for d in self.fish_detections(fish_id)}
+        chosen = dets & set(det_ids)
+        if not chosen or chosen == dets:
+            raise ValueError("Tick some of this card's sightings, but not all of them")
+        new_id = self._move_detections(fish_id, chosen)
+        self.log_correction("move_out", fish_id, detections=sorted(chosen), new_card=new_id)
+        self.db.commit()
+        return new_id
+
+    def _move_detections(self, fish_id: int, chosen: set[int]) -> int:
+        """Put the chosen detections of a card on a new card. A tracklet that loses only some
+        of its detections is cut in two."""
         moved: list[int] = []
         for tid in self.fish_tracklets(fish_id):
             rows = self.tracklet_detections(tid)
-            later = [r["id"] for r in rows if r["t"] >= from_t]
-            if not later:
+            out = [r["id"] for r in rows if r["id"] in chosen]
+            if not out:
                 continue
-            if len(later) == len(rows):
+            if len(out) == len(rows):
                 moved.append(tid)
                 continue
             new_tid = self.db.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM tracklets").fetchone()[0]
             self.db.execute("INSERT INTO tracklets(id) VALUES(?)", (new_tid,))
-            self.db.executemany(
-                "UPDATE detections SET tracklet_id=? WHERE id=?", [(new_tid, i) for i in later]
-            )
+            self.db.executemany("UPDATE detections SET tracklet_id=? WHERE id=?", [(new_tid, i) for i in out])
             self._refresh_tracklet(tid)
             self._refresh_tracklet(new_tid)
             moved.append(new_tid)
         new_id = self.create_fish(moved)
         self._refresh_span(fish_id)
-        self.log_correction("split", fish_id, from_t=from_t, new_card=new_id)
-        self.db.commit()
         return new_id
 
     def unmerge_fish(self, fish_id: int) -> list[int]:

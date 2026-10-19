@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gc
 import logging
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
@@ -21,12 +22,13 @@ from .classify import (
     histogram_embed,
     l2_normalize,
     make_classifier,
-    zero_shot_topk,
+    softmax,
 )
 from .config import Settings
 from .continuity import TrackletSummary, merge_tracklets
 from .detect import Detector, make_detector
-from .store import Project
+from .learn import Check, Library, blend, check, library_stamp, vote
+from .store import Project, box_px
 from .template import read_template
 from .track import Tracker
 from .video import Chapter, Timeline, build_timeline, sample_frames
@@ -123,9 +125,25 @@ def refresh_fish_guesses(project: Project, fish_id: int, settings: Settings | No
         emb = l2_normalize(np.mean([np.frombuffer(d["embedding"], np.float32) for d in embedded], axis=0))
         text_emb = np.load(path)
         scale = float(project.get_meta("logit_scale", 100.0))
-        guesses = [[label, round(p, 4)] for label, p in zero_shot_topk(emb, text_emb, labels, scale, settings.top_k)]
+        probs = softmax(scale * (text_emb @ emb))
+        weight = float(project.get_meta("library_weight") or 0.0)
+        if weight:  # the library passed its check for this project (learn.py)
+            library = _library()
+            probs = blend(probs, vote(emb, library.emb, library.label, labels), weight)
+        guesses = [[labels[i], round(float(probs[i]), 4)] for i in np.argsort(-probs)[: settings.top_k]]
     best = (embedded or ranked)[0]["id"]
     project.set_fish_guesses(fish_id, guesses, best)
+
+
+_LIBRARY: dict = {}
+
+
+def _library() -> Library:
+    """The library, read once per change (the review server refreshes guesses often)."""
+    stamp = library_stamp()
+    if _LIBRARY.get("stamp") != stamp:
+        _LIBRARY.update(stamp=stamp, library=Library.load())
+    return _LIBRARY["library"]
 
 
 class Pipeline:
@@ -173,6 +191,8 @@ class Pipeline:
             and self.settings.classifier == "bioclip"
             and self.project.get_meta("classifier") == HistogramClassifier.name
         )
+        if self.project.get_meta("library_stamp") != library_stamp():
+            self.project.mark_stage("classify", False)  # the library changed: refresh the guesses
         if force or fell_back or not cards_done:
             if reviewed and not force:
                 raise RuntimeError("Reviews exist; pass force=True to rebuild cards and lose them.")
@@ -210,7 +230,8 @@ class Pipeline:
             return
         s = self.settings
         timeline = load_timeline(self.project)
-        fps = s.resolved_fps()
+        # A stopped run resumes at the rate it started with, even if the default has changed.
+        fps = self.project.frame_rate() if self.project.frame_count() >= 2 else s.resolved_fps()
         step = 1.0 / fps
         start = s.start_s
         end = timeline.duration_s if s.duration_s is None else min(timeline.duration_s, start + s.duration_s)
@@ -261,8 +282,9 @@ class Pipeline:
             s.track_min_iou,
             s.track_max_dist,
             s.track_max_size_ratio,
-            s.track_max_missed,
+            max(1, round(s.track_max_missed_s * self.project.frame_rate())),  # in sampled frames
             s.track_min_appearance,
+            s.track_direction,
         )
         n = self.project.frame_count()
         for i, (frame, dets) in enumerate(self.project.frames_with_detections()):
@@ -294,7 +316,12 @@ class Pipeline:
         chosen: dict[int, list] = {}
         todo = []
         for tid in self.project.tracklet_ids():
-            dets = sorted(self.project.tracklet_detections(tid), key=lambda d: d["quality"] or 0.0, reverse=True)
+            dets = self.project.tracklet_detections(tid)
+            # Tiny fish join no other piece, and their blobs can't be identified, so the
+            # species model (the slow step) skips them unless asked to.
+            if not s.guess_tiny_fish and max(box_px(d) for d in dets) < s.tiny_fish_px:
+                continue
+            dets = sorted(dets, key=lambda d: d["quality"] or 0.0, reverse=True)
             chosen[tid] = dets[: s.crops_per_tracklet]
             todo += [d for d in chosen[tid] if not keep or d["embedding"] is None]
         total = sum(len(dets) for dets in chosen.values())
@@ -324,12 +351,17 @@ class Pipeline:
     def merge(self) -> None:
         s = self.settings
         summaries = []
+        alone = []  # pieces the species model skipped (tiny fish): a card each
+        start = {}
         for row in self.project.tracklets():
+            start[row["id"]] = row["start_t"]
             dets = self.project.tracklet_detections(row["id"])
             sizes = [np.sqrt(max(d["x2"] - d["x1"], 0) * max(d["y2"] - d["y1"], 0)) for d in dets]
             emb = np.frombuffer(row["embedding"], np.float32) if row["embedding"] else None
             if emb is None:
+                alone.append([row["id"]])
                 continue
+            apps = [np.frombuffer(d["app"], np.float32) for d in dets if d["app"] is not None]
             summaries.append(
                 TrackletSummary(
                     row["id"],
@@ -338,9 +370,15 @@ class Pipeline:
                     emb,
                     float(np.median(sizes[:3])),
                     float(np.median(sizes[-3:])),
+                    max(box_px(d) for d in dets),
+                    l2_normalize(np.mean(apps, axis=0)) if apps else None,
                 )
             )
-        chains = merge_tracklets(summaries, s.gap_seconds, s.merge_min_similarity, s.merge_max_size_ratio)
+        chains = merge_tracklets(
+            summaries, s.gap_seconds, s.merge_min_similarity, s.merge_max_size_ratio, s.tiny_fish_px,
+            s.merge_min_colour,
+        )
+        chains = sorted(chains + alone, key=lambda chain: (start[chain[0]], chain[0]))
         for chain in chains:
             self.project.create_fish(chain)
         self.project.commit()
@@ -379,15 +417,21 @@ class Pipeline:
         labels = species_labels(self.project)
         text_emb = self._text_embeddings(labels) if labels else None
         path = text_embedding_path(self.project)
+        result = Check()
         if text_emb is not None:
             np.save(path, text_emb)
             self.project.set_meta("guess_labels", labels)
             self.project.set_meta("logit_scale", self.classifier.logit_scale)
+            # Your confirmed examples join the guesses only if they beat the model alone.
+            result = check(_library(), self.classifier.name, labels, text_emb, self.classifier.logit_scale)
         else:
             path.unlink(missing_ok=True)
             self.project.set_meta("guess_labels", [])
             if not labels:
                 log.warning("No species dropdown found in the template; no guesses will be shown.")
+        self.project.set_meta("library_check", asdict(result))
+        self.project.set_meta("library_weight", result.weight)
+        self.project.set_meta("library_stamp", library_stamp())
         self.project.set_meta("classifier", self.classifier.name)
         fish = self.project.all_fish()
         for i, f in enumerate(fish):

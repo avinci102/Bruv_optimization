@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +13,9 @@ from bruv_app.config import Settings
 from bruv_app.pipeline import Pipeline, create_project
 from bruv_app.track import iou
 from bruv_app.detect import Detection
+
+# Tests never read or write the real library of confirmed examples (learn.py).
+os.environ["BRUV_LIBRARY"] = str(Path(tempfile.mkdtemp()) / "library.npz")
 
 
 @pytest.fixture(scope="session")
@@ -70,7 +75,8 @@ def dependent_template(tmp_path) -> Path:
 
 
 def demo_settings(**overrides) -> Settings:
-    settings = Settings(detector="color", classifier="histogram")
+    # 1 fps keeps the synthetic runs quick; test_default_rate_* covers the default 4 fps.
+    settings = Settings(detector="color", classifier="histogram", sample_fps=1.0)
     for key, value in overrides.items():
         setattr(settings, key, value)
     return settings

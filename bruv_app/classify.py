@@ -26,15 +26,6 @@ def softmax(x: np.ndarray) -> np.ndarray:
     return e / e.sum()
 
 
-def zero_shot_topk(
-    image_emb: np.ndarray, text_emb: np.ndarray, labels: list[str], scale: float, k: int = 3
-) -> list[tuple[str, float]]:
-    """Softmax over the label set; returns the top-k (label, probability)."""
-    probs = softmax(scale * (text_emb @ l2_normalize(image_emb)))
-    top = np.argsort(-probs)[:k]
-    return [(labels[i], float(probs[i])) for i in top]
-
-
 class Classifier(Protocol):
     name: str
     logit_scale: float
