@@ -182,5 +182,6 @@ def make_detector(settings, device: str) -> Detector:
                 "No detector weights set. Download a Community Fish Detector RF-DETR .pth "
                 "(Nano for CPU) and pass --weights."
             )
-        return RFDETRDetector(Path(settings.detector_weights), settings.det_threshold, device)
+        # Keep boxes down to the floor; tracking uses only those at the threshold.
+        return RFDETRDetector(Path(settings.detector_weights), min(settings.det_floor, settings.det_threshold), device)
     raise ValueError(f"Unknown detector: {settings.detector}")

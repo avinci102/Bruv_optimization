@@ -57,9 +57,9 @@ def _by_frame(project: Project) -> dict[tuple[int, int], list]:
     """Detections by source frame (chapter, frame number): the same in any run of the footage."""
     project.fill_source_indices()
     out: dict[tuple[int, int], list] = defaultdict(list)
-    rows = project.db.execute(
+    rows = project.db.execute(  # tracked detections: the ones at the operating threshold
         """SELECT d.id, f.chapter, f.src_index, d.x1, d.y1, d.x2, d.y2
-           FROM detections d JOIN frames f ON f.id=d.frame_id ORDER BY d.id"""
+           FROM detections d JOIN frames_src f ON f.id=d.frame_id WHERE d.tracklet_id IS NOT NULL ORDER BY d.id"""
     )
     for r in rows:
         out[(r["chapter"], r["src_index"])].append(r)

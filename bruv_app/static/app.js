@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   summary: null, cards: [], index: 0, detail: null, selected: null, selectedIndex: -1,
   template: new Set(), other: null, tinyPx: 40, ticked: new Set(),
+  rig: new Map(), lastBatch: null,  // cards queued as likely equipment; the last batch marked
 };
 
 const NOT_IN_TEMPLATE = "not in template";
@@ -65,6 +66,7 @@ function visibleCards(status = $("status").value, rule = $("filter").value, show
     if (status !== "all" && statusGroup(c.status) !== status) return false;
     if (!showTiny && c.max_px < state.tinyPx) return false;
     if (rule === "all") return true;
+    if (rule === "rig") return state.rig.has(c.id);
     const rank = templateRank(c.guesses);
     return rank > 0 && rank <= Number(rule);
   });
@@ -107,6 +109,24 @@ async function loadCards() {
   showProgress();
 }
 
+// Cards that sit where a card marked as equipment sat, and look like it (equipment.py).
+async function loadRig() {
+  const r = await api("/api/rig").catch(() => ({ candidates: {} }));  // (an older server has none)
+  state.rig = new Map(Object.entries(r.candidates).map(([id, m]) => [Number(id), m]));
+}
+
+function updateRigBar() {
+  const queue = $("filter").value === "rig";
+  const list = queue ? visibleCards() : [];
+  const whole = list.filter((c) => !(state.rig.get(c.id) || {}).odd).length;
+  $("rig-batch").hidden = !queue && !state.lastBatch;
+  $("rig-all").hidden = !whole;
+  $("rig-all").textContent = `Mark the ${whole} that match throughout as equipment` +
+    (list.length > whole ? ` (${list.length - whole} to check one by one)` : "");
+  $("rig-undo").hidden = !state.lastBatch;
+  if (state.lastBatch) $("rig-undo").textContent = `Undo: the ${state.lastBatch.marked.length} just marked`;
+}
+
 // The bar follows the cards shown by default. Tiny fish are hidden until asked for, but an
 // untouched tiny card is still unreviewed: they're counted apart, never as done.
 function showProgress() {
@@ -120,7 +140,7 @@ function showProgress() {
 }
 
 async function init() {
-  await Promise.all([loadSummary(), loadCards()]);
+  await Promise.all([loadSummary(), loadCards(), loadRig()]);
   const dd = state.summary.dropdowns;
   state.template = new Set(dd.species || []);
   state.other = (dd.species || []).find((s) => s.trim().toLowerCase().startsWith("other")) || null;
@@ -156,6 +176,7 @@ async function init() {
 
 async function show(index) {
   const list = visibleCards();
+  updateRigBar();
   if (!list.length) {
     const tiny = $("show-tiny").checked ? 0 : tinyCount();
     const allPending = $("status").value === "pending" && $("filter").value === "all";
@@ -173,6 +194,7 @@ async function show(index) {
   d.pieces ??= [];
   d.flags ??= [];
   d.closest_calls ??= [];
+  d.rig ??= null;
   state.detail = d;
   state.selected = null;
 
@@ -197,7 +219,8 @@ async function show(index) {
 
   // Status: only the user's own recorded answer is ever highlighted.
   const badge = $("status-badge");
-  badge.textContent = d.status === "species" ? `Recorded: ${d.species}` : STATUS_TEXT[d.status];
+  badge.textContent = d.status === "species" ? `Recorded: ${d.species}`
+    : d.status === "not_fish" && d.equipment ? "Recorded: Not a fish (equipment)" : STATUS_TEXT[d.status];
   badge.className = "badge " + (d.status === "pending" ? "" : d.status === "skipped" ? "skipped" : "done");
   const rank = templateRank(d.guesses.map((g) => g[0]));
   $("template-hint").hidden = !rank;
@@ -227,6 +250,15 @@ async function show(index) {
   renderFilmstrip(d);
   renderPieces(d);
   renderFlags(d);
+  const rig = d.rig;
+  $("rig-hint").hidden = !rig;
+  if (rig) {
+    $("rig-hint").textContent = `⚙ Sits where card #${rig.card} (marked as equipment) sat` +
+      ` (overlap ${rig.overlap}${rig.colour === null ? "" : `, colours ${rig.colour} alike`}). Equipment: E. A fish: answer as usual.` +
+      (rig.odd ? ` ⚠ ${rig.odd} of its sightings ${rig.odd === 1 ? "is elsewhere or looks" : "are elsewhere or look"} ` +
+        "different: a fish may be joined on. Check them (tick and move them with X) before answering." : "");
+  }
+  updateRigBar();
   const prev = previousInTime(d);
   $("merge-prev").disabled = !prev;
   $("merge-prev").innerHTML = prev ? `Same fish as #${prev.id}, the card before it <kbd>P</kbd>` : "Same fish as the card before it <kbd>P</kbd>";
@@ -509,6 +541,74 @@ async function multipleFish() {
   }
 }
 
+// Equipment (bait arm, canister, rope): answered "not a fish", and it becomes a reference, so
+// cards in the same spot that look the same are queued under Show → likely equipment.
+async function markEquipment() {
+  const d = state.detail;
+  if (!d) return;
+  let confirmed = false;
+  if (d.flags.length) {
+    confirmed = confirm(
+      `This card may hold more than one thing:\n\n• ${d.flags.map((f) => f.text).join("\n• ")}\n\n` +
+      `Are all ${d.pieces.length} pieces equipment?`,
+    );
+    if (!confirmed) return;
+  }
+  try {
+    await api(`/api/fish/${d.id}/equipment`, { confirm: confirmed });
+  } catch (e) {
+    message(e.message, "error");
+    return;
+  }
+  const card = state.cards.find((c) => c.id === d.id);
+  card.status = "not_fish";
+  card.species = null;
+  await Promise.all([loadSummary(), loadRig()]);
+  updateFilterCounts();
+  const stays = visibleCards().some((c) => c.id === d.id);
+  await show(stays ? state.index + 1 : state.index);
+  const n = state.rig.size;
+  message(`Recorded as equipment. ${n} card${n === 1 ? "" : "s"} like it queued under Show → likely equipment.`, "ok");
+}
+
+async function markAllEquipment() {
+  const list = visibleCards();
+  const whole = list.filter((c) => !(state.rig.get(c.id) || {}).odd);
+  if (!whole.length) return;
+  if (!confirm(
+    `Answer ${whole.length} cards as equipment (not a fish)? Every sighting on them sits where a card you ` +
+    "marked as equipment sat, and looks like it. The rest of the queue, and any card with warnings, is left " +
+    "for you to check one by one. You can undo this.",
+  )) return;
+  try {
+    const res = await api("/api/rig/mark", { ids: whole.map((c) => c.id) });
+    state.lastBatch = res;
+    for (const id of res.marked) Object.assign(state.cards.find((c) => c.id === id), { status: "not_fish", species: null });
+    await Promise.all([loadSummary(), loadRig()]);
+    updateFilterCounts();
+    await show(0);
+    message(`Marked ${res.marked.length} as equipment` +
+      (res.left.length ? `; ${res.left.length} left to check one by one (still under likely equipment).` : "."), "ok");
+  } catch (e) {
+    message(e.message, "error");
+  }
+}
+
+async function undoBatch() {
+  if (!state.lastBatch) return;
+  try {
+    const res = await api("/api/rig/undo", { batch: state.lastBatch.batch });
+    for (const id of res.undone) Object.assign(state.cards.find((c) => c.id === id), { status: "pending", species: null });
+    state.lastBatch = null;
+    await Promise.all([loadSummary(), loadRig()]);
+    updateFilterCounts();
+    await show(state.index);
+    message(`Undone: ${res.undone.length} card${res.undone.length === 1 ? " is" : "s are"} pending again.`, "ok");
+  } catch (e) {
+    message(e.message, "error");
+  }
+}
+
 async function exportExcel() {
   message("Exporting…");
   try {
@@ -537,6 +637,8 @@ document.addEventListener("keydown", (e) => {
     record("not_fish");
   } else if (e.key === "s" || e.key === "S") {
     record("skipped");
+  } else if (e.key === "e" || e.key === "E") {
+    markEquipment();
   } else if (e.key === "m" || e.key === "M") {
     multipleFish();
   } else if (e.key === "x" || e.key === "X") {
@@ -568,6 +670,9 @@ document.addEventListener("keydown", (e) => {
 $("species-save").onclick = recordTyped;
 document.querySelectorAll(".other-buttons button[data-status]").forEach((b) => (b.onclick = () => record(b.dataset.status)));
 document.querySelector('.other-buttons [data-action="multiple"]').onclick = multipleFish;
+document.querySelector('.other-buttons [data-action="equipment"]').onclick = markEquipment;
+$("rig-all").onclick = markAllEquipment;
+$("rig-undo").onclick = undoBatch;
 $("prev").onclick = () => show(state.index - 1);
 $("next").onclick = () => show(state.index + 1);
 $("split").onclick = split;

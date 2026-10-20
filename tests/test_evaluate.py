@@ -103,7 +103,7 @@ def _scene_sidecar(project) -> list[Box]:
     with its own id ("red visits twice": scene fish 0 and 1 are the same red)."""
     dep = project.get_meta("deployment")
     rows = []
-    for f in project.db.execute("SELECT chapter, src_index, t FROM frames"):
+    for f in project.db.execute("SELECT chapter, src_index, t FROM frames_src"):
         visible = [(i, fish, fish.box(f["t"])) for i, fish in enumerate(demo.SCENE) if fish.box(f["t"])]
         if not visible:
             rows.append(Box(dep, f["chapter"], f["src_index"], f["t"], kind="none"))
@@ -213,8 +213,8 @@ def test_score_matching_is_one_to_one(project, tmp_path):
     rerun = Project(tmp_path / "rerun")
     d = rerun.db.execute("SELECT * FROM detections LIMIT 1").fetchone()
     rerun.db.execute(
-        "INSERT INTO detections(frame_id, x1, y1, x2, y2, score) VALUES(?,?,?,?,?,?)",
-        (d["frame_id"], d["x1"] + 0.002, d["y1"], d["x2"] + 0.002, d["y2"], 0.5),
+        "INSERT INTO detections(frame_id, x1, y1, x2, y2, score, tracklet_id) VALUES(?,?,?,?,?,?,?)",
+        (d["frame_id"], d["x1"] + 0.002, d["y1"], d["x2"] + 0.002, d["y2"], 0.5, d["tracklet_id"]),
     )
     rerun.commit()
     from bruv_app.score import match_detections

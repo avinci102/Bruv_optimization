@@ -32,7 +32,12 @@ class Settings:
     # Detection. "rfdetr" = Community Fish Detector (RF-DETR), "color" = synthetic-video fake.
     detector: str = "rfdetr"
     detector_weights: str | None = None
+    # The operating point: only boxes scoring this much are tracked and become cards (0.3
+    # comes from the CFD README's example, not a BRUV study; see docs/SOURCES.md).
     det_threshold: float = 0.3
+    # Boxes down to this score are kept too (not tracked), so other thresholds can be tried
+    # on the same detections without running the detector again.
+    det_floor: float = 0.1
     batch_size: int = 4
 
     # Tracking (lightweight IoU + centre distance, Hungarian matching).

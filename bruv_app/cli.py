@@ -189,10 +189,16 @@ def _open_project(source: str):
 
 
 def cmd_evaluate(args) -> None:
-    from .evaluate import evaluate_project, read_sidecar  # noqa: PLC0415
+    from .evaluate import evaluate_project, read_sidecar, threshold_curve  # noqa: PLC0415
 
-    report = evaluate_project(_open_project(args.project), read_sidecar(Path(args.annotations)))
-    print("\n".join(report.lines()))
+    project = _open_project(args.project)
+    boxes = read_sidecar(Path(args.annotations))
+    print("\n".join(evaluate_project(project, boxes).lines()))
+    if args.thresholds:
+        print("Detection at other score thresholds (the run's own boxes; tracks and cards not re-run):")
+        for p in threshold_curve(project, boxes, args.thresholds):
+            print(f"  {p.threshold:.2f}: {p.kept} boxes kept; annotated frames: {p.matched} fish found, "
+                  f"{p.missed} missed, {p.false} false; precision {p.precision:.0%}, recall {p.recall:.0%}")
 
 
 def cmd_annotation_sheet(args) -> None:
@@ -410,6 +416,8 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("evaluate", help="score a project (or a snapshot) against independent annotations")
     p.add_argument("--project", required=True, help="a project folder, or a snapshot .db")
     p.add_argument("--annotations", required=True, help="the evaluation sidecar (.csv)")
+    p.add_argument("--thresholds", nargs="+", type=float, metavar="T",
+                   help="also score detection at these score thresholds, e.g. 0.1 0.2 0.3 0.4 0.5")
     p.set_defaults(func=cmd_evaluate)
 
     p = sub.add_parser("annotation-sheet", help="start an evaluation sidecar from a project's frames")

@@ -26,6 +26,7 @@ the merge, nor a merge error on the species model:
 from __future__ import annotations
 
 import csv
+import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -185,16 +186,18 @@ def load_run(project: Project) -> RunView:
             labels.update((d["id"], answer) for d in project.fish_detections(f["id"]))
     frames: dict[tuple[str, int, int], list[Found]] = {}
     sizes = []
-    for f in project.db.execute("SELECT chapter, src_index, width, height FROM frames ORDER BY seq"):
+    for f in project.db.execute("SELECT chapter, src_index, width, height FROM frames_src ORDER BY seq"):
         frames[(deployment, f["chapter"], f["src_index"])] = []
         sizes.append((f["width"], f["height"]))
     starts: dict[int, float] = {}
     rows = project.db.execute(
         """SELECT d.id, d.x1, d.y1, d.x2, d.y2, d.link_margin, f.chapter, f.src_index, f.t
-           FROM detections d JOIN frames f ON f.id=d.frame_id ORDER BY f.seq, d.id"""
+           FROM detections d JOIN frames_src f ON f.id=d.frame_id ORDER BY f.seq, d.id"""
     )
     for r in rows:
         tracklet, card = groups.get(r["id"], (None, None))
+        if tracklet is None:
+            continue  # kept below the operating threshold (Settings.det_floor): not part of this run's output
         box = Detection(r["x1"], r["y1"], r["x2"], r["y2"], 1.0)
         frames[(deployment, r["chapter"], r["src_index"])].append(
             Found(r["id"], r["t"], box, tracklet, card, labels.get(r["id"]), r["link_margin"])
@@ -426,6 +429,62 @@ def evaluate(run: RunView, boxes: list[Box], min_iou: float = MIN_IOU) -> Report
     return report
 
 
+@dataclass
+class CurvePoint:
+    threshold: float
+    kept: int  # detections at or above the threshold, in all sampled frames
+    matched: int  # annotated fish found (annotated frames only)
+    missed: int
+    false: int
+
+    @property
+    def precision(self) -> float:
+        return self.matched / (self.matched + self.false) if self.matched + self.false else 0.0
+
+    @property
+    def recall(self) -> float:
+        return self.matched / (self.matched + self.missed) if self.matched + self.missed else 0.0
+
+
+def threshold_curve(project: Project, boxes: list[Box], thresholds: list[float], min_iou: float = MIN_IOU) -> list[CurvePoint]:
+    """Detection at other score thresholds, from the boxes the run kept (Settings.det_floor),
+    without running the detector again (review V2, E6). Only detection is scored here: how
+    tracks and cards change needs the later stages re-run at each threshold. A threshold under
+    the lowest score the run kept can't be scored and is left out."""
+    project.fill_source_indices()
+    deployment = project.get_meta("deployment") or ""
+    floor = project.db.execute("SELECT MIN(score) FROM detections").fetchone()[0] or 0.0
+    # Every detection run must have kept boxes down to a threshold for it to be scored.
+    kept_from = max([json.loads(r["info"]).get("kept_from", floor) for r in project.runs("detect")] or [floor])
+    rows = project.db.execute(
+        """SELECT d.score, d.x1, d.y1, d.x2, d.y2, f.chapter, f.src_index
+           FROM detections d JOIN frames_src f ON f.id=d.frame_id"""
+    ).fetchall()
+    found: dict[tuple, list] = defaultdict(list)
+    for r in rows:
+        found[(deployment, r["chapter"], r["src_index"])].append((r["score"], Detection(r["x1"], r["y1"], r["x2"], r["y2"], 1.0)))
+    annotated: dict[tuple, list[Box]] = defaultdict(list)
+    for b in boxes:
+        if b.deployment == deployment:
+            annotated[b.frame].append(b)
+    checked = {k: v for k, v in annotated.items() if not any(b.kind == "unchecked" for b in v)}
+    out = []
+    for t in sorted(thresholds):
+        if t < kept_from - 1e-9:
+            continue
+        point = CurvePoint(t, sum(s >= t for s, _ in (x for v in found.values() for x in v)), 0, 0, 0)
+        for key, objects in checked.items():
+            objects = [b for b in objects if b.kind != "none"]
+            dets = [d for s, d in found.get(key, []) if s >= t]
+            pairs = match_boxes([b.detection for b in objects], dets, min_iou)
+            fish_hit = sum(objects[i].kind == "fish" for i, _ in pairs)
+            point.matched += fish_hit
+            point.missed += sum(b.kind == "fish" for b in objects) - fish_hit
+            point.false += len(dets) - fish_hit
+        out.append(point)
+    return out
+
+
 def evaluate_project(project: Project, boxes: list[Box], min_iou: float = MIN_IOU) -> Report:
     deployment = project.get_meta("deployment")
     others = {b.deployment for b in boxes} - {deployment}
@@ -447,10 +506,12 @@ def annotation_sheet(project: Project, windows: list[tuple[float, float]]) -> li
     rows = []
     for start, end in windows:
         frames = project.db.execute(
-            "SELECT * FROM frames WHERE t >= ? AND t < ? ORDER BY seq", (start, end)
+            "SELECT * FROM frames_src WHERE t >= ? AND t < ? ORDER BY seq", (start, end)
         ).fetchall()
         for f in frames:
-            dets = project.db.execute("SELECT * FROM detections WHERE frame_id=? ORDER BY id", (f["id"],)).fetchall()
+            dets = project.db.execute(
+                "SELECT * FROM detections WHERE frame_id=? AND tracklet_id IS NOT NULL ORDER BY id", (f["id"],)
+            ).fetchall()
             base = dict(deployment=deployment, chapter=f["chapter"], src_index=f["src_index"], t=round(f["t"], 3))
             if not dets:
                 rows.append(Box(**base, kind="unchecked", identity=""))

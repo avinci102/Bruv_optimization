@@ -152,6 +152,8 @@ figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .guesses button { display: flex; justify-content: space-between; gap: 8px; text-align: left; }
 .guesses .pct { color: var(--muted); }
 .template-hint { margin-top: 6px; color: var(--accent); font-weight: 600; }
+.rig-hint { margin-top: 6px; color: var(--muted); }
+.rig-batch { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .flags { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--warn); border-radius: 6px; background: #fff3df; }
 .flags strong { color: var(--warn); }
 .flags p { margin: 6px 0 0; }

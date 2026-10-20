@@ -69,6 +69,7 @@ DETAILS_HEADER = [
     "classifier",
     "reviewed_at",
     "warnings",  # diagnostics.py; "(confirmed one fish)" once the reviewer confirmed them
+    "equipment",  # answered "not a fish" as equipment (equipment.py), by hand or from the queue
 ]
 
 
@@ -109,10 +110,15 @@ def _most_common(values) -> str | None:
     return Counter(values).most_common(1)[0][0] if values else None
 
 
+def _answer_details(project: Project, fish_id: int) -> dict:
+    """What was kept with the card's current answer (store.py reviews)."""
+    review = project.last_review(fish_id)
+    return json.loads(review["details"]) if review and review["details"] else {}
+
+
 def _confirmed(project: Project, fish_id: int) -> bool:
     """The card's current answer was given after confirming its warnings."""
-    review = project.last_review(fish_id)
-    return bool(review and review["details"] and json.loads(review["details"]).get("confirmed"))
+    return bool(_answer_details(project, fish_id).get("confirmed"))
 
 
 def export_project(project: Project, out_path: Path | None = None) -> Path:
@@ -269,6 +275,7 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
                 f["reviewed_at"],
                 "; ".join(w.kind for w in warnings.get(f["id"], []))
                 + (" (confirmed one fish)" if f["id"] in confirmed else ""),
+                f["status"] == "not_fish" and bool(_answer_details(project, f["id"]).get("equipment")),
             ]
         )
 
@@ -315,6 +322,7 @@ def review_status(project, settings, fish_rows, fish_dets, counted, scopes) -> t
     status_of = {f["id"]: f["status"] for f in fish_rows}
     unknown = sum(len(dets) for fid, dets in counted.items() if status_of[fid] == "unknown")
     legacy = sum(1 for f in fish_rows if f["status"] in REVIEWED and f["id"] not in scopes)
+    equipment = [f for f in fish_rows if f["status"] == "not_fish" and _answer_details(project, f["id"]).get("equipment")]
     rows = [
         ["review", "complete" if complete else
          f"provisional: {len(unanswered)} cards not answered ({sum(f in tiny for f in unanswered)} of them tiny)"],
@@ -325,6 +333,8 @@ def review_status(project, settings, fish_rows, fish_dets, counted, scopes) -> t
         ["detections counted", sum(len(d) for d in counted.values())],
         ["  of them unknown fish (in no species' MaxN)", unknown],
         ["detections answered as not a fish", sum(len(fish_dets[f["id"]]) for f in fish_rows if f["status"] == "not_fish")],
+        ["answered as equipment (not a fish)", "{} cards, {} detections".format(
+            len(equipment), sum(len(fish_dets[f["id"]]) for f in equipment))],
         ["detections on answered cards outside the answer's scope (not counted)", outside],
         ["answered cards from before scopes were recorded (counted whole)", legacy],
     ]

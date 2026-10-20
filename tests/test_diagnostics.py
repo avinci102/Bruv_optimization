@@ -133,8 +133,10 @@ def test_a_flagged_card_needs_confirming(project, tmp_path):
 
     client.post(f"/api/fish/{card}/label", json={**answer, "confirm": True})
     wb = openpyxl.load_workbook(export_project(project, tmp_path / "out.xlsx"))
-    details = {r[0]: r for r in wb["app_details"].iter_rows(min_row=2, values_only=True)}
-    assert details[card][-1] == "pieces look different; pieces disagree on species; two boxes at once (confirmed one fish)"
+    header = next(wb["app_details"].iter_rows(values_only=True))
+    details = {r[0]: dict(zip(header, r)) for r in wb["app_details"].iter_rows(min_row=2, values_only=True)}
+    assert details[card]["warnings"] == "pieces look different; pieces disagree on species; two boxes at once (confirmed one fish)"
+    assert details[card]["equipment"] is False
     status = dict(list(wb["review_status"].iter_rows(values_only=True))[1:])
     assert status["cards with warnings (may hold more than one fish)"].startswith("1: 1 answered after confirming")
 

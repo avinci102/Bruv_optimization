@@ -112,7 +112,7 @@ def test_detection_resumes_after_interruption(tmp_path, synthetic_videos):
         Pipeline(project, detector=Crashy(), classifier=demo.DemoClassifier()).run()
     assert project.frame_count() == 8
     Pipeline(project, detector=ColorBlobDetector(), classifier=demo.DemoClassifier()).run()
-    rows = project.db.execute("SELECT t, local_t, src_index FROM frames ORDER BY seq").fetchall()
+    rows = project.db.execute("SELECT t, local_t, src_index FROM frames_src ORDER BY seq").fetchall()
     assert len(rows) == 24
     assert [round(r["t"]) for r in rows] == list(range(24))
     assert [r["src_index"] for r in rows] == [round(r["local_t"] * 10) for r in rows]  # 10 fps source

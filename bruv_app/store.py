@@ -25,7 +25,13 @@ CREATE TABLE IF NOT EXISTS chapters (
     idx INTEGER PRIMARY KEY, path TEXT, name TEXT, start_s REAL, duration_s REAL, fps REAL);
 CREATE TABLE IF NOT EXISTS frames (
     id INTEGER PRIMARY KEY, seq INTEGER UNIQUE, t REAL, chapter INTEGER, local_t REAL,
-    path TEXT, width INTEGER, height INTEGER, src_index INTEGER);
+    path TEXT, width INTEGER, height INTEGER);
+-- The source video frame each sampled frame is (video.source_index). Its own table, so the
+-- frames table keeps the columns older versions read, and they can still open the project.
+CREATE TABLE IF NOT EXISTS frame_sources (frame_id INTEGER PRIMARY KEY, src_index INTEGER);
+CREATE VIEW IF NOT EXISTS frames_src AS
+    SELECT f.id, f.seq, f.t, f.chapter, f.local_t, f.path, f.width, f.height, s.src_index
+    FROM frames f LEFT JOIN frame_sources s ON s.frame_id=f.id;
 CREATE TABLE IF NOT EXISTS detections (
     id INTEGER PRIMARY KEY, frame_id INTEGER REFERENCES frames(id),
     x1 REAL, y1 REAL, x2 REAL, y2 REAL, score REAL, quality REAL, app BLOB,
@@ -55,6 +61,10 @@ CREATE TABLE IF NOT EXISTS original_groups (
 CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, status TEXT, species TEXT, scope TEXT,
     details TEXT);
+-- Equipment a reviewer marked (equipment.py): the card, its usual box and its colours.
+CREATE TABLE IF NOT EXISTS rig_refs (
+    id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, x1 REAL, y1 REAL, x2 REAL, y2 REAL,
+    colour BLOB, active INTEGER NOT NULL DEFAULT 1);
 -- Every join the merge weighed between two pieces (tracklets), with its evidence, and
 -- whether it was made: "joined", "lost" (a better join took one end), or the check it failed.
 CREATE TABLE IF NOT EXISTS merge_edges (
@@ -124,8 +134,8 @@ class Project:
 
     def _migrate(self) -> None:
         """Bring a project made by an older version up to date (columns are only added)."""
+        # Never add columns to frames: older versions build a record from all of them.
         added = {
-            "frames": {"src_index": "INTEGER"},
             "detections": {"link_cost": "REAL", "link_margin": "REAL", "history_sim": "REAL"},
             "reviews": {"details": "TEXT"},
         }
@@ -285,10 +295,11 @@ class Project:
 
     def add_frame(self, seq, t, chapter, local_t, path, width, height, src_index=None) -> int:
         cur = self.db.execute(
-            """INSERT INTO frames(seq, t, chapter, local_t, path, width, height, src_index)
-               VALUES(?,?,?,?,?,?,?,?)""",
-            (seq, t, chapter, local_t, path, width, height, src_index),
+            "INSERT INTO frames(seq, t, chapter, local_t, path, width, height) VALUES(?,?,?,?,?,?,?)",
+            (seq, t, chapter, local_t, path, width, height),
         )
+        if src_index is not None:
+            self.db.execute("INSERT INTO frame_sources(frame_id, src_index) VALUES(?, ?)", (cur.lastrowid, src_index))
         return cur.lastrowid
 
     def add_detections(self, frame_id: int, dets: list[Detection], qualities: list[float]) -> None:
@@ -301,11 +312,11 @@ class Project:
         self.db.commit()
 
     def last_frame(self) -> FrameRow | None:
-        row = self.db.execute("SELECT * FROM frames ORDER BY seq DESC LIMIT 1").fetchone()
+        row = self.db.execute("SELECT * FROM frames_src ORDER BY seq DESC LIMIT 1").fetchone()
         return FrameRow(**dict(row)) if row else None
 
     def frame(self, frame_id: int) -> FrameRow | None:
-        row = self.db.execute("SELECT * FROM frames WHERE id=?", (frame_id,)).fetchone()
+        row = self.db.execute("SELECT * FROM frames_src WHERE id=?", (frame_id,)).fetchone()
         return FrameRow(**dict(row)) if row else None
 
     def frame_count(self) -> int:
@@ -320,12 +331,12 @@ class Project:
 
         rows = self.db.execute(
             """SELECT f.id, f.local_t, c.fps FROM frames f JOIN chapters c ON c.idx=f.chapter
-               WHERE f.src_index IS NULL"""
+               LEFT JOIN frame_sources s ON s.frame_id=f.id WHERE s.frame_id IS NULL"""
         ).fetchall()
         if rows:
             self.db.executemany(
-                "UPDATE frames SET src_index=? WHERE id=?",
-                [(source_index(r["local_t"], r["fps"]), r["id"]) for r in rows],
+                "INSERT INTO frame_sources(frame_id, src_index) VALUES(?, ?)",
+                [(r["id"], source_index(r["local_t"], r["fps"])) for r in rows],
             )
             self.set_meta("src_index_inferred", True)
         return len(rows)
@@ -336,11 +347,12 @@ class Project:
         steps = [b - a for a, b in zip(times, times[1:]) if b > a]
         return 1.0 / float(np.median(steps)) if steps else 1.0
 
-    def frames_with_detections(self):
-        """Yield (FrameRow, [(det id, Detection)]) in time order."""
-        frames = self.db.execute("SELECT * FROM frames ORDER BY seq").fetchall()
+    def frames_with_detections(self, min_score: float = 0.0):
+        """Yield (FrameRow, [(det id, Detection)]) in time order: the detections scoring at
+        least `min_score` (the rest are kept below the operating threshold, untracked)."""
+        frames = self.db.execute("SELECT * FROM frames_src ORDER BY seq").fetchall()
         dets: dict[int, list] = {}
-        for d in self.db.execute("SELECT * FROM detections ORDER BY id"):
+        for d in self.db.execute("SELECT * FROM detections WHERE score >= ? ORDER BY id", (min_score,)):
             dets.setdefault(d["frame_id"], []).append(
                 (d["id"], Detection(d["x1"], d["y1"], d["x2"], d["y2"], d["score"], from_blob(d["app"])))
             )
@@ -482,6 +494,31 @@ class Project:
             (_now(), fish_id, status, species, json.dumps(scope), json.dumps(details) if details else None),
         )
         self.db.commit()
+
+    def add_rig_ref(self, fish_id: int, box, colour) -> int:
+        cur = self.db.execute(
+            "INSERT INTO rig_refs(at, fish_id, x1, y1, x2, y2, colour) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (_now(), fish_id, box.x1, box.y1, box.x2, box.y2, to_blob(colour)),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def rig_refs(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM rig_refs WHERE active=1 ORDER BY id").fetchall()
+
+    def forget_rig_ref(self, ref_id: int) -> None:
+        """Stop queueing cards like this reference; answers already given stay."""
+        self.db.execute("UPDATE rig_refs SET active=0 WHERE id=?", (ref_id,))
+        self.db.commit()
+
+    def reviews_in_batch(self, batch: str) -> list[int]:
+        """Cards whose current answer came from the given batch (e.g. of equipment)."""
+        rows = self.db.execute(
+            """SELECT r.fish_id, r.details FROM reviews r
+               JOIN (SELECT fish_id, MAX(id) AS last FROM reviews GROUP BY fish_id) l ON l.last=r.id
+               WHERE r.details IS NOT NULL"""
+        )
+        return [r["fish_id"] for r in rows if json.loads(r["details"]).get("batch") == batch]
 
     def last_review(self, fish_id: int) -> sqlite3.Row | None:
         return self.db.execute(

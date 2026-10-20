@@ -334,6 +334,8 @@ class Pipeline:
 
         return {
             "detector": describe_model(self.detector),
+            "kept_from": min(self.settings.det_floor, self.settings.det_threshold),
+            "tracked_from": self.settings.det_threshold,
             "device": self.device,
             "fps": fps,
             "first_seq": first_seq,
@@ -344,7 +346,7 @@ class Pipeline:
 
     def track(self) -> None:
         s = self.settings
-        run_id = self.project.start_run("track", s, fps=self.project.frame_rate())
+        run_id = self.project.start_run("track", s, fps=self.project.frame_rate(), min_score=s.det_threshold)
         self.project.reset_tracking()
         tracker = Tracker(
             s.track_min_iou,
@@ -355,7 +357,7 @@ class Pipeline:
             s.track_direction,
         )
         n = self.project.frame_count()
-        for i, (frame, dets) in enumerate(self.project.frames_with_detections()):
+        for i, (frame, dets) in enumerate(self.project.frames_with_detections(s.det_threshold)):
             tracker.update(frame.seq, dets)
             if i % 200 == 0:
                 self.progress("track", i, n)
