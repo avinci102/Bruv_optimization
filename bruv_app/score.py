@@ -7,18 +7,21 @@ new rules can be scored against both:
 - does any card now hold sightings that got different answers?
 - does any card join sightings the reviewer pulled apart?
 
-Detections are matched by frame time and box, so a re-run at another frame rate (new
-detections) can still be scored: the frames both runs sampled hold the same boxes.
+Detections are matched by source frame and box, one to one, so a re-run at another frame
+rate (new detections) can still be scored: the frames both runs sampled hold the same boxes.
+This checks a re-run against a reviewer's cards; evaluate.py scores against independent
+annotations, which also find missed fish and same-species identity switches.
 """
 
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 from .detect import Detection
+from .evaluate import match_boxes
 from .store import Project
-from .track import iou
 
 ANSWERS = {"unknown": "unknown fish", "not_fish": "not a fish"}
 
@@ -50,23 +53,32 @@ def pulled_apart(project: Project) -> list[tuple[set[int], set[int]]]:
     return pairs
 
 
-def _boxes(project: Project) -> list:
-    return project.db.execute(
-        "SELECT d.id, f.t, d.x1, d.y1, d.x2, d.y2 FROM detections d JOIN frames f ON f.id=d.frame_id"
-    ).fetchall()
+def _by_frame(project: Project) -> dict[tuple[int, int], list]:
+    """Detections by source frame (chapter, frame number): the same in any run of the footage."""
+    project.fill_source_indices()
+    out: dict[tuple[int, int], list] = defaultdict(list)
+    rows = project.db.execute(
+        """SELECT d.id, f.chapter, f.src_index, d.x1, d.y1, d.x2, d.y2
+           FROM detections d JOIN frames f ON f.id=d.frame_id ORDER BY d.id"""
+    )
+    for r in rows:
+        out[(r["chapter"], r["src_index"])].append(r)
+    return out
 
 
 def match_detections(project: Project, other: Project) -> dict[int, int]:
-    """Map `other`'s detection ids onto `project`'s: same frame time, boxes overlapping."""
+    """Map `other`'s detection ids onto `project`'s: the same source frame, boxes paired one
+    to one at IoU 0.5 or more (two boxes on one fish can't both take the same match)."""
+    mine_dep, other_dep = project.get_meta("deployment"), other.get_meta("deployment")
+    if mine_dep and other_dep and mine_dep != other_dep:
+        raise ValueError("These projects are of different footage (their videos' fingerprints differ)")
     box = lambda r: Detection(r["x1"], r["y1"], r["x2"], r["y2"], 1.0)  # noqa: E731
-    mine: dict[float, list] = {}
-    for r in _boxes(project):
-        mine.setdefault(round(r["t"], 2), []).append(r)
+    mine = _by_frame(project)
     out = {}
-    for r in _boxes(other):
-        best = max(mine.get(round(r["t"], 2), []), key=lambda m: iou(box(m), box(r)), default=None)
-        if best is not None and iou(box(best), box(r)) >= 0.5:
-            out[r["id"]] = best["id"]
+    for key, theirs in _by_frame(other).items():
+        here = mine.get(key, [])
+        for i, j in match_boxes([box(r) for r in theirs], [box(r) for r in here]):
+            out[theirs[i]["id"]] = here[j]["id"]
     return out
 
 

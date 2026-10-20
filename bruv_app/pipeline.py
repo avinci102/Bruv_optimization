@@ -34,7 +34,7 @@ from .provenance import deployment_id, describe_model, fingerprint
 from .store import Project, box_px
 from .template import read_template
 from .track import Tracker
-from .video import SAMPLER_VERSION, Chapter, Timeline, build_timeline, sample_frames, source_index
+from .video import SAMPLER_VERSION, Chapter, Timeline, build_timeline, sample_frames
 
 log = logging.getLogger(__name__)
 
@@ -100,24 +100,6 @@ def record_videos(project: Project) -> None:
     prints = [{"path": str(p), "size": p.stat().st_size, "fingerprint": fingerprint(p)} for p in paths]
     project.set_meta("video_fingerprints", prints)
     project.set_meta("deployment", deployment_id([p["fingerprint"] for p in prints]))
-
-
-def fill_source_indices(project: Project) -> int:
-    """Give frames saved before source frame numbers were kept a number worked out from
-    their time. That is exact when detection ran in one go from the start of the video;
-    older versions handed back frames one step late after a resume, so the project is
-    flagged and anything that relies on the numbers checks them against the saved frames."""
-    rows = project.db.execute(
-        """SELECT f.id, f.local_t, c.fps FROM frames f JOIN chapters c ON c.idx=f.chapter
-           WHERE f.src_index IS NULL"""
-    ).fetchall()
-    if rows:
-        project.db.executemany(
-            "UPDATE frames SET src_index=? WHERE id=?",
-            [(source_index(r["local_t"], r["fps"]), r["id"]) for r in rows],
-        )
-        project.set_meta("src_index_inferred", True)
-    return len(rows)
 
 
 def load_timeline(project: Project) -> Timeline:
@@ -216,7 +198,7 @@ class Pipeline:
         runs_before = len(self.project.runs())
         self.ingest()
         record_videos(self.project)
-        fill_source_indices(self.project)  # frames from older versions
+        self.project.fill_source_indices()  # frames from older versions
         self._process(force)
         if len(self.project.runs()) > runs_before:
             self.project.snapshot("processed")

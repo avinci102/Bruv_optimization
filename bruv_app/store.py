@@ -99,6 +99,17 @@ class Project:
         self._migrate()
         self.db.commit()
 
+    @classmethod
+    def read_only(cls, db_path: Path) -> "Project":
+        """Open a database without changing it, e.g. a snapshot (snapshots/x.db: its project
+        folder, for frames and settings, is the one above)."""
+        db_path = Path(db_path)
+        self = cls.__new__(cls)
+        self.root = db_path.parent.parent if db_path.parent.name == "snapshots" else db_path.parent
+        self.db = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        return self
+
     def _migrate(self) -> None:
         """Bring a project made by an older version up to date (columns are only added)."""
         columns = {r["name"] for r in self.db.execute("PRAGMA table_info(frames)")}
@@ -182,6 +193,7 @@ class Project:
         reproduced, whatever is reviewed or re-run afterwards."""
         from .provenance import code_revision, fingerprint  # noqa: PLC0415
 
+        self.fill_source_indices()
         self.db.commit()
         folder = self.root / "snapshots"
         folder.mkdir(exist_ok=True)
@@ -265,6 +277,25 @@ class Project:
 
     def frame_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM frames").fetchone()[0]
+
+    def fill_source_indices(self) -> int:
+        """Give frames saved before source frame numbers were kept a number worked out from
+        their time. That is exact when detection ran in one go from the start of the video;
+        older versions handed back frames one step late after a resume, so the project is
+        flagged and anything that relies on the numbers checks them against the saved frames."""
+        from .video import source_index  # noqa: PLC0415
+
+        rows = self.db.execute(
+            """SELECT f.id, f.local_t, c.fps FROM frames f JOIN chapters c ON c.idx=f.chapter
+               WHERE f.src_index IS NULL"""
+        ).fetchall()
+        if rows:
+            self.db.executemany(
+                "UPDATE frames SET src_index=? WHERE id=?",
+                [(source_index(r["local_t"], r["fps"]), r["id"]) for r in rows],
+            )
+            self.set_meta("src_index_inferred", True)
+        return len(rows)
 
     def frame_rate(self) -> float:
         """Sampled frames per second, from the stored frames' times (1.0 before any)."""

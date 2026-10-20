@@ -176,6 +176,41 @@ def cmd_snapshot(args) -> None:
     print(f"Saved a frozen, read-only copy of the results: {Project(root).snapshot(args.label)}")
 
 
+def _open_project(source: str):
+    """A project folder, or a snapshot (.db) opened read-only."""
+    from .store import Project  # noqa: PLC0415
+
+    path = Path(source)
+    if path.suffix.lower() == ".db" and path.is_file():
+        return Project.read_only(path)
+    if not (path / "project.db").exists():
+        raise ValueError(f"No project in {path}")
+    return Project(path)
+
+
+def cmd_evaluate(args) -> None:
+    from .evaluate import evaluate_project, read_sidecar  # noqa: PLC0415
+
+    report = evaluate_project(_open_project(args.project), read_sidecar(Path(args.annotations)))
+    print("\n".join(report.lines()))
+
+
+def cmd_annotation_sheet(args) -> None:
+    from .evaluate import annotation_sheet, write_sidecar  # noqa: PLC0415
+
+    windows = []
+    for w in args.window:
+        try:
+            start, end = (float(x) for x in w.split("-"))
+        except ValueError as exc:
+            raise ValueError(f"A window is two times in seconds, like 600-620 (got {w})") from exc
+        windows.append((start, end))
+    rows = annotation_sheet(_open_project(args.project), windows)
+    path = write_sidecar(Path(args.out), rows)
+    frames = len({(r.chapter, r.src_index) for r in rows})
+    print(f"Saved {path}: {len(rows)} rows over {frames} frames, all 'unchecked' until annotated")
+
+
 def cmd_score(args) -> None:
     from .score import score_against  # noqa: PLC0415
     from .store import Project  # noqa: PLC0415
@@ -371,6 +406,17 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", required=True, help="the project to score (e.g. re-run with new rules)")
     p.add_argument("--answers", required=True, help="a copy of the same project with reviewed cards")
     p.set_defaults(func=cmd_score)
+
+    p = sub.add_parser("evaluate", help="score a project (or a snapshot) against independent annotations")
+    p.add_argument("--project", required=True, help="a project folder, or a snapshot .db")
+    p.add_argument("--annotations", required=True, help="the evaluation sidecar (.csv)")
+    p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("annotation-sheet", help="start an evaluation sidecar from a project's frames")
+    p.add_argument("--project", required=True)
+    p.add_argument("--window", nargs="+", required=True, metavar="START-END", help="seconds, e.g. 600-620")
+    p.add_argument("--out", required=True, help="the .csv to write")
+    p.set_defaults(func=cmd_annotation_sheet)
 
     p = sub.add_parser("snapshot", help="freeze a read-only copy of a project's results (e.g. before review)")
     p.add_argument("--project", required=True)

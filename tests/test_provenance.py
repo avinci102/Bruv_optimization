@@ -9,7 +9,7 @@ import openpyxl
 from bruv_app import demo
 from bruv_app.cli import main
 from bruv_app.export import export_project
-from bruv_app.pipeline import Pipeline, fill_source_indices
+from bruv_app.pipeline import Pipeline
 from bruv_app.provenance import deployment_id, fingerprint
 from bruv_app.store import Project
 
@@ -89,11 +89,11 @@ def test_projects_from_older_versions_get_source_frame_numbers(project):
     old = Project(project.root)
     assert all(r[0] is None for r in old.db.execute("SELECT src_index FROM frames"))
     assert old.last_frame().src_index is None
-    assert fill_source_indices(old) == old.frame_count()
+    assert old.fill_source_indices() == old.frame_count()
     assert old.get_meta("src_index_inferred") is True  # worked out, not recorded
     rows = old.db.execute("SELECT local_t, src_index FROM frames").fetchall()
     assert all(r["src_index"] == round(r["local_t"] * 10) for r in rows)
-    assert fill_source_indices(old) == 0
+    assert old.fill_source_indices() == 0
 
 
 def test_export_says_where_the_numbers_came_from(project, tmp_path):
