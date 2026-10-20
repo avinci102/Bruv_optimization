@@ -143,12 +143,37 @@ def build_timeline(paths: list[Path], clip_names: str = "file", probe_fn=probe) 
     return Timeline(chapters)
 
 
+def exact_rate(fps: float) -> float:
+    """The exact frame rate behind a rounded one. GoPros record at NTSC rates: "29.97" is
+    30000/1001, and counting frames at 29.97 would put some frame numbers off by one in a
+    long video."""
+    for base in (24, 30, 48, 60, 120, 240):
+        ntsc = base * 1000 / 1001
+        if abs(fps - ntsc) < 0.006:
+            return ntsc
+    return fps
+
+
+def source_index(local_t: float, chapter_fps: float) -> int:
+    """The number of the source frame sample_frames hands back for a moment in a chapter:
+    the latest frame shown at or before it (frame 0 is at 0 s)."""
+    return int(np.floor(local_t * exact_rate(chapter_fps) + 1e-6))
+
+
 @dataclass
 class SampledFrame:
     t: float  # global time
     chapter: int
     local_t: float
     image: np.ndarray  # RGB uint8, H x W x 3
+    src_index: int | None = None  # the source frame in its chapter (see source_index)
+
+
+# How far before the start a run seeks; at least one source frame (see sample_frames).
+SEEK_EARLY_S = 1.0
+# Recorded with each detection run. 2: frames carry their source frame number, and a run
+# that starts mid-video (a resume, or skipping the descent) is no longer one step late.
+SAMPLER_VERSION = 2
 
 
 def sample_frames(
@@ -159,7 +184,15 @@ def sample_frames(
     end_s: float | None = None,
     hwaccel: bool = True,
 ) -> Iterator[SampledFrame]:
-    """Decode frames at `fps` across all chapters with an ffmpeg pipe."""
+    """Decode frames at `fps` across all chapters with an ffmpeg pipe.
+
+    Frame k of a chapter is the latest source frame shown at or before local_start + k/fps.
+    After a seek, ffmpeg's fps filter numbers its output from the first frame it decodes,
+    which lands one step late whenever the start isn't exactly on a source frame (a resumed
+    run, or one that skips the descent). So the run seeks a second early and tells the filter
+    where it really starts (start_time): frames before it are dropped, and the numbering is
+    the same wherever the run starts.
+    """
     import imageio_ffmpeg  # noqa: PLC0415
 
     end_s = timeline.duration_s if end_s is None else min(end_s, timeline.duration_s)
@@ -172,12 +205,16 @@ def sample_frames(
         local_len = min(ch_end, end_s) - (ch.start_s + local_start)
         if local_len <= 0:
             continue
-        input_params = ["-ss", f"{local_start:.3f}"]
+        seek = max(0.0, local_start - SEEK_EARLY_S)
+        input_params = ["-ss", f"{seek:.6f}"]
         if hwaccel:
             input_params = ["-hwaccel", "auto", *input_params]
-        # round=up makes output frame k the source frame at exactly local_start + k/fps;
-        # the default (round=near) hands back the frame ~half a step later.
-        output_params = ["-vf", f"fps={fps}:round=up,scale={width}:-2", "-t", f"{local_len:.3f}"]
+        # round=up: a source frame counts for the first output moment at or after it, so
+        # each output moment gets the latest frame at or before it (round=near would hand
+        # back the frame up to half a step later).
+        vf = f"fps=fps={fps}:start_time={local_start - seek:.6f}:round=up,scale={width}:-2"
+        # -t counts from the seek point and may cut a frame early; the loop below stops exactly.
+        output_params = ["-vf", vf, "-t", f"{local_start - seek + local_len + step:.6f}"]
         gen = imageio_ffmpeg.read_frames(
             str(ch.path), input_params=input_params, output_params=output_params
         )
@@ -189,6 +226,8 @@ def sample_frames(
                 if local_t >= local_start + local_len - 1e-6:
                     break
                 image = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
-                yield SampledFrame(ch.start_s + local_t, ch.index, local_t, image)
+                yield SampledFrame(
+                    ch.start_s + local_t, ch.index, local_t, image, source_index(local_t, ch.fps)
+                )
         finally:
             gen.close()

@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from bruv_app.video import build_timeline, order_chapters, sample_frames
+from bruv_app.video import build_timeline, exact_rate, order_chapters, sample_frames, source_index
 
 
 def test_order_chapters_new_gopro_naming():
@@ -72,6 +72,52 @@ def test_sampled_frame_times_are_exact(tmp_path):
         for f in frames:
             index = round(f.image.mean() / 4)
             assert index == pytest.approx(f.t * 10, abs=0.6), (start, f.t, index)
+
+
+def _numbered_video(path: Path, frames: int = 240) -> Path:
+    """A video at GoPro's 29.97 fps (30000/1001) whose frames show their own number in binary."""
+    import subprocess
+
+    import imageio_ffmpeg
+
+    image = np.full((96, 160, 3), 128, np.uint8)
+    data = []
+    for i in range(frames):
+        for b in range(8):
+            y, x = 8 + (b // 4) * 48, 8 + (b % 4) * 40
+            image[y : y + 32, x : x + 32] = 255 if i >> b & 1 else 0
+        data.append(image.tobytes())
+    cmd = [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+           "-s", "160x96", "-r", "30000/1001", "-i", "-", "-c:v", "libx264", "-g", "30", "-crf", "10",
+           "-pix_fmt", "yuv420p", str(path)]
+    subprocess.run(cmd, input=b"".join(data), check=True)
+    return path
+
+
+def _shown_number(image: np.ndarray) -> int:
+    return sum(1 << b for b in range(8) if image[24 + (b // 4) * 48, 24 + (b % 4) * 40].mean() > 128)
+
+
+def test_each_sampled_frame_knows_its_source_frame(tmp_path):
+    """At 29.97 fps a run that starts between source frames (a resume, or skipping the
+    descent) used to get every frame one step late. Now frame k is the latest source frame
+    at or before its time wherever the run starts, and src_index names it."""
+    timeline = build_timeline([_numbered_video(tmp_path / "GX010001.MP4")])
+    assert timeline.chapters[0].fps == pytest.approx(29.97, abs=0.01)
+    for fps in (4.0, 3.0):
+        for start in (0.0, 0.05, 1.25, 3.5):
+            frames = list(sample_frames(timeline, fps, 160, start, start + 1.5, hwaccel=False))
+            assert len(frames) == int(np.ceil(1.5 * fps)), (fps, start)
+            assert [_shown_number(f.image) for f in frames] == [f.src_index for f in frames], (fps, start)
+            assert [f.local_t for f in frames] == pytest.approx([start + k / fps for k in range(len(frames))])
+
+
+def test_source_frame_numbers_use_the_exact_ntsc_rate():
+    assert exact_rate(29.97) == 30000 / 1001 and exact_rate(59.94) == 60000 / 1001
+    assert exact_rate(25.0) == 25.0 and exact_rate(10.0) == 10.0
+    # 1001 s in, counting at 29.97 would land a frame short of 30000.
+    assert source_index(1001.0, 29.97) == 30000
+    assert source_index(0.25, 29.97) == 7  # frame 7 shows at 0.2336 s, frame 8 at 0.2669 s
 
 
 def test_expand_videos_accepts_folders_and_wildcards(tmp_path):

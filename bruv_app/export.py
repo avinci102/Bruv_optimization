@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -52,6 +53,35 @@ DETAILS_HEADER = [
 
 
 CORRECTIONS_HEADER = ["at", "action", "card", "details"]
+PROVENANCE_HEADER = ["item", "value"]
+
+
+def provenance_rows(project: Project) -> list[list]:
+    """Where the numbers came from: the code, the footage by fingerprint, the settings, and
+    every stage run with the models it used (store.py runs), so they can be traced and redone."""
+    from .provenance import code_revision, digest  # noqa: PLC0415
+
+    settings = asdict(project.load_settings())
+    rows = [
+        ["exported by", f"bruv_app {code_revision()}"],
+        ["project", str(project.root)],
+        ["deployment", project.get_meta("deployment") or "footage not fingerprinted"],
+    ]
+    rows += [
+        ["video", f"{v['path']} ({v['size']:,} bytes) {v['fingerprint']}"]
+        for v in project.get_meta("video_fingerprints") or []
+    ]
+    rows.append(["settings", f"{digest(settings)} {json.dumps(settings, sort_keys=True)}"])
+    if project.get_meta("src_index_inferred"):
+        rows.append(["source frames", "numbered from frame times (frames saved by an older version)"])
+    for r in project.runs():
+        rows.append([
+            f"run {r['id']}: {r['stage']}",
+            f"{r['started_at']} to {r['finished_at'] or 'stopped'}; code {r['code']}; "
+            f"settings {digest(json.loads(r['settings']))}; {r['info']}",
+        ])
+    rows += [["snapshot", str(p)] for p in sorted((project.root / "snapshots").glob("*.db"))]
+    return rows
 
 
 def _most_common(values) -> str | None:
@@ -186,7 +216,10 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
     corrections = [[c["at"], c["action"], c["fish_id"], c["details"]] for c in project.corrections()]
     export_workbook(
         info, out_path, record_rows, MAXN_HEADER, maxn_rows, DETAILS_HEADER, details_rows,
-        {"corrections": (CORRECTIONS_HEADER, corrections)},
+        {
+            "corrections": (CORRECTIONS_HEADER, corrections),
+            "provenance": (PROVENANCE_HEADER, provenance_rows(project)),
+        },
     )
     project.set_meta("last_export", str(out_path))
     return out_path

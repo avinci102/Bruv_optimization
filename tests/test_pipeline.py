@@ -112,9 +112,14 @@ def test_detection_resumes_after_interruption(tmp_path, synthetic_videos):
         Pipeline(project, detector=Crashy(), classifier=demo.DemoClassifier()).run()
     assert project.frame_count() == 8
     Pipeline(project, detector=ColorBlobDetector(), classifier=demo.DemoClassifier()).run()
-    times = [r["t"] for r in project.db.execute("SELECT t FROM frames ORDER BY seq")]
-    assert len(times) == 24
-    assert [round(t) for t in times] == list(range(24))
+    rows = project.db.execute("SELECT t, local_t, src_index FROM frames ORDER BY seq").fetchall()
+    assert len(rows) == 24
+    assert [round(r["t"]) for r in rows] == list(range(24))
+    assert [r["src_index"] for r in rows] == [round(r["local_t"] * 10) for r in rows]  # 10 fps source
+    # Two detection runs: the one that was stopped, and the one that finished the video.
+    detect = project.runs("detect")
+    assert [r["finished_at"] is not None for r in detect] == [False, True]
+    assert json.loads(detect[1]["info"])["first_seq"] == 8
 
 
 def test_rerun_keeps_reviews_and_refuses_to_wipe_them(project):

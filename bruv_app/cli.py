@@ -167,6 +167,15 @@ def cmd_export(args) -> None:
     print(f"Saved {path}")
 
 
+def cmd_snapshot(args) -> None:
+    from .store import Project  # noqa: PLC0415
+
+    root = Path(args.project)
+    if not (root / "project.db").exists():
+        raise ValueError(f"No project in {root}")
+    print(f"Saved a frozen, read-only copy of the results: {Project(root).snapshot(args.label)}")
+
+
 def cmd_score(args) -> None:
     from .score import score_against  # noqa: PLC0415
     from .store import Project  # noqa: PLC0415
@@ -362,6 +371,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", required=True, help="the project to score (e.g. re-run with new rules)")
     p.add_argument("--answers", required=True, help="a copy of the same project with reviewed cards")
     p.set_defaults(func=cmd_score)
+
+    p = sub.add_parser("snapshot", help="freeze a read-only copy of a project's results (e.g. before review)")
+    p.add_argument("--project", required=True)
+    p.add_argument("--label", default="manual", help="a word or two saying why, e.g. before-review")
+    p.set_defaults(func=cmd_snapshot)
 
     p = sub.add_parser("learn", help="your library of confirmed fish, which can sharpen the guesses")
     p.add_argument("--add", nargs="+", metavar="PROJECT", help="add a reviewed project's confirmed cards")

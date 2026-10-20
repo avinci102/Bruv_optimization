@@ -1,13 +1,16 @@
 """SQLite project store, so a long video can be processed and reviewed over several sessions.
 
-A project is a folder: project.db, settings.json, frames/ (review JPEGs), exports/.
+A project is a folder: project.db, settings.json, frames/ (review JPEGs), exports/, and
+snapshots/ (frozen, read-only copies of the database, see Project.snapshot).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
-from dataclasses import dataclass
+import stat
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +25,7 @@ CREATE TABLE IF NOT EXISTS chapters (
     idx INTEGER PRIMARY KEY, path TEXT, name TEXT, start_s REAL, duration_s REAL, fps REAL);
 CREATE TABLE IF NOT EXISTS frames (
     id INTEGER PRIMARY KEY, seq INTEGER UNIQUE, t REAL, chapter INTEGER, local_t REAL,
-    path TEXT, width INTEGER, height INTEGER);
+    path TEXT, width INTEGER, height INTEGER, src_index INTEGER);
 CREATE TABLE IF NOT EXISTS detections (
     id INTEGER PRIMARY KEY, frame_id INTEGER REFERENCES frames(id),
     x1 REAL, y1 REAL, x2 REAL, y2 REAL, score REAL, quality REAL, app BLOB,
@@ -36,6 +39,15 @@ CREATE TABLE IF NOT EXISTS fish (
 CREATE TABLE IF NOT EXISTS stages (name TEXT PRIMARY KEY, done_at TEXT);
 CREATE TABLE IF NOT EXISTS corrections (
     id INTEGER PRIMARY KEY, at TEXT, action TEXT, fish_id INTEGER, details TEXT);
+-- One row per stage run: the settings, code and models it used, and what it made.
+CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY, stage TEXT, started_at TEXT, finished_at TEXT,
+    settings TEXT, code TEXT, info TEXT);
+-- The cards as the machine built them, before any review: tracker and merge decisions
+-- stay scoreable after a reviewer splits or merges cards.
+CREATE TABLE IF NOT EXISTS original_groups (
+    run_id INTEGER, det_id INTEGER, tracklet_id INTEGER, fish_id INTEGER,
+    PRIMARY KEY (run_id, det_id));
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
@@ -73,6 +85,7 @@ class FrameRow:
     path: str
     width: int
     height: int
+    src_index: int | None = None  # the source video frame (video.source_index)
 
 
 class Project:
@@ -83,7 +96,14 @@ class Project:
         self.db = sqlite3.connect(self.root / "project.db", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.db.commit()
+
+    def _migrate(self) -> None:
+        """Bring a project made by an older version up to date (columns are only added)."""
+        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(frames)")}
+        if "src_index" not in columns:
+            self.db.execute("ALTER TABLE frames ADD COLUMN src_index INTEGER")
 
     # --- settings & meta -------------------------------------------------------------
 
@@ -108,6 +128,93 @@ class Project:
         )
         self.db.commit()
 
+    # --- run records & snapshots -------------------------------------------------------
+
+    def start_run(self, stage: str, settings: Settings, **info) -> int:
+        """Record a stage starting: the settings and code it runs with, plus `info` (models,
+        inputs). finish_run adds what it made."""
+        from .provenance import code_revision  # noqa: PLC0415
+
+        cur = self.db.execute(
+            "INSERT INTO runs(stage, started_at, settings, code, info) VALUES(?, ?, ?, ?, ?)",
+            (stage, _now(), json.dumps(asdict(settings)), code_revision(), json.dumps(info)),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def finish_run(self, run_id: int, **info) -> None:
+        row = self.db.execute("SELECT info FROM runs WHERE id=?", (run_id,)).fetchone()
+        merged = {**json.loads(row["info"] or "{}"), **info}
+        self.db.execute(
+            "UPDATE runs SET finished_at=?, info=? WHERE id=?", (_now(), json.dumps(merged), run_id)
+        )
+        self.db.commit()
+
+    def runs(self, stage: str | None = None) -> list[sqlite3.Row]:
+        if stage is None:
+            return self.db.execute("SELECT * FROM runs ORDER BY id").fetchall()
+        return self.db.execute("SELECT * FROM runs WHERE stage=? ORDER BY id", (stage,)).fetchall()
+
+    def freeze_groups(self, run_id: int) -> int:
+        """Keep the cards as the machine built them (detection -> tracklet -> card)."""
+        cur = self.db.execute(
+            """INSERT OR REPLACE INTO original_groups(run_id, det_id, tracklet_id, fish_id)
+               SELECT ?, d.id, d.tracklet_id, t.fish_id FROM detections d
+               JOIN tracklets t ON t.id=d.tracklet_id""",
+            (run_id,),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def original_groups(self, run_id: int | None = None) -> dict[int, tuple[int, int]]:
+        """Detection id -> (tracklet id, card id) as first built: by the given merge run, or
+        the latest one."""
+        if run_id is None:
+            run_id = self.db.execute("SELECT MAX(run_id) FROM original_groups").fetchone()[0]
+        rows = self.db.execute(
+            "SELECT det_id, tracklet_id, fish_id FROM original_groups WHERE run_id=?", (run_id,)
+        )
+        return {r[0]: (r[1], r[2]) for r in rows}
+
+    def snapshot(self, label: str) -> Path:
+        """Freeze the project's database as it is now: a compact, read-only copy in snapshots/,
+        with a manifest saying what made it. Results scored from a snapshot can be
+        reproduced, whatever is reviewed or re-run afterwards."""
+        from .provenance import code_revision, fingerprint  # noqa: PLC0415
+
+        self.db.commit()
+        folder = self.root / "snapshots"
+        folder.mkdir(exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in label) or "snapshot"
+        path = folder / f"{stamp}-{safe}.db"
+        n = 1
+        while path.exists():
+            n += 1
+            path = folder / f"{stamp}-{safe}-{n}.db"
+        self.db.execute("VACUUM INTO ?", (str(path),))
+        counts = {
+            table: self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
+            for table in ("frames", "detections", "tracklets", "fish", "corrections")
+        }
+        manifest = {
+            "label": label,
+            "made_at": _now(),
+            "project": str(self.root),
+            "deployment": self.get_meta("deployment"),
+            "videos": self.get_meta("video_fingerprints"),
+            "code": code_revision(),
+            "settings": asdict(self.load_settings()),
+            "runs": [dict(r) for r in self.runs()],
+            "counts": counts,
+            "reviewed": self.reviewed_count(),
+            "database": fingerprint(path, quick=False),
+        }
+        path.with_suffix(".json").write_text(json.dumps(manifest, indent=2))
+        for p in (path, path.with_suffix(".json")):
+            os.chmod(p, stat.S_IREAD)
+        return path
+
     def stage_done(self, name: str) -> bool:
         return self.db.execute("SELECT 1 FROM stages WHERE name=?", (name,)).fetchone() is not None
 
@@ -131,10 +238,11 @@ class Project:
     def chapters(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM chapters ORDER BY idx").fetchall()
 
-    def add_frame(self, seq, t, chapter, local_t, path, width, height) -> int:
+    def add_frame(self, seq, t, chapter, local_t, path, width, height, src_index=None) -> int:
         cur = self.db.execute(
-            "INSERT INTO frames(seq, t, chapter, local_t, path, width, height) VALUES(?,?,?,?,?,?,?)",
-            (seq, t, chapter, local_t, path, width, height),
+            """INSERT INTO frames(seq, t, chapter, local_t, path, width, height, src_index)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (seq, t, chapter, local_t, path, width, height, src_index),
         )
         return cur.lastrowid
 
