@@ -56,16 +56,28 @@ function statusGroup(status) {
   return status === "pending" || status === "skipped" ? status : "reviewed";
 }
 
-// The cards the header lets through: Status, Show (the rank a template species needs among
-// the guesses, or "all") and whether tiny fish are shown.
+// The cards the header lets through (Status, Show: the rank a template species needs among
+// the guesses, or "all"; and whether tiny fish are shown), in the order Sort asks for. Biggest
+// fish first puts the clearest fish, the ones the counts rest on, first. The server sends the
+// cards in time order, which the sort keeps for equal sizes.
 function visibleCards(status = $("status").value, rule = $("filter").value, showTiny = $("show-tiny").checked) {
-  return state.cards.filter((c) => {
+  const list = state.cards.filter((c) => {
     if (status !== "all" && statusGroup(c.status) !== status) return false;
     if (!showTiny && c.max_px < state.tinyPx) return false;
     if (rule === "all") return true;
     const rank = templateRank(c.guesses);
     return rank > 0 && rank <= Number(rule);
   });
+  return $("sort").value === "size" ? list.sort((a, b) => b.max_px - a.max_px) : list;
+}
+
+// "Same fish as the card before it": the card just before it in the video, skipping hidden
+// tiny fish, whatever Status, Show and Sort are set to.
+function previousInTime(card) {
+  for (let i = state.cards.findIndex((c) => c.id === card.id) - 1; i >= 0; i--) {
+    if ($("show-tiny").checked || state.cards[i].max_px >= state.tinyPx) return state.cards[i];
+  }
+  return null;
 }
 
 // Tiny-fish cards that Status and Show let through: shown only when ticked.
@@ -193,7 +205,10 @@ async function show(index) {
   $("f-comment").value = d.comment || "";
 
   renderFilmstrip(d);
-  $("merge-prev").disabled = state.cards.findIndex((c) => c.id === d.id) <= 0;
+  const prev = previousInTime(d);
+  $("merge-prev").disabled = !prev;
+  $("merge-prev").innerHTML = prev ? `Same fish as #${prev.id}, the card before it <kbd>P</kbd>` : "Same fish as the card before it <kbd>P</kbd>";
+  $("merge-prev").title = prev ? `Fold this card into #${prev.id}, the card just before it in the video` : "No card before this one";
   message("");
 }
 
@@ -381,10 +396,9 @@ async function moveTicked() {
 
 async function mergePrev() {
   const d = state.detail;
-  const pos = state.cards.findIndex((c) => c.id === d.id);
-  if (pos <= 0) return;
-  const prev = state.cards[pos - 1];
-  if (!confirm(`Same fish as the previous card #${prev.id}? Card #${d.id} is merged into it, which then needs re-reviewing.`)) return;
+  const prev = d && previousInTime(d);
+  if (!prev) return;
+  if (!confirm(`Same fish as #${prev.id}, the card before it in the video? Card #${d.id} is merged into it, which then needs re-reviewing.`)) return;
   try {
     await api(`/api/fish/${prev.id}/merge`, { other_id: d.id });
     await Promise.all([loadCards(), loadSummary()]);
@@ -482,7 +496,7 @@ $("next").onclick = () => show(state.index + 1);
 $("split").onclick = split;
 $("merge-prev").onclick = mergePrev;
 $("export").onclick = exportExcel;
-for (const id of ["status", "filter", "show-tiny"]) {
+for (const id of ["status", "filter", "show-tiny", "sort"]) {
   $(id).onchange = (e) => {
     e.target.blur();  // so the review keys work straight away
     updateFilterCounts();

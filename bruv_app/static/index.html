@@ -30,6 +30,12 @@
       </select>
     </label>
     <label class="toggle" id="tiny-toggle"><input type="checkbox" id="show-tiny"> <span id="tiny-label">Show tiny fish</span></label>
+    <label class="toggle" title="Biggest fish first: the clearest fish, the ones the counts rest on, come first. In time order: as they appear in the video, to follow a fish that comes and goes.">Sort
+      <select id="sort">
+        <option value="size">biggest fish first</option>
+        <option value="time">in time order</option>
+      </select>
+    </label>
     <button id="export" class="primary">Export to Excel</button>
   </header>
 
@@ -53,7 +59,7 @@
         <span>Sightings <span id="strip-count" class="muted"></span></span>
         <span>
           <button id="split" disabled title="Split the card from the selected sighting on (pick it with a click, or ↑ and ↓), or move the ticked sightings to a new card (tick with Space, Ctrl+click or the box on each sighting)">Split from selected <kbd>X</kbd></button>
-          <button id="merge-prev" title="Fold this card into the previous one (same fish)">Same fish as previous card <kbd>P</kbd></button>
+          <button id="merge-prev" title="Fold this card into the card just before it in the video (same fish)">Same fish as the card before it <kbd>P</kbd></button>
         </span>
       </div>
       <div id="filmstrip" class="filmstrip"></div>
@@ -98,7 +104,7 @@
       <p class="hint keys">Keys: <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> guesses · <kbd>/</kbd> search, <kbd>Enter</kbd> record ·
         <kbd>U</kbd> unknown · <kbd>N</kbd> not a fish · <kbd>M</kbd> multiple fish · <kbd>S</kbd> skip ·
         <kbd>↑</kbd><kbd>↓</kbd> pick a sighting, <kbd>X</kbd> split there · <kbd>Space</kbd> tick sightings, <kbd>X</kbd> moves them to a new card ·
-        <kbd>P</kbd> same as previous card ·
+        <kbd>P</kbd> same fish as the card before it ·
         <kbd>←</kbd><kbd>→</kbd> cards</p>
     </aside>
   </main>
