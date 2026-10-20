@@ -169,6 +169,10 @@ async function show(index) {
   state.index = Math.max(0, Math.min(index, list.length - 1));
   const card = list[state.index];
   const d = await api(`/api/fish/${card.id}`);
+  // (A server started before warnings existed sends none.)
+  d.pieces ??= [];
+  d.flags ??= [];
+  d.closest_calls ??= [];
   state.detail = d;
   state.selected = null;
 
@@ -179,6 +183,17 @@ async function show(index) {
     `First seen ${d.clip_in} ${fmtTime(d.time_in)} · last seen ${d.clip_out} ${fmtTime(d.time_out)} · ` +
     `${d.n_detections} detections in ${d.tracklets.length} track${d.tracklets.length === 1 ? "" : "s"} · ` +
     `${Math.round(card.max_px)} px across at its largest${card.max_px < state.tinyPx ? " (tiny fish)" : ""}`;
+  // Where the tracker had the closest call (its next-best option nearly as good): a place
+  // to look if the card might have jumped to another fish.
+  const call = d.closest_calls[0];
+  if (call) {
+    const link = document.createElement("span");
+    link.className = "call";
+    link.textContent = `tracker's closest call: ${call.clip} ${fmtTime(call.local_t)}`;
+    link.title = `The next-best option was ${call.margin} worse here (0 or less: a toss-up). Click to see it.`;
+    link.onclick = () => showFrame(call);
+    $("meta").append(" · ", link);
+  }
 
   // Status: only the user's own recorded answer is ever highlighted.
   const badge = $("status-badge");
@@ -210,6 +225,8 @@ async function show(index) {
   $("f-comment").value = d.comment || "";
 
   renderFilmstrip(d);
+  renderPieces(d);
+  renderFlags(d);
   const prev = previousInTime(d);
   $("merge-prev").disabled = !prev;
   $("merge-prev").innerHTML = prev ? `Same fish as #${prev.id}, the card before it <kbd>P</kbd>` : "Same fish as the card before it <kbd>P</kbd>";
@@ -267,6 +284,49 @@ function renderFilmstrip(d) {
   state.selectedIndex = -1;
   state.ticked = new Set();
   updateSplitButton();
+}
+
+// A card's tracked stretches side by side, each with its own guess: what to compare before
+// one answer goes on all of them.
+function renderPieces(d) {
+  const many = d.pieces.length > 1;
+  $("pieces-head").hidden = $("pieces").hidden = !many;
+  $("pieces").replaceChildren();
+  if (!many) return;
+  for (const p of d.pieces) {
+    const fig = document.createElement("figure");
+    const guess = p.guesses.length ? `${p.guesses[0][0]} ${Math.round(p.guesses[0][1] * 100)}%` : "no guess";
+    fig.innerHTML = `<img loading="lazy" src="/crop/${p.best_det}" alt=""><figcaption></figcaption>`;
+    fig.querySelector("figcaption").textContent = `${p.clip} ${fmtTime(p.local_t)} · ${guess}`;
+    fig.title = `Track ${p.tracklet}: ${p.detections} sightings over ${Math.round(p.seconds)} s`;
+    fig.onclick = () => {
+      const i = d.filmstrip.findIndex((s) => s.tracklet === p.tracklet);
+      if (i >= 0) selectSighting(i);
+    };
+    $("pieces").append(fig);
+  }
+}
+
+// Warnings from the evidence (pieces unlike each other, pieces favouring different species,
+// two boxes at once): answering then asks to confirm it's one fish.
+function renderFlags(d) {
+  const box = $("flags");
+  box.replaceChildren();
+  box.hidden = !d.flags.length;
+  if (!d.flags.length) return;
+  const head = document.createElement("strong");
+  head.textContent = "⚠ Check this card before answering";
+  box.append(head);
+  for (const f of d.flags) {
+    const p = document.createElement("p");
+    p.textContent = f.text;
+    box.append(p);
+  }
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Compare the pieces under the photo. One fish: answer as usual and confirm. " +
+    "Different fish: Multiple fish (M), or tick and move one fish's sightings (X).";
+  box.append(hint);
 }
 
 // Show one sighting of the card (click it, or ↑ and ↓); splitting starts there.
@@ -332,8 +392,20 @@ async function record(status, species = null) {
     $("f-comment").focus();
     return;
   }
+  // A flagged card gets one answer for all its pieces only once you confirm they're one fish.
+  const answering = status === "species" || status === "unknown" || status === "not_fish";
+  let confirmed = false;
+  if (answering && d.flags.length) {
+    const what = species || STATUS_TEXT[status].replace("Recorded: ", "");
+    confirmed = confirm(
+      `This card may hold more than one fish:\n\n• ${d.flags.map((f) => f.text).join("\n• ")}\n\n` +
+      `Are all ${d.pieces.length} pieces one fish? OK records “${what}” for all of them. ` +
+      "Cancel to look again (Multiple fish, M, gives each piece its own card).",
+    );
+    if (!confirmed) return;
+  }
   try {
-    await api(`/api/fish/${d.id}/label`, { status, species, ...optionalFields() });
+    await api(`/api/fish/${d.id}/label`, { status, species, ...optionalFields(), confirm: confirmed });
   } catch (e) {
     message(e.message, "error");
     return;

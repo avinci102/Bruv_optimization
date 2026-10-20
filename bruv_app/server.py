@@ -14,6 +14,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from . import imaging
+from .diagnostics import card_flags, closest_calls, pieces
 from .export import export_project
 from .pipeline import extra_species, load_timeline, refresh_fish_guesses, species_labels
 from .store import REVIEWED, STATUSES, Project
@@ -29,6 +30,8 @@ class LabelIn(BaseModel):
     sex: str | None = None
     behavior: str | None = None
     comment: str | None = None
+    # The reviewer has checked the card's warnings (diagnostics.py) and it is one fish.
+    confirm: bool = False
 
 
 class SplitIn(BaseModel):
@@ -151,6 +154,20 @@ def create_app(project_root: Path) -> FastAPI:
                 )
             clip_in, t_in = timeline.locate(f["start_t"])
             clip_out, t_out = timeline.locate(f["end_t"])
+            parts = pieces(project, fish_id)
+            piece_view = []
+            for p in parts:
+                clip, local = timeline.locate(p.start_t)
+                piece_view.append({
+                    "tracklet": p.tracklet, "clip": clip, "local_t": local, "seconds": p.end_t - p.start_t,
+                    "detections": p.detections, "best_det": p.best_det, "guesses": p.guesses,
+                })
+            calls = []
+            for c in closest_calls(project, fish_id):
+                clip, local = timeline.locate(c["t"])
+                calls.append({"det_id": c["det_id"], "frame_id": c["frame_id"], "t": c["t"], "clip": clip,
+                              "local_t": local, "box": _box(c), "margin": round(c["link_margin"], 3),
+                              "history": None if c["history_sim"] is None else round(c["history_sim"], 3)})
             best_view = None
             if best is not None:
                 best_clip, best_local = timeline.locate(best["t"])
@@ -179,6 +196,9 @@ def create_app(project_root: Path) -> FastAPI:
                 "tracklets": project.fish_tracklets(fish_id),
                 "best": best_view,
                 "filmstrip": strip,
+                "pieces": piece_view,
+                "flags": [{"kind": x.kind, "text": x.text} for x in card_flags(project, fish_id, settings.merge_min_similarity, parts)],
+                "closest_calls": calls,
             }
 
     @app.post("/api/fish/{fish_id}/label")
@@ -188,8 +208,17 @@ def create_app(project_root: Path) -> FastAPI:
             species_list = species_labels(project)  # the template's list plus the extra names
             if body.status == "species" and species_list and body.species not in species_list:
                 raise HTTPException(400, "Pick a species from the list")
+            # One answer for every piece of a flagged card only once the reviewer confirms
+            # they're one fish; the confirmation is kept with the answer.
+            flags = card_flags(project, fish_id, settings.merge_min_similarity) if body.status in REVIEWED else []
+            if flags and not body.confirm:
+                raise HTTPException(
+                    409, "Check this card first: " + " ".join(x.text for x in flags)
+                    + " Answer again to confirm it's one fish, or use Multiple fish.",
+                )
+            details = {"flags": [x.kind for x in flags], "confirmed": True} if flags else None
             try:
-                project.label_fish(fish_id, body.status, **body.model_dump(exclude={"status"}))
+                project.label_fish(fish_id, body.status, details, **body.model_dump(exclude={"status", "confirm"}))
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             return {"ok": True}

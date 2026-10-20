@@ -42,6 +42,20 @@ MIN_IOU = 0.5
 # Size bands for recall, as the box's longer side in pixels of the review frames (the
 # same measure as Settings.tiny_fish_px).
 SIZE_BANDS = (20, 30, 40, 60)
+# Bands of the tracker's link margin (how much worse its next-best option was), for seeing
+# whether identity changes gather at close calls. For analysis only: no rule uses them.
+MARGIN_BANDS = (0.0, 0.1, 0.3)
+
+
+def margin_band(margin: float | None) -> str:
+    if margin is None:
+        return "no other option"
+    if margin <= MARGIN_BANDS[0]:
+        return f"≤{MARGIN_BANDS[0]:g}"
+    for lo, hi in zip(MARGIN_BANDS, MARGIN_BANDS[1:]):
+        if margin < hi:
+            return f"{lo:g}-{hi:g}"
+    return f"≥{MARGIN_BANDS[-1]:g}"
 
 
 @dataclass
@@ -139,6 +153,7 @@ class Found:
     tracklet: int | None  # as the tracker built it
     card: int | None  # as the merge built it
     label: str | None  # its current card's reviewed answer: a species, UNKNOWN, or None
+    margin: float | None = None  # the tracker's link into this box: how close a call (track.py)
 
 
 @dataclass
@@ -175,14 +190,14 @@ def load_run(project: Project) -> RunView:
         sizes.append((f["width"], f["height"]))
     starts: dict[int, float] = {}
     rows = project.db.execute(
-        """SELECT d.id, d.x1, d.y1, d.x2, d.y2, f.chapter, f.src_index, f.t
+        """SELECT d.id, d.x1, d.y1, d.x2, d.y2, d.link_margin, f.chapter, f.src_index, f.t
            FROM detections d JOIN frames f ON f.id=d.frame_id ORDER BY f.seq, d.id"""
     )
     for r in rows:
         tracklet, card = groups.get(r["id"], (None, None))
         box = Detection(r["x1"], r["y1"], r["x2"], r["y2"], 1.0)
         frames[(deployment, r["chapter"], r["src_index"])].append(
-            Found(r["id"], r["t"], box, tracklet, card, labels.get(r["id"]))
+            Found(r["id"], r["t"], box, tracklet, card, labels.get(r["id"]), r["link_margin"])
         )
         if tracklet is not None:
             starts.setdefault(tracklet, r["t"])
@@ -218,6 +233,8 @@ class Report:
     tracklets_eligible: int = 0
     tracklets_mixed: int = 0
     fragments_per_fish: float = 0.0
+    # (identity changes, steps) by how close a call the tracker's link was (MARGIN_BANDS)
+    switches_by_margin: dict = field(default_factory=dict)
     # merging (B) and cards
     edges_eligible: int = 0
     edges_wrong: int = 0
@@ -260,6 +277,8 @@ class Report:
             + (f" ({1000 * self.switches / self.transitions:.1f} per 1,000)" if self.transitions else "")
             + f"; {rate(self.tracklets_mixed, self.tracklets_eligible)} tracklets mix fish; "
             f"{self.fragments_per_fish:.2f} tracklets per fish",
+            "  identity changes by the tracker's margin: "
+            + ", ".join(f"{band} {rate(s, n)}" for band, (s, n) in sorted(self.switches_by_margin.items())),
             f"Merging (B): {rate(self.edges_wrong, self.edges_eligible)} joins of pure tracklets put different fish together; "
             f"{self.edges_inherited} joins touch a mixed tracklet (counted under A)",
             f"Cards ({self.grouping} grouping): {rate(self.cards_multi_fish, self.cards_eligible)} hold more than one fish, "
@@ -341,11 +360,18 @@ def evaluate(run: RunView, boxes: list[Box], min_iou: float = MIN_IOU) -> Report
         if b.certain and f.tracklet is not None:
             along[f.tracklet].append((f.t, det_id, b.individual))
     fish_of: dict[int, set[str]] = {}
+    by_margin: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for tracklet, seen in along.items():
-        seq = [ind for _, _, ind in sorted(seen)]
+        seen = sorted(seen)
+        seq = [ind for _, _, ind in seen]
         report.transitions += len(seq) - 1
         report.switches += sum(a != b for a, b in zip(seq, seq[1:]))
+        for (_, _, a), (_, det_id, b) in zip(seen, seen[1:]):
+            band = by_margin[margin_band(found_by_id[det_id].margin)]
+            band[0] += a != b
+            band[1] += 1
         fish_of[tracklet] = set(seq)
+    report.switches_by_margin = {k: tuple(v) for k, v in by_margin.items()}
     report.tracklets_eligible = len(fish_of)
     report.tracklets_mixed = sum(len(s) > 1 for s in fish_of.values())
     pieces: dict[str, set[int]] = defaultdict(set)

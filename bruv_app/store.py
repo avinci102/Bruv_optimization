@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS frames (
 CREATE TABLE IF NOT EXISTS detections (
     id INTEGER PRIMARY KEY, frame_id INTEGER REFERENCES frames(id),
     x1 REAL, y1 REAL, x2 REAL, y2 REAL, score REAL, quality REAL, app BLOB,
-    tracklet_id INTEGER, embedding BLOB);
+    tracklet_id INTEGER, embedding BLOB,
+    link_cost REAL, link_margin REAL, history_sim REAL);
 CREATE TABLE IF NOT EXISTS tracklets (
     id INTEGER PRIMARY KEY, fish_id INTEGER, start_t REAL, end_t REAL, embedding BLOB);
 CREATE TABLE IF NOT EXISTS fish (
@@ -49,9 +50,16 @@ CREATE TABLE IF NOT EXISTS original_groups (
     run_id INTEGER, det_id INTEGER, tracklet_id INTEGER, fish_id INTEGER,
     PRIMARY KEY (run_id, det_id));
 -- Every answer given, with the detections the card held when it was given (its scope): a
--- label never spreads to detections the reviewer didn't see on the card.
+-- label never spreads to detections the reviewer didn't see on the card. details: the
+-- card's warnings when it was answered (diagnostics.py) and that the reviewer confirmed them.
 CREATE TABLE IF NOT EXISTS reviews (
-    id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, status TEXT, species TEXT, scope TEXT);
+    id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, status TEXT, species TEXT, scope TEXT,
+    details TEXT);
+-- Every join the merge weighed between two pieces (tracklets), with its evidence, and
+-- whether it was made: "joined", "lost" (a better join took one end), or the check it failed.
+CREATE TABLE IF NOT EXISTS merge_edges (
+    run_id INTEGER, a INTEGER, b INTEGER, gap REAL, similarity REAL, colour REAL,
+    size_ratio REAL, decision TEXT, PRIMARY KEY (run_id, a, b));
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
@@ -116,9 +124,16 @@ class Project:
 
     def _migrate(self) -> None:
         """Bring a project made by an older version up to date (columns are only added)."""
-        columns = {r["name"] for r in self.db.execute("PRAGMA table_info(frames)")}
-        if "src_index" not in columns:
-            self.db.execute("ALTER TABLE frames ADD COLUMN src_index INTEGER")
+        added = {
+            "frames": {"src_index": "INTEGER"},
+            "detections": {"link_cost": "REAL", "link_margin": "REAL", "history_sim": "REAL"},
+            "reviews": {"details": "TEXT"},
+        }
+        for table, columns in added.items():
+            have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for name, kind in columns.items():
+                if name not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
     # --- settings & meta -------------------------------------------------------------
 
@@ -180,6 +195,20 @@ class Project:
         )
         self.db.commit()
         return cur.rowcount
+
+    def save_merge_edges(self, run_id: int, edges) -> None:
+        self.db.executemany(
+            """INSERT OR REPLACE INTO merge_edges(run_id, a, b, gap, similarity, colour, size_ratio, decision)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(run_id, e.a, e.b, e.gap, e.similarity, e.colour, e.size_ratio, e.decision) for e in edges],
+        )
+        self.db.commit()
+
+    def merge_edges(self, run_id: int | None = None) -> list[sqlite3.Row]:
+        """The joins the merge weighed: by the given merge run, or the latest one."""
+        if run_id is None:
+            run_id = self.db.execute("SELECT MAX(run_id) FROM merge_edges").fetchone()[0]
+        return self.db.execute("SELECT * FROM merge_edges WHERE run_id=? ORDER BY a, b", (run_id,)).fetchall()
 
     def original_groups(self, run_id: int | None = None) -> dict[int, tuple[int, int]]:
         """Detection id -> (tracklet id, card id) as first built: by the given merge run, or
@@ -322,7 +351,9 @@ class Project:
 
     def reset_tracking(self) -> None:
         # Crop embeddings stay: they don't depend on tracking, so a rerun can reuse them.
-        self.db.execute("UPDATE detections SET tracklet_id=NULL")
+        self.db.execute(
+            "UPDATE detections SET tracklet_id=NULL, link_cost=NULL, link_margin=NULL, history_sim=NULL"
+        )
         self.db.execute("DELETE FROM tracklets")
         self.db.execute("DELETE FROM fish")
         self.db.commit()
@@ -334,9 +365,10 @@ class Project:
     def save_tracklets(self, tracklets) -> None:
         for tr in tracklets:
             self.db.execute("INSERT INTO tracklets(id) VALUES(?)", (tr.id,))
+            links = getattr(tr, "links", {})
             self.db.executemany(
-                "UPDATE detections SET tracklet_id=? WHERE id=?",
-                [(tr.id, key) for _, key in tr.members],
+                "UPDATE detections SET tracklet_id=?, link_cost=?, link_margin=?, history_sim=? WHERE id=?",
+                [(tr.id, *links.get(key, (None, None, None)), key) for _, key in tr.members],
             )
         self.db.execute(
             """UPDATE tracklets SET
@@ -422,7 +454,9 @@ class Project:
     def all_fish(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM fish ORDER BY start_t, id").fetchall()
 
-    def label_fish(self, fish_id: int, status: str, **fields) -> None:
+    def label_fish(self, fish_id: int, status: str, details: dict | None = None, **fields) -> None:
+        """Record an answer. `details` goes with it into the review log (e.g. the card's
+        warnings, and that the reviewer confirmed them)."""
         if status not in STATUSES:
             raise ValueError(f"Bad status: {status}")
         species = fields.get("species") if status == "species" else None
@@ -444,10 +478,15 @@ class Project:
         )
         scope = [d["id"] for d in self.fish_detections(fish_id)] if status != "pending" else []
         self.db.execute(
-            "INSERT INTO reviews(at, fish_id, status, species, scope) VALUES(?, ?, ?, ?, ?)",
-            (_now(), fish_id, status, species, json.dumps(scope)),
+            "INSERT INTO reviews(at, fish_id, status, species, scope, details) VALUES(?, ?, ?, ?, ?, ?)",
+            (_now(), fish_id, status, species, json.dumps(scope), json.dumps(details) if details else None),
         )
         self.db.commit()
+
+    def last_review(self, fish_id: int) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT * FROM reviews WHERE fish_id=? ORDER BY id DESC LIMIT 1", (fish_id,)
+        ).fetchone()
 
     def label_scopes(self) -> dict[int, set[int]]:
         """Card id -> the detections its current answer was given for (from its latest

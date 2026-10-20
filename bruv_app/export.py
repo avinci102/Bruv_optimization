@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from . import imaging
+from .diagnostics import all_flags
 from .metrics import (
     UNKNOWN,
     FishLabel,
@@ -67,6 +68,7 @@ DETAILS_HEADER = [
     "crop_path",
     "classifier",
     "reviewed_at",
+    "warnings",  # diagnostics.py; "(confirmed one fish)" once the reviewer confirmed them
 ]
 
 
@@ -105,6 +107,12 @@ def provenance_rows(project: Project) -> list[list]:
 def _most_common(values) -> str | None:
     values = [v for v in values if v]
     return Counter(values).most_common(1)[0][0] if values else None
+
+
+def _confirmed(project: Project, fish_id: int) -> bool:
+    """The card's current answer was given after confirming its warnings."""
+    review = project.last_review(fish_id)
+    return bool(review and review["details"] and json.loads(review["details"]).get("confirmed"))
 
 
 def export_project(project: Project, out_path: Path | None = None) -> Path:
@@ -156,6 +164,16 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
             ", ".join(map(str, c.det_ids)), ", ".join(map(str, sorted(set(c.fish_ids)))), (c.key, c.t) in peaks,
         ])
     status_rows.append(["double-count checks", f"{len(checks)} (see the checks sheet)"])
+    warnings = all_flags(project, settings.merge_min_similarity)
+    status_of = {f["id"]: f["status"] for f in fish_rows}
+    confirmed = {fid for fid in warnings if status_of[fid] in REVIEWED and _confirmed(project, fid)}
+    open_warnings = [fid for fid in warnings if fid not in confirmed and status_of[fid] in REVIEWED]
+    status_rows.append([
+        "cards with warnings (may hold more than one fish)",
+        f"{len(warnings)}: {len(confirmed)} answered after confirming one fish, "
+        f"{len(open_warnings)} answered without confirming (before warnings existed), "
+        f"{len(warnings) - len(confirmed) - len(open_warnings)} not answered",
+    ])
 
     # Names from the app's extra list go into the template as its catch-all ("other ..."),
     # with the name in the comment, so every value stays inside the template's dropdown.
@@ -249,6 +267,8 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
                 crop_path,
                 classifier,
                 f["reviewed_at"],
+                "; ".join(w.kind for w in warnings.get(f["id"], []))
+                + (" (confirmed one fish)" if f["id"] in confirmed else ""),
             ]
         )
 

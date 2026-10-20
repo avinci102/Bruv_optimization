@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gc
 import logging
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
@@ -33,7 +34,7 @@ from .learn import Check, Library, blend, check, library_stamp, vote
 from .provenance import deployment_id, describe_model, fingerprint
 from .store import Project, box_px
 from .template import read_template
-from .track import Tracker
+from .track import Tracker, missed_frames
 from .video import SAMPLER_VERSION, Chapter, Timeline, build_timeline, sample_frames
 
 log = logging.getLogger(__name__)
@@ -126,6 +127,35 @@ def text_embedding_path(project: Project) -> Path:
     return project.root / "text_embeddings.npy"
 
 
+_TEXT: dict = {}
+
+
+def guess_scores(project: Project, emb: np.ndarray) -> tuple[list[str], np.ndarray] | None:
+    """Scores over the species names for one image embedding, from the cached label
+    embeddings (no model needed): softmax, blended with the library when it passed its check
+    for this project (learn.py). None before any names were scored."""
+    path = text_embedding_path(project)
+    labels = project.get_meta("guess_labels") or []
+    if not (labels and path.exists()):
+        return None
+    stamp = (str(path), path.stat().st_mtime_ns)
+    if _TEXT.get("stamp") != stamp:
+        _TEXT.update(stamp=stamp, emb=np.load(path))
+    probs = softmax(float(project.get_meta("logit_scale", 100.0)) * (_TEXT["emb"] @ emb))
+    weight = float(project.get_meta("library_weight") or 0.0)
+    if weight:
+        library = _library()
+        probs = blend(probs, vote(emb, library.emb, library.label, labels), weight)
+    return labels, probs
+
+
+def top_guesses(scored: tuple[list[str], np.ndarray] | None, k: int) -> list:
+    if scored is None:
+        return []
+    labels, probs = scored
+    return [[labels[i], round(float(probs[i]), 4)] for i in np.argsort(-probs)[:k]]
+
+
 def refresh_fish_guesses(project: Project, fish_id: int, settings: Settings | None = None) -> None:
     """Pick the best crop and recompute top-k guesses from cached embeddings (no model needed)."""
     settings = settings or project.load_settings()
@@ -136,18 +166,9 @@ def refresh_fish_guesses(project: Project, fish_id: int, settings: Settings | No
     ranked = sorted(dets, key=lambda d: (d["quality"] or 0.0), reverse=True)
     embedded = [d for d in ranked if d["embedding"] is not None][: settings.crops_per_fish]
     guesses: list = []
-    path = text_embedding_path(project)
-    labels = project.get_meta("guess_labels") or []
-    if embedded and path.exists() and labels:
+    if embedded:
         emb = l2_normalize(np.mean([np.frombuffer(d["embedding"], np.float32) for d in embedded], axis=0))
-        text_emb = np.load(path)
-        scale = float(project.get_meta("logit_scale", 100.0))
-        probs = softmax(scale * (text_emb @ emb))
-        weight = float(project.get_meta("library_weight") or 0.0)
-        if weight:  # the library passed its check for this project (learn.py)
-            library = _library()
-            probs = blend(probs, vote(emb, library.emb, library.label, labels), weight)
-        guesses = [[labels[i], round(float(probs[i]), 4)] for i in np.argsort(-probs)[: settings.top_k]]
+        guesses = top_guesses(guess_scores(project, emb), settings.top_k)
     best = (embedded or ranked)[0]["id"]
     project.set_fish_guesses(fish_id, guesses, best)
 
@@ -329,7 +350,7 @@ class Pipeline:
             s.track_min_iou,
             s.track_max_dist,
             s.track_max_size_ratio,
-            max(1, round(s.track_max_missed_s * self.project.frame_rate())),  # in sampled frames
+            missed_frames(s.track_max_missed_s, self.project.frame_rate()),
             s.track_min_appearance,
             s.track_direction,
         )
@@ -434,17 +455,21 @@ class Pipeline:
                     l2_normalize(np.mean(apps, axis=0)) if apps else None,
                 )
             )
+        evidence = []
         chains = merge_tracklets(
             summaries, s.gap_seconds, s.merge_min_similarity, s.merge_max_size_ratio, s.tiny_fish_px,
-            s.merge_min_colour,
+            s.merge_min_colour, evidence,
         )
         chains = sorted(chains + alone, key=lambda chain: (start[chain[0]], chain[0]))
         for chain in chains:
             self.project.create_fish(chain)
         self.project.commit()
         frozen = self.project.freeze_groups(run_id)  # the cards before anyone reviews them
+        self.project.save_merge_edges(run_id, evidence)
+        decisions = Counter(e.decision for e in evidence)
         self.project.finish_run(
-            run_id, pieces=len(start), cards=len(chains), not_embedded=len(alone), detections=frozen
+            run_id, pieces=len(start), cards=len(chains), not_embedded=len(alone), detections=frozen,
+            joins_weighed=len(evidence), decisions=dict(decisions),
         )
         self.project.mark_stage("merge")
         self.progress("merge", len(chains), len(chains))
