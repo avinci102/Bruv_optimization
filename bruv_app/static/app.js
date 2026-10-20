@@ -107,12 +107,16 @@ async function loadCards() {
   showProgress();
 }
 
-// Tiny fish are optional, so they count towards progress only once reviewed or skipped.
+// The bar follows the cards shown by default. Tiny fish are hidden until asked for, but an
+// untouched tiny card is still unreviewed: they're counted apart, never as done.
 function showProgress() {
-  const counted = state.cards.filter((c) => c.max_px >= state.tinyPx || c.status !== "pending");
-  const done = counted.filter((c) => c.status !== "pending" && c.status !== "skipped").length;
-  $("progress-text").textContent = `${done} of ${counted.length} reviewed`;
-  $("bar").style.width = counted.length ? `${(100 * done) / counted.length}%` : "0";
+  const answered = (c) => c.status !== "pending" && c.status !== "skipped";
+  const main = state.cards.filter((c) => c.max_px >= state.tinyPx);
+  const tiny = state.cards.filter((c) => c.max_px < state.tinyPx);
+  const done = main.filter(answered).length;
+  $("progress-text").textContent = `${done} of ${main.length} reviewed` +
+    (tiny.length ? ` · tiny fish: ${tiny.filter(answered).length} of ${tiny.length}` : "");
+  $("bar").style.width = main.length ? `${(100 * done) / main.length}%` : "0";
 }
 
 async function init() {
@@ -124,7 +128,8 @@ async function init() {
   showProgress();
   $("tiny-toggle").title =
     `Tiny fish never reach ${state.tinyPx} px across, too small to identify. They're kept off ` +
-    "other cards and hidden; tick to review them. Untouched, they stay out of the export.";
+    "other cards and hidden; tick to review them. Untouched, they stay out of the counts, and " +
+    "the export marks its counts provisional.";
   // Open on the pending cards, or the skipped ones once nothing is pending.
   for (const status of ["pending", "skipped", "all"]) {
     $("status").value = status;

@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS original_groups (
     run_id INTEGER, det_id INTEGER, tracklet_id INTEGER, fish_id INTEGER,
     PRIMARY KEY (run_id, det_id));
+-- Every answer given, with the detections the card held when it was given (its scope): a
+-- label never spreads to detections the reviewer didn't see on the card.
+CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, status TEXT, species TEXT, scope TEXT);
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
@@ -438,7 +442,21 @@ class Project:
                 fish_id,
             ),
         )
+        scope = [d["id"] for d in self.fish_detections(fish_id)] if status != "pending" else []
+        self.db.execute(
+            "INSERT INTO reviews(at, fish_id, status, species, scope) VALUES(?, ?, ?, ?, ?)",
+            (_now(), fish_id, status, species, json.dumps(scope)),
+        )
         self.db.commit()
+
+    def label_scopes(self) -> dict[int, set[int]]:
+        """Card id -> the detections its current answer was given for (from its latest
+        review). Cards answered before scopes were recorded aren't listed."""
+        rows = self.db.execute(
+            """SELECT r.fish_id, r.scope FROM reviews r
+               JOIN (SELECT fish_id, MAX(id) AS last FROM reviews GROUP BY fish_id) l ON l.last=r.id"""
+        )
+        return {r["fish_id"]: set(json.loads(r["scope"])) for r in rows}
 
     def reviewed_count(self) -> int:
         q = f"SELECT COUNT(*) FROM fish WHERE status IN ({','.join('?' * len(REVIEWED))})"

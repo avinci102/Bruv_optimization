@@ -1,9 +1,15 @@
-"""Turn reviewed fish into record rows, a MaxN tab and an app_details tab in a template copy."""
+"""Turn reviewed fish into record rows, a MaxN tab and an app_details tab in a template copy.
+
+Alongside them: how complete the review is (review_status, review_by_minute; until every
+card is answered, tiny fish included, the counts are marked provisional), what could count
+one fish twice (checks), the reviewer's corrections, and where the numbers came from
+(provenance).
+"""
 
 from __future__ import annotations
 
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -11,9 +17,17 @@ from pathlib import Path
 import numpy as np
 
 from . import imaging
-from .metrics import UNKNOWN, FishLabel, compute_maxn, compute_sightings, per_frame_counts
+from .metrics import (
+    UNKNOWN,
+    FishLabel,
+    Observation,
+    compute_maxn,
+    compute_sightings,
+    double_count_checks,
+    per_frame_counts,
+)
 from .pipeline import extra_species, load_timeline
-from .store import Project
+from .store import REVIEWED, Project
 from .template import export_workbook, read_template, seconds_to_time
 
 MAXN_HEADER = [
@@ -24,7 +38,11 @@ MAXN_HEADER = [
     "clip_first_seen",
     "time_first_seen",
     "first_arrival_s",
+    "review",  # "complete", or "provisional" while cards are still unanswered
 ]
+STATUS_HEADER = ["item", "value"]
+BY_MINUTE_HEADER = ["minute", "clip", "from", "detections", "counted", "not_fish", "unreviewed", "unreviewed_tiny"]
+CHECKS_HEADER = ["check", "label", "clip", "time", "detections", "cards", "on_maxn_frame"]
 
 DETAILS_HEADER = [
     "fish_id",
@@ -98,8 +116,13 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
     timeline = load_timeline(project)
 
     fish_rows = project.all_fish()
+    fish_dets = {f["id"]: project.fish_detections(f["id"]) for f in fish_rows}
+    # An answer counts for the detections it was given for (its scope), never for ones that
+    # joined the card afterwards. Cards answered before scopes were kept count whole.
+    scopes = project.label_scopes()
     labels: dict[int, str] = {}
     fish_labels: list[FishLabel] = []
+    counted: dict[int, list] = {}
     for f in fish_rows:
         if f["status"] == "species":
             key = f["species"]
@@ -107,14 +130,32 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
             key = UNKNOWN
         else:
             continue
+        scope = scopes.get(f["id"])
+        dets = [d for d in fish_dets[f["id"]] if scope is None or d["id"] in scope]
+        if not dets:
+            continue
         labels[f["id"]] = key
-        fish_labels.append(FishLabel(f["id"], key, f["start_t"], f["end_t"]))
+        counted[f["id"]] = dets
+        fish_labels.append(FishLabel(f["id"], key, dets[0]["t"], dets[-1]["t"]))
 
-    fish_dets = {f["id"]: project.fish_detections(f["id"]) for f in fish_rows}
-    detections = [(d["t"], fid) for fid, dets in fish_dets.items() if fid in labels for d in dets]
+    detections = [(d["t"], fid) for fid, dets in counted.items() for d in dets]
     counts = per_frame_counts(detections, labels)
     maxn = compute_maxn(counts)
-    sightings = compute_sightings(fish_labels, detections, settings.gap_seconds)
+    sightings = compute_sightings(fish_labels, detections, settings.sighting_gap_s)
+    status_rows, minute_rows, complete = review_status(project, settings, fish_rows, fish_dets, counted, scopes)
+    observations = [
+        Observation(d["t"], d["id"], fid, labels[fid], (d["x1"], d["y1"], d["x2"], d["y2"]))
+        for fid, dets in counted.items() for d in dets
+    ]
+    peaks = {(m.species, m.t_maxn) for m in maxn}
+    checks = []
+    for c in double_count_checks(observations):
+        clip, local = timeline.locate(c.t)
+        checks.append([
+            c.kind, "unknown fish" if c.key == UNKNOWN else c.key, clip, seconds_to_time(local),
+            ", ".join(map(str, c.det_ids)), ", ".join(map(str, sorted(set(c.fish_ids)))), (c.key, c.t) in peaks,
+        ])
+    status_rows.append(["double-count checks", f"{len(checks)} (see the checks sheet)"])
 
     # Names from the app's extra list go into the template as its catch-all ("other ..."),
     # with the name in the comment, so every value stays inside the template's dropdown.
@@ -158,7 +199,7 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
         clip_f, t_f = timeline.locate(m.first_t)
         maxn_rows.append(
             [m.species, m.maxn, clip_m, seconds_to_time(t_m), clip_f, seconds_to_time(t_f),
-             round(m.first_t - settings.start_s, 1)]
+             round(m.first_t - settings.start_s, 1), "complete" if complete else "provisional"]
         )
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -217,9 +258,73 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
     export_workbook(
         info, out_path, record_rows, MAXN_HEADER, maxn_rows, DETAILS_HEADER, details_rows,
         {
+            "review_status": (STATUS_HEADER, status_rows),
+            "review_by_minute": (BY_MINUTE_HEADER, minute_rows),
+            "checks": (CHECKS_HEADER, checks),
             "corrections": (CORRECTIONS_HEADER, corrections),
             "provenance": (PROVENANCE_HEADER, provenance_rows(project)),
         },
     )
     project.set_meta("last_export", str(out_path))
     return out_path
+
+
+def review_status(project, settings, fish_rows, fish_dets, counted, scopes) -> tuple[list, list, bool]:
+    """How complete the review is: cards and detections by status, tiny fish apart but never
+    left out, and the same by minute of video. Complete means every card is answered (tiny
+    ones too) and every counted label covers its whole card; until then counts are provisional."""
+    timeline = load_timeline(project)
+    sizes = project.fish_sizes()
+    tiny_px = settings.tiny_fish_px
+
+    def tally(cards):
+        status = Counter(f["status"] for f in cards)
+        return (
+            len(cards), sum(status[s] for s in REVIEWED), status["skipped"], status["pending"],
+            sum(len(fish_dets[f["id"]]) for f in cards),
+        )
+
+    tiny = [f for f in fish_rows if sizes.get(f["id"], 0.0) < tiny_px]
+    big = [f for f in fish_rows if sizes.get(f["id"], 0.0) >= tiny_px]
+    unanswered = [f for f in fish_rows if f["status"] in ("pending", "skipped")]
+    outside = sum(
+        len(fish_dets[f["id"]]) - len(counted.get(f["id"], []))
+        for f in fish_rows if f["status"] in ("species", "unknown")
+    )
+    complete = not unanswered and not outside
+    status_of = {f["id"]: f["status"] for f in fish_rows}
+    unknown = sum(len(dets) for fid, dets in counted.items() if status_of[fid] == "unknown")
+    legacy = sum(1 for f in fish_rows if f["status"] in REVIEWED and f["id"] not in scopes)
+    rows = [
+        ["review", "complete" if complete else
+         f"provisional: {len(unanswered)} cards not answered ({sum(f in tiny for f in unanswered)} of them tiny)"],
+        ["sampled rate", f"{project.frame_rate():g} frames per second"],
+        ["cards (all / answered / skipped / pending / detections)", "{} / {} / {} / {} / {}".format(*tally(fish_rows))],
+        [f"  not tiny (≥ {tiny_px:g} px)", "{} / {} / {} / {} / {}".format(*tally(big))],
+        [f"  tiny (< {tiny_px:g} px, hidden until asked for)", "{} / {} / {} / {} / {}".format(*tally(tiny))],
+        ["detections counted", sum(len(d) for d in counted.values())],
+        ["  of them unknown fish (in no species' MaxN)", unknown],
+        ["detections answered as not a fish", sum(len(fish_dets[f["id"]]) for f in fish_rows if f["status"] == "not_fish")],
+        ["detections on answered cards outside the answer's scope (not counted)", outside],
+        ["answered cards from before scopes were recorded (counted whole)", legacy],
+    ]
+
+    by_minute: dict[int, list[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
+    for f in fish_rows:
+        is_tiny = sizes.get(f["id"], 0.0) < tiny_px
+        ok = {d["id"] for d in counted.get(f["id"], [])}
+        for d in fish_dets[f["id"]]:
+            row = by_minute[int(d["t"] // 60)]
+            row[0] += 1
+            if d["id"] in ok:
+                row[1] += 1
+            elif f["status"] == "not_fish":
+                row[2] += 1
+            else:
+                row[3] += 1
+                row[4] += is_tiny
+    minutes = []
+    for minute, (n, ok, not_fish, open_, open_tiny) in sorted(by_minute.items()):
+        clip, local = timeline.locate(minute * 60.0)
+        minutes.append([minute, clip, seconds_to_time(local), n, ok, not_fish, open_, open_tiny])
+    return rows, minutes, complete

@@ -45,6 +45,9 @@ class Settings:
 
     # Continuity merge (review dedupe only; never used for counts).
     gap_seconds: float = 10.0
+    # Record rows in the export: same-species fish within this gap share a row. Kept apart
+    # from gap_seconds, so tuning the merge never changes how rows are grouped.
+    sighting_gap_s: float = 10.0
     # BioCLIP similarity of the two pieces. Most fish score 0.8 or more against each other,
     # so the bar is above that; with the colour check below it blocked 65% of joins between
     # different fish and kept 91% between parts of the same fish (docs/SPEC.md §12).
