@@ -161,12 +161,14 @@ def source_index(local_t: float, chapter_fps: float) -> int:
 
 
 def grab_frames(
-    path: Path, fps: float, indices: list[int], width: int | None = None, span: int = 300
+    path: Path, fps: float, indices: list[int], width: int | None = None, span: int = 300, threads: int = 4
 ) -> Iterator[tuple[int, np.ndarray]]:
     """Decode source frames by number (source_index), in order: at full size, or scaled to
     `width` the way sample_frames scales. Numbers within `span` frames of each other are
     decoded in one pass. A seek half a frame before frame i lands on frame i (the first frame
-    at or after the seek point), and the select filter counts from there."""
+    at or after the seek point), and the select filter counts from there. Few decoder threads:
+    each holds several full-size frames, and with the species model loaded too, a 16 GB PC
+    ran out of memory decoding 2.7K HEVC on all of them."""
     import imageio_ffmpeg  # noqa: PLC0415
 
     rate = exact_rate(fps)
@@ -184,7 +186,7 @@ def grab_frames(
         # last wanted frame none does until the end of the video; the count releases it.
         gen = imageio_ffmpeg.read_frames(
             str(path),
-            input_params=["-ss", f"{max(0.0, (first - 0.5) / rate):.6f}"],
+            input_params=["-threads", str(threads), "-ss", f"{max(0.0, (first - 0.5) / rate):.6f}"],
             output_params=["-vf", vf, "-fps_mode", "passthrough", "-frames:v", str(len(group))],
         )
         try:

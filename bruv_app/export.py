@@ -111,15 +111,9 @@ def _most_common(values) -> str | None:
     return Counter(values).most_common(1)[0][0] if values else None
 
 
-def _answer_details(project: Project, fish_id: int) -> dict:
-    """What was kept with the card's current answer (store.py reviews)."""
-    review = project.last_review(fish_id)
-    return json.loads(review["details"]) if review and review["details"] else {}
-
-
 def _confirmed(project: Project, fish_id: int) -> bool:
     """The card's current answer was given after confirming its warnings."""
-    return bool(_answer_details(project, fish_id).get("confirmed"))
+    return bool(project.answer_details(fish_id).get("confirmed"))
 
 
 def export_project(project: Project, out_path: Path | None = None) -> Path:
@@ -276,7 +270,7 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
                 f["reviewed_at"],
                 "; ".join(w.kind for w in warnings.get(f["id"], []))
                 + (" (confirmed one fish)" if f["id"] in confirmed else ""),
-                f["status"] == "not_fish" and bool(_answer_details(project, f["id"]).get("equipment")),
+                f["status"] == "not_fish" and bool(project.answer_details(f["id"]).get("equipment")),
             ]
         )
 
@@ -323,13 +317,13 @@ def review_status(project, settings, fish_rows, fish_dets, counted, scopes) -> t
     status_of = {f["id"]: f["status"] for f in fish_rows}
     unknown = sum(len(dets) for fid, dets in counted.items() if status_of[fid] == "unknown")
     legacy = sum(1 for f in fish_rows if f["status"] in REVIEWED and f["id"] not in scopes)
-    equipment = [f for f in fish_rows if f["status"] == "not_fish" and _answer_details(project, f["id"]).get("equipment")]
+    equipment = [f for f in fish_rows if f["status"] == "not_fish" and project.answer_details(f["id"]).get("equipment")]
     rows = [
         ["review", "complete" if complete else
          f"provisional: {len(unanswered)} cards not answered ({sum(f in tiny for f in unanswered)} of them tiny)"],
         ["sampled rate", f"{project.frame_rate():g} frames per second"],
         ["cards (all / answered / skipped / pending / detections)", "{} / {} / {} / {} / {}".format(*tally(fish_rows))],
-        [f"  not tiny (≥ {tiny_px:g} px)", "{} / {} / {} / {} / {}".format(*tally(big))],
+        [f"  not tiny (â‰¥ {tiny_px:g} px)", "{} / {} / {} / {} / {}".format(*tally(big))],
         [f"  tiny (< {tiny_px:g} px, hidden until asked for)", "{} / {} / {} / {} / {}".format(*tally(tiny))],
         ["detections counted", sum(len(d) for d in counted.values())],
         ["  of them unknown fish (in no species' MaxN)", unknown],

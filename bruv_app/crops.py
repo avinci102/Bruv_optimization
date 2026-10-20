@@ -120,8 +120,11 @@ def _labels(project: Project, min_similarity: float) -> dict[int, str]:
 
 
 def run(project: Project, classifier, tiny: bool = False, limit: int | None = None,
-        chunk: int = 24, progress=None) -> tuple[dict, Path]:
+        chunk: int = 12, progress=None) -> tuple[dict, Path]:
+    from .pipeline import record_videos  # noqa: PLC0415
+
     settings = project.load_settings()
+    record_videos(project)  # the footage's fingerprint and what it says about the camera
     project.fill_source_indices()
     text_path = project.root / "text_embeddings.npy"
     names = project.get_meta("guess_labels") or []
@@ -142,39 +145,50 @@ def run(project: Project, classifier, tiny: bool = False, limit: int | None = No
     order = sorted(by_frame, key=lambda fid: frames[fid]["seq"])
     labels = _labels(project, settings.merge_min_similarity)
 
+    def cut(image, d):
+        return imaging.crop_box(image, d["x1"], d["y1"], d["x2"], d["y2"], settings.crop_pad)
+
     rows, embs = [], {arm: [] for arm in ARMS}
     status = Counter()
     for start in range(0, len(order), chunk):
         part = order[start : start + chunk]
-        pending = {arm: [] for arm in ARMS}  # this chunk's crops: only one chunk of frames is held
+        pending = {arm: [] for arm in ARMS}
         for ch in {frames[fid]["chapter"] for fid in part}:
             mine = [fid for fid in part if frames[fid]["chapter"] == ch]
             path, fps = Path(chapters[ch]["path"]), chapters[ch]["fps"]
-            wanted = {frames[fid]["src_index"] for fid in mine}
-            near = sorted({j for i in wanted for j in range(i - WINDOW, i + WINDOW + 1)})
-            decoded_b = dict(grab_frames(path, fps, near, width=settings.decode_width))
-            decoded_c = dict(grab_frames(path, fps, sorted(wanted)))
-            for fid in mine:
-                f, i = frames[fid], frames[fid]["src_index"]
+            at = {frames[fid]["src_index"]: fid for fid in mine}
+            width = frames[mine[0]]["width"]
+            # Frames are cropped as they're decoded and dropped: only 960 px copies of the
+            # nearby frames (for the alignment check) are kept for a chunk.
+            small, crop_b, crop_c, native = {}, {}, {}, {}
+            near = sorted({j for i in at for j in range(i - WINDOW, i + WINDOW + 1)})
+            for j, image in grab_frames(path, fps, near, width=settings.decode_width):
+                small[j] = imaging.resize_to_width(image, width)  # A': as the pipeline made it before JPEG
+                for c in by_frame.get(at.get(j), []):
+                    crop_b[c["det"]["id"]] = cut(image, c["det"])
+            for i, image in grab_frames(path, fps, sorted(at)):
+                native[i] = image.shape
+                for c in by_frame[at[i]]:
+                    crop_c[c["det"]["id"]] = cut(image, c["det"])
+            for i, fid in sorted(at.items()):
+                f = frames[fid]
                 review = imaging.load_rgb(str(project.root / f["path"]))
-                # A': each nearby frame at the saved frame's size, as the pipeline made it before JPEG.
-                small = {j: imaging.resize_to_width(decoded_b[j], f["width"])
-                         for j in range(i - WINDOW, i + WINDOW + 1) if j in decoded_b}
-                images = {"A": review, "A'": small[i], "B": decoded_b[i], "C": decoded_c[i]}
+                near_i = {j: small[j] for j in range(i - WINDOW, i + WINDOW + 1) if j in small}
                 for c in by_frame[fid]:
                     d = c["det"]
-                    state, mad = alignment(review, small, i, (d["x1"], d["y1"], d["x2"], d["y2"]))
+                    state, mad = alignment(review, near_i, i, (d["x1"], d["y1"], d["x2"], d["y2"]))
                     status[state] += 1
-                    native = decoded_c[i].shape
                     rows.append({
                         "det_id": d["id"], "tracklet": c["tracklet"], "tiny": c["tiny"], "t": round(f["t"], 2),
                         "src_index": i, "alignment": state, "mad": round(mad, 2),
-                        "native_px": round(max((d["x2"] - d["x1"]) * native[1], (d["y2"] - d["y1"]) * native[0]), 1),
+                        "native_px": round(max((d["x2"] - d["x1"]) * native[i][1], (d["y2"] - d["y1"]) * native[i][0]), 1),
                         "position": position_band(d["x1"], d["y1"], d["x2"], d["y2"]),
                         "label": labels.get(d["id"], ""),
                     })
-                    for arm in ARMS:
-                        pending[arm].append(imaging.crop_box(images[arm], d["x1"], d["y1"], d["x2"], d["y2"], settings.crop_pad))
+                    pending["A"].append(cut(review, d))
+                    pending["A'"].append(cut(small[i], d))
+                    pending["B"].append(crop_b[d["id"]])
+                    pending["C"].append(crop_c[d["id"]])
         for arm in ARMS:
             if pending[arm]:
                 embs[arm].extend(classifier.embed(pending[arm]))

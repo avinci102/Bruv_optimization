@@ -112,12 +112,20 @@ def cmd_process(args) -> None:
 
 def print_library_check(project) -> None:
     """Say whether your library of confirmed examples now shapes this project's guesses."""
+    from .learn import MIN_GROUPS  # noqa: PLC0415
+
     result = project.get_meta("library_check") or {}
     if not result.get("examples"):
         return
-    used = "so guesses use it" if result["weight"] else "so guesses don't use it yet"
-    print(f"Your library, guessing {result['examples']} examples from other videos: the species model alone "
-          f"got {result['zero_shot']:.0%}, with the library {result['blended']:.0%}, {used}.")
+    groups = result.get("groups", 0)
+    if result["weight"]:
+        used = "so guesses use it"
+    elif groups < MIN_GROUPS:
+        used = f"but it needs examples from at least {MIN_GROUPS} recordings before guesses can use it"
+    else:
+        used = "so guesses don't use it yet"
+    print(f"Your library, guessing {result['examples']} examples each from the other recordings ({groups} in all): "
+          f"the species model alone got {result['zero_shot']:.0%}, with the library {result['blended']:.0%}, {used}.")
 
 
 def cmd_learn(args) -> None:
@@ -136,11 +144,12 @@ def cmd_learn(args) -> None:
     if args.remove:
         print(f"Removed {remove_source(str(Path(args.remove).resolve()))} examples")
     library = Library.load()
-    print(f"Library: {len(library.label)} examples ({library_path()})")
+    print(f"Library: {len(library.label)} examples from {len(set(library.group.tolist()))} recordings ({library_path()})")
     for source, counts in library.summary().items():
         print(f"  {source}: " + ", ".join(f"{label} {n}" for label, n in sorted(counts.items())))
-    print("A project's guesses use the library once it beats the species model alone on videos it")
-    print("didn't learn from. Running process on a project refreshes its guesses; reviews stay.")
+    print("A project's guesses use the library once it beats the species model alone on recordings it")
+    print("didn't learn from (copies of one recording count once). Running process on a project")
+    print("refreshes its guesses; reviews stay.")
 
 
 def serve(root: Path, port: int, open_browser: bool) -> None:

@@ -520,6 +520,11 @@ class Project:
         )
         return [r["fish_id"] for r in rows if json.loads(r["details"]).get("batch") == batch]
 
+    def answer_details(self, fish_id: int) -> dict:
+        """What was kept with the card's current answer (e.g. equipment, confirmed warnings)."""
+        review = self.last_review(fish_id)
+        return json.loads(review["details"]) if review and review["details"] else {}
+
     def last_review(self, fish_id: int) -> sqlite3.Row | None:
         return self.db.execute(
             "SELECT * FROM reviews WHERE fish_id=? ORDER BY id DESC LIMIT 1", (fish_id,)
