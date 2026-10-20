@@ -122,7 +122,22 @@ the audio track.
 ## Review keys
 
 `1` `2` `3` pick a model guess · `/` search species, `Enter` records it · `U` unknown fish ·
-`N` not a fish · `S` skip · `←` `→` move between cards. Nothing is pre-selected.
+`N` not a fish · `E` equipment · `S` skip · `←` `→` move between cards. Nothing is
+pre-selected.
+
+- **Cards that may hold more than one fish** show a warning box: two of the card's pieces
+  look less alike than the joining rule asks, the pieces clearly favour different
+  species, or the card holds two boxes in one frame. A **Pieces** row under the photo
+  shows each tracked stretch with its own best view and guess (click one to go to it).
+  Answering such a card asks you to confirm that all its pieces are one fish; otherwise
+  use `M` or tick and move. The card's line also names the tracker's closest call, a
+  place to look if the card may have jumped to another fish.
+- **Equipment** (`E`): a card showing the bait arm, canister or rope is recorded as not a
+  fish, and cards that sit in the same place and look the same are queued under
+  **Show → ⚙ likely equipment**. There, "Mark the … that match throughout as equipment"
+  answers in one go the cards whose every sighting is in the rig's place with the rig's
+  colours; a card with sightings elsewhere (a fish the tracker joined onto the rig) is
+  left for you, with a note. A batch can be undone. Nothing is removed without you.
 
 - **A fish on neither list:** type its name in Comment, then pick the template's
   "other …" species in the search box. The page won't record that entry without a name.
@@ -154,8 +169,9 @@ the audio track.
   - **Show tiny fish:** tiny fish never reach 40 px across (in the 960 px wide frames the
     page shows; `tiny_fish_px` in the project's settings), so nobody can identify them.
     They get cards of their own, never joined to other fish, and stay hidden until you
-    tick this. Left unreviewed, they stay out of the export and out of the progress
-    count. Each card shows its fish's size at its largest.
+    tick this. Left unreviewed, they stay out of the counts, and the progress line shows
+    them apart ("tiny fish: 0 of 177"): hidden is not the same as reviewed. Each card
+    shows its fish's size at its largest.
   - **Sort:** biggest fish first (the default), or in time order. Big fish are the
     clearest and the ones the counts rest on, so if a review stops early, what's left is
     the small, doubtful tail. Time order helps to follow a fish that comes and goes.
@@ -173,11 +189,15 @@ scripts\run_windows.bat learn
 ```
 
 The last command lists what the library holds. Guesses blend in the nearest confirmed
-examples only once that has beaten the species model alone on videos it didn't learn
-from (at least 20 examples, by 5 points), so a thin or patchy library can't make guesses
-worse. Processing a project tells you whether its guesses use the library. Adding to the
-library refreshes a project's guesses the next time it's processed; reviews stay.
-`--remove <folder>` takes a project or photo folder back out.
+examples only once that has beaten the species model alone on recordings it didn't learn
+from: each recording is guessed from the others, with the blend's weight chosen without
+it (at least 20 examples from 3 or more recordings, by 5 points). So a thin or patchy
+library can't make guesses worse. Examples are grouped by the footage itself (the videos'
+fingerprints), so a copy of the same video in another folder counts once, and adding it
+again replaces it. Cards with warnings you never confirmed stay out. Processing a project
+tells you whether its guesses use the library. Adding to the library refreshes a
+project's guesses the next time it's processed; reviews stay. `--remove <folder>` takes
+a project or photo folder back out.
 
 ## Checking new rules against your answers
 
@@ -190,7 +210,35 @@ scripts\run_windows.bat score --project projects\site1_rerun --answers projects\
 
 It counts the cards that now mix sightings you answered differently, and the groups of
 sightings you pulled apart (splits, moves, "Multiple fish") that are on one card again.
-It matches sightings by frame time and box, so it works across frame rates too.
+It matches sightings by source frame and box, one to one, so it works across frame
+rates too, and it refuses two projects of different footage.
+
+## Measuring accuracy
+
+These tools follow the independent accuracy review (docs/SPEC.md §13). None of them
+changes a default: new settings wait until they've been tested on annotated footage.
+
+- **Every result is traceable.** Each processing step records its settings, the code
+  version and the model files (by fingerprint); each video is fingerprinted, and a
+  read-only snapshot of the project's results is saved in `snapshots\` after processing.
+  `snapshot --project … --label before-review` saves one by hand. The export's
+  `provenance` sheet lists all of it.
+- **The export says how complete the review is.** `review_status` and
+  `review_by_minute` count cards and sightings by status, tiny fish apart. Until every
+  card is answered, the `MaxN` rows say "provisional". `checks` lists what could count
+  one fish twice (two boxes on one fish, or one card with two boxes at once).
+- **Answer keys.** `annotation-sheet --project … --window 600-620 --out key.csv` starts
+  a sheet of boxes for a stretch of video (every row "unchecked" until someone checks
+  it). Fill in each fish's kind, individual and species, and add the fish the detector
+  missed. `evaluate --project … --annotations key.csv` then scores detection, tracking,
+  joining and MaxN separately; `--thresholds 0.1 0.2 0.3 0.4` adds detection at other
+  score thresholds, from the boxes the run kept (down to 0.1).
+- **Crop sources (E1).** `crop-test --project … --limit 60` crops the same sightings from
+  the review JPEG, the same frame without JPEG, the 1280 px decode and the original video
+  frame, checks each against the saved frame, and compares the species guesses
+  (`experiments\` in the project). Answered cards turn agreement into accuracy.
+- **How the footage was shot.** `capture --project … --lens wide --housing "flat port"`
+  records what the video file can't tell (lens mode, stabilisation, housing).
 
 ## Development
 
@@ -202,5 +250,6 @@ pytest
 The tests use synthetic data only (fake detector, synthetic video, mock template).
 
 Layout: `bruv_app/` holds the package (video → detect → track → continuity → classify →
-store → metrics → template/export, plus server and static UI). `tests/` holds the tests,
-and `scripts/` the Windows helpers.
+store → metrics → template/export, plus server and static UI; provenance, evaluate,
+diagnostics, equipment and crops for measuring accuracy). `tests/` holds the tests, and
+`scripts/` the Windows helpers.
