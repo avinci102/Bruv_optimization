@@ -138,8 +138,9 @@ the audio track.
     them (the box on each thumbnail, `Space` on the selected one, `Ctrl`+click, or
     `Shift`+click for a range), then press `X`: they all move to one new card. `Esc`
     clears the ticks.
-  - `P` (same fish as the previous card): folds this card into the previous one, which
-    then needs reviewing again.
+  - `P` (same fish as the card before it): folds this card into the card just before it
+    in the video, whatever the sort (its number is on the button). That card then needs
+    reviewing again.
 
   Each fix is logged, and the export lists them on a `corrections` sheet. They show where
   tracking goes wrong, for tuning it and as training data.
@@ -151,10 +152,13 @@ the audio track.
     model's 1st guess, or in its top 2 or top 3. Such a card is marked ★ with that
     species. The model can be wrong either way, so review the other cards too.
   - **Show tiny fish:** tiny fish never reach 40 px across (in the 960 px wide frames the
-    page shows), so nobody can identify them. They get cards of their own, never joined
-    to other fish, and stay hidden until you tick this. Left unreviewed, they stay out
-    of the export and out of the progress count. Each card shows its fish's size at its
-    largest.
+    page shows; `tiny_fish_px` in the project's settings), so nobody can identify them.
+    They get cards of their own, never joined to other fish, and stay hidden until you
+    tick this. Left unreviewed, they stay out of the export and out of the progress
+    count. Each card shows its fish's size at its largest.
+  - **Sort:** biggest fish first (the default), or in time order. Big fish are the
+    clearest and the ones the counts rest on, so if a review stops early, what's left is
+    the small, doubtful tail. Time order helps to follow a fish that comes and goes.
 
 ## Teaching it your fish
 
