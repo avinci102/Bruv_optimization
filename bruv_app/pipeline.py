@@ -9,6 +9,7 @@ changed anything ends with a read-only snapshot of the results (Project.snapshot
 from __future__ import annotations
 
 import gc
+import json
 import logging
 from collections import Counter
 from dataclasses import asdict
@@ -35,7 +36,7 @@ from .provenance import deployment_id, describe_model, fingerprint
 from .store import Project, box_px
 from .template import read_template
 from .track import Tracker, missed_frames
-from .video import SAMPLER_VERSION, Chapter, Timeline, build_timeline, sample_frames
+from .video import SAMPLER_VERSION, Chapter, Timeline, build_timeline, probe_capture, sample_frames
 
 log = logging.getLogger(__name__)
 
@@ -91,16 +92,24 @@ def update_extra_species(project: Project, names: list[str]) -> None:
 
 def record_videos(project: Project) -> None:
     """Fingerprint the footage once (provenance.py): results then name the exact recording
-    they came from, and one drop copied to two folders can't pass for two deployments."""
-    if project.get_meta("deployment"):
-        return
+    they came from, and one drop copied to two folders can't pass for two deployments. Also
+    keep what the file says about the camera; lens mode, stabilisation and housing aren't in
+    it, so they stay unknown until recorded (cli capture)."""
     paths = [Path(c["path"]) for c in project.chapters()]
     if not paths or not all(p.exists() for p in paths):
         log.warning("Video files not found, so this project's footage isn't fingerprinted yet")
         return
+    if project.get_meta("capture") is None:
+        project.set_meta("capture", {**probe_capture(paths[0]), **UNKNOWN_CAPTURE})
+    if project.get_meta("deployment"):
+        return
     prints = [{"path": str(p), "size": p.stat().st_size, "fingerprint": fingerprint(p)} for p in paths]
     project.set_meta("video_fingerprints", prints)
     project.set_meta("deployment", deployment_id([p["fingerprint"] for p in prints]))
+
+
+# How the footage was shot, as far as the file can't tell: recorded by hand (cli capture).
+UNKNOWN_CAPTURE = {"lens": "unknown", "stabilization": "unknown", "housing": "unknown"}
 
 
 def load_timeline(project: Project) -> Timeline:
@@ -372,21 +381,28 @@ class Pipeline:
         across runs (a crop's embedding doesn't depend on tracking), so a run that was
         stopped embeds only the crops it hadn't done yet."""
         s = self.settings
-        key = f"{self.classifier.name} pad={s.crop_pad}"
+        model = describe_model(self.classifier)
+        crops_from = f"saved review frames ({s.frame_width} px wide, JPEG quality {s.jpeg_quality})"
+        # Stored embeddings are reused only if made the same way: model, weights, its input,
+        # padding and where the crops came from (the review found model and padding too few).
+        key = json.dumps({"model": self.classifier.name, "weights": model.get("weights"),
+                          "input": model.get("input"), "pad": s.crop_pad, "crops": crops_from}, sort_keys=True)
         # A stand-in (BioCLIP 2 couldn't load) neither reuses nor overwrites the stored
         # embeddings, so the next run with BioCLIP 2 still finds them.
         keep = not (isinstance(self.classifier, HistogramClassifier) and s.classifier != "histogram")
         run_id = self.project.start_run(
             "embed", s,
-            classifier=describe_model(self.classifier),
+            classifier=model,
             stand_in=not keep,  # colour histograms instead of the species model: never pool
-            crops_from=f"saved review frames ({s.frame_width} px wide, JPEG quality {s.jpeg_quality})",
+            crops_from=crops_from,
         )
         stored = self.project.get_meta("embedding_key")
         if stored is None and self.project.get_meta("embedder"):  # projects from before the key
             stored = f"{self.project.get_meta('embedder')} pad={s.crop_pad}"
+        if stored == f"{self.classifier.name} pad={s.crop_pad}":
+            stored = key  # the older key named only model and padding; the crops were these frames
         if keep and stored != key:
-            self.project.clear_embeddings()  # made by another model or crop setting
+            self.project.clear_embeddings()  # made by another model, weights or crop source
         if keep:
             self.project.set_meta("embedding_key", key)
 

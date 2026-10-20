@@ -92,6 +92,7 @@ def provenance_rows(project: Project) -> list[list]:
         ["video", f"{v['path']} ({v['size']:,} bytes) {v['fingerprint']}"]
         for v in project.get_meta("video_fingerprints") or []
     ]
+    rows.append(["capture", json.dumps(project.get_meta("capture") or "not recorded", sort_keys=True)])
     rows.append(["settings", f"{digest(settings)} {json.dumps(settings, sort_keys=True)}"])
     if project.get_meta("src_index_inferred"):
         rows.append(["source frames", "numbered from frame times (frames saved by an older version)"])

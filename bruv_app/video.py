@@ -160,6 +160,65 @@ def source_index(local_t: float, chapter_fps: float) -> int:
     return int(np.floor(local_t * exact_rate(chapter_fps) + 1e-6))
 
 
+def grab_frames(
+    path: Path, fps: float, indices: list[int], width: int | None = None, span: int = 300
+) -> Iterator[tuple[int, np.ndarray]]:
+    """Decode source frames by number (source_index), in order: at full size, or scaled to
+    `width` the way sample_frames scales. Numbers within `span` frames of each other are
+    decoded in one pass. A seek half a frame before frame i lands on frame i (the first frame
+    at or after the seek point), and the select filter counts from there."""
+    import imageio_ffmpeg  # noqa: PLC0415
+
+    rate = exact_rate(fps)
+    groups: list[list[int]] = []
+    for i in sorted({i for i in indices if i >= 0}):
+        if groups and i - groups[-1][0] <= span:
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    for group in groups:
+        first = group[0]
+        picks = "+".join(f"eq(n\\,{i - first})" for i in group)
+        vf = f"select={picks}" + (f",scale={width}:-2" if width else "")
+        # -frames:v: ffmpeg holds each frame back until the next one arrives, and after the
+        # last wanted frame none does until the end of the video; the count releases it.
+        gen = imageio_ffmpeg.read_frames(
+            str(path),
+            input_params=["-ss", f"{max(0.0, (first - 0.5) / rate):.6f}"],
+            output_params=["-vf", vf, "-fps_mode", "passthrough", "-frames:v", str(len(group))],
+        )
+        try:
+            meta = next(gen)
+            w, h = meta["size"]
+            for i, raw in zip(group, gen):
+                yield i, np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
+        finally:
+            gen.close()
+
+
+def probe_capture(path: Path) -> dict:
+    """What the file says about the camera: encoder tag, size, codec (a DJI Osmo Action 4
+    writes "DJI OsmoAction4"). Lens or field-of-view mode isn't in these tags: record it by
+    hand (cli capture), or it stays unknown."""
+    import re  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    import imageio_ffmpeg  # noqa: PLC0415
+
+    out = subprocess.run(
+        [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-i", str(path)],
+        capture_output=True, text=True, errors="replace",
+    ).stderr
+    video = re.search(r"Stream #\S+: Video: (\w+).*?, (\d{2,5})x(\d{2,5})", out)
+    tags = dict(re.findall(r"^\s{4,}(encoder|firmware|make|model)\s*:\s(.*)$", out, re.M))
+    return {
+        "camera": tags.get("model") or tags.get("encoder") or "unknown",
+        "firmware": tags.get("firmware"),
+        "codec": video.group(1) if video else None,
+        "size": [int(video.group(2)), int(video.group(3))] if video else None,
+    }
+
+
 @dataclass
 class SampledFrame:
     t: float  # global time

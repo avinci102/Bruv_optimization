@@ -167,6 +167,38 @@ def cmd_export(args) -> None:
     print(f"Saved {path}")
 
 
+def cmd_capture(args) -> None:
+    from .pipeline import record_videos  # noqa: PLC0415
+
+    project = _open_project(args.project)
+    record_videos(project)  # what the file itself says about the camera, if not yet kept
+    capture = project.get_meta("capture") or {}
+    for key in ("lens", "stabilization", "housing", "notes"):
+        if getattr(args, key) is not None:
+            capture[key] = getattr(args, key)
+    project.set_meta("capture", capture)
+    print("How this footage was shot:")
+    for key, value in capture.items():
+        print(f"  {key}: {value}")
+
+
+def cmd_crop_test(args) -> None:
+    from .classify import make_classifier  # noqa: PLC0415
+    from .crops import run, summary_lines  # noqa: PLC0415
+
+    project = _open_project(args.project)
+    settings = project.load_settings()
+    classifier = make_classifier(settings, settings.resolved_device())
+    if classifier.name != project.get_meta("classifier"):
+        raise RuntimeError(
+            f"The species model loaded as {classifier.name}, but the project was scored with "
+            f"{project.get_meta('classifier')}; the comparison needs the same model"
+        )
+    summary, out = run(project, classifier, tiny=args.tiny, limit=args.limit, progress=_progress())
+    print("\n".join(summary_lines(summary)))
+    print(f"Saved {out}")
+
+
 def cmd_snapshot(args) -> None:
     from .store import Project  # noqa: PLC0415
 
@@ -425,6 +457,20 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--window", nargs="+", required=True, metavar="START-END", help="seconds, e.g. 600-620")
     p.add_argument("--out", required=True, help="the .csv to write")
     p.set_defaults(func=cmd_annotation_sheet)
+
+    p = sub.add_parser("capture", help="record how the footage was shot (lens mode, stabilisation, housing)")
+    p.add_argument("--project", required=True)
+    p.add_argument("--lens", help="lens or field-of-view mode as set on the camera, e.g. wide, linear, standard/dewarp")
+    p.add_argument("--stabilization", help="e.g. off, on, horizon lock")
+    p.add_argument("--housing", help="e.g. none, flat port, dome port")
+    p.add_argument("--notes")
+    p.set_defaults(func=cmd_capture)
+
+    p = sub.add_parser("crop-test", help="E1: compare crops from the review JPEG, 1280 px and source frames")
+    p.add_argument("--project", required=True)
+    p.add_argument("--limit", type=int, help="pieces to test, spread over the video (default: all)")
+    p.add_argument("--tiny", action="store_true", help="include tiny pieces (reported apart)")
+    p.set_defaults(func=cmd_crop_test)
 
     p = sub.add_parser("snapshot", help="freeze a read-only copy of a project's results (e.g. before review)")
     p.add_argument("--project", required=True)

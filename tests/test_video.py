@@ -112,6 +112,27 @@ def test_each_sampled_frame_knows_its_source_frame(tmp_path):
             assert [f.local_t for f in frames] == pytest.approx([start + k / fps for k in range(len(frames))])
 
 
+def test_grab_frames_returns_the_frames_asked_for(tmp_path):
+    """Native-resolution crops start from exact source frames, whatever the gaps between them."""
+    from bruv_app.video import grab_frames
+
+    path = _numbered_video(tmp_path / "GX010001.MP4")
+    wanted = [0, 7, 8, 100, 101, 239, 37]
+    full = dict(grab_frames(path, 29.97, wanted, span=50))
+    assert sorted(full) == sorted(wanted)
+    assert all(_shown_number(img) == i for i, img in full.items())
+    assert full[0].shape == (96, 160, 3)
+    small = dict(grab_frames(path, 29.97, [5, 6, 200], width=80))
+    assert {i: img.shape for i, img in small.items()} == {5: (48, 80, 3), 6: (48, 80, 3), 200: (48, 80, 3)}
+
+
+def test_probe_capture_reads_the_file(tmp_path):
+    from bruv_app.video import probe_capture
+
+    info = probe_capture(_numbered_video(tmp_path / "GX010001.MP4", frames=10))
+    assert info["size"] == [160, 96] and info["codec"] == "h264" and info["camera"]
+
+
 def test_source_frame_numbers_use_the_exact_ntsc_rate():
     assert exact_rate(29.97) == 30000 / 1001 and exact_rate(59.94) == 60000 / 1001
     assert exact_rate(25.0) == 25.0 and exact_rate(10.0) == 10.0
