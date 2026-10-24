@@ -40,13 +40,31 @@ class Settings:
     det_floor: float = 0.1
     batch_size: int = 4
 
+    # Still objects (still.py): boxes that hardly differ from the scene's background (the
+    # bait arm, canister, float line, rocks) are kept but not tracked, so they make no cards
+    # and never join a fish's. Only boxes at least still_min_width of the frame wide are
+    # judged; still means under still_max_change of the box's pixels differ from the median
+    # of the frames within still_window_s either side. Measured on the NP339 answers.
+    still_filter: bool = True
+    still_min_width: float = 0.06
+    still_max_change: float = 0.10
+    still_window_s: float = 60.0
+
     # Tracking (lightweight IoU + centre distance, Hungarian matching).
     track_min_iou: float = 0.05
     track_max_dist: float = 1.5  # centre distance / larger box diagonal
     track_max_size_ratio: float = 3.0
-    track_max_missed_s: float = 1.0  # how long a fish may go unseen and keep its track
+    # How long a fish may go unseen and keep its track: 0.25 s at 4 fps lets it miss one
+    # frame; 0 links consecutive frames only. Short tracks rarely jump to another fish; the
+    # merge and the review page's look-alikes bring the pieces of one fish back together.
+    track_max_missed_s: float = 0.25
     track_min_appearance: float = 0.5  # colour-histogram cosine; blocks obvious swaps
     track_direction: bool = True  # expect a fish to keep its course (keeps crossing fish apart)
+    # Don't link a box to a track when another option was better (another track for the
+    # box, or another box for the track): where two fish are that close, a track jumps from
+    # one to the other. On the NP339 fixes this avoided 33 of 49 such jumps, against 14 for
+    # the shorter gap alone; both pieces start again and are judged by the merge and you.
+    track_refuse_contested: bool = True
 
     # Continuity merge (review dedupe only; never used for counts).
     gap_seconds: float = 10.0
@@ -88,7 +106,9 @@ class Settings:
     def load(cls, path: Path) -> "Settings":
         data = json.loads(path.read_text())
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        # A settings file from before a setting existed keeps the behaviour it was made with,
+        # so an older project re-run reproduces its cards; new projects get the new default.
+        return cls(**{**SETTING_ADDED_OFF, **{k: v for k, v in data.items() if k in known}})
 
     def resolved_device(self) -> str:
         if self.device != "auto":
@@ -97,6 +117,10 @@ class Settings:
 
     def resolved_fps(self) -> float:
         return float(self.sample_fps) if self.sample_fps else DEFAULT_FPS
+
+
+# Settings added later, as older settings files had them: off.
+SETTING_ADDED_OFF = {"still_filter": False, "track_refuse_contested": False}
 
 
 def gpu_available() -> bool:

@@ -31,15 +31,15 @@ def test_fingerprints_tell_files_and_recordings_apart(tmp_path):
 
 def test_every_stage_run_is_recorded(project):
     runs = project.runs()
-    assert [r["stage"] for r in runs] == ["detect", "track", "embed", "merge", "classify"]
+    assert [r["stage"] for r in runs] == ["detect", "still", "track", "embed", "merge", "classify"]
     assert all(r["finished_at"] and r["code"] for r in runs)
     assert all(json.loads(r["settings"])["sample_fps"] == 1.0 for r in runs)
     detect = json.loads(runs[0]["info"])
     assert detect["detector"] == {"name": "color-blob"} and detect["sampler"] == 2
     assert detect["frames"] == project.frame_count() == 24 and detect["ffmpeg"]
-    embed = json.loads(runs[2]["info"])
+    embed = json.loads(runs[3]["info"])
     assert embed["classifier"] == {"name": "demo-colour"} and embed["stand_in"] is False
-    assert json.loads(runs[3]["info"])["cards"] == len(project.all_fish())
+    assert json.loads(runs[4]["info"])["cards"] == len(project.all_fish())
 
     # The footage, by fingerprint: the same recording always gets the same deployment id.
     videos = [Path(c["path"]) for c in project.chapters()]
@@ -70,7 +70,7 @@ def test_processing_ends_with_a_read_only_snapshot(project):
     manifest = json.loads(snaps[0].with_suffix(".json").read_text())
     assert manifest["deployment"] == project.get_meta("deployment")
     assert manifest["database"] == fingerprint(snaps[0], quick=False)
-    assert manifest["counts"]["fish"] == len(project.all_fish()) and len(manifest["runs"]) == 5
+    assert manifest["counts"]["fish"] == len(project.all_fish()) and len(manifest["runs"]) == 6
     frozen = sqlite3.connect(f"file:{snaps[0]}?mode=ro", uri=True)
     try:
         assert frozen.execute("SELECT COUNT(*) FROM fish").fetchone()[0] == len(project.all_fish())
@@ -78,7 +78,7 @@ def test_processing_ends_with_a_read_only_snapshot(project):
         frozen.close()
     # A run with nothing to do adds no run record and no snapshot.
     Pipeline(project, classifier=demo.DemoClassifier()).run()
-    assert len(project.runs()) == 5 and len(list((project.root / "snapshots").glob("*.db"))) == 1
+    assert len(project.runs()) == 6 and len(list((project.root / "snapshots").glob("*.db"))) == 1
 
 
 def test_the_machine_grouping_survives_review_edits(project):
@@ -115,7 +115,7 @@ def test_export_says_where_the_numbers_came_from(project, tmp_path):
     assert rows[0] == ("item", "value")
     items = dict(rows[1:])
     assert items["deployment"] == project.get_meta("deployment")
-    assert "color-blob" in items["run 1: detect"] and "demo-colour" in items["run 3: embed"]
+    assert "color-blob" in items["run 1: detect"] and "demo-colour" in items["run 4: embed"]
     assert items["snapshot"].endswith("-processed.db")
 
 

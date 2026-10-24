@@ -1,9 +1,11 @@
-"""Orchestration: ingest -> sample + detect -> track -> embed -> continuity -> classify.
+"""Orchestration: ingest -> sample + detect -> still objects -> track -> embed -> continuity
+-> classify.
 
 Every stage persists to the project's SQLite store. Detection, the slow stage, resumes
 from the last saved frame; the later stages are quick and re-run as a block. Each stage
 run is recorded (settings, code, models; Project.start_run), and a processing run that
 changed anything ends with a read-only snapshot of the results (Project.snapshot).
+Pipeline.rebuild remakes the cards of a reviewed project and carries its answers over.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from typing import Callable
 import numpy as np
 
 from . import imaging
+from . import still as still_mod
 from .classify import (
     Classifier,
     HistogramClassifier,
@@ -41,7 +44,8 @@ from .video import SAMPLER_VERSION, Chapter, Timeline, build_timeline, probe_cap
 log = logging.getLogger(__name__)
 
 Progress = Callable[[str, int, int], None]
-POST_DETECT_STAGES = ("track", "embed", "merge", "classify")
+POST_DETECT_STAGES = ("still", "track", "embed", "merge", "classify")
+CARRY_KEY = "rebuild_answers"  # answers a rebuild set aside for its new cards (detection id -> answer)
 
 
 def _quiet(stage: str, done: int, total: int) -> None:
@@ -264,15 +268,49 @@ class Pipeline:
             self.project.mark_stage("classify", False)  # the library changed: refresh the guesses
         if force or fell_back or not cards_done:
             if reviewed and not force:
-                raise RuntimeError("Reviews exist; pass force=True to rebuild cards and lose them.")
-            for stage in POST_DETECT_STAGES:
-                self.project.mark_stage(stage, False)
-            self.track()
-            self.embed()
-            self.merge()
-            self.classify()
+                raise RuntimeError(
+                    "Reviews exist. To remake the cards and keep the answers, use the rebuild "
+                    "command; force rebuilds them and loses the answers."
+                )
+            self._build_cards()
         elif not self.project.stage_done("classify"):
             self.classify()  # e.g. new species names: the guesses change, cards and reviews stay
+
+    def _build_cards(self) -> dict | None:
+        for stage in POST_DETECT_STAGES:
+            self.project.mark_stage(stage, False)
+        self.still()
+        self.track()
+        self.embed()
+        self.merge()
+        self.classify()
+        # Answers a rebuild set aside go onto the new cards, even when an interrupted rebuild
+        # is finished by a later run (process or rebuild).
+        pending = self.project.get_meta(CARRY_KEY)
+        if pending is None:
+            return None
+        answers = {int(k): v for k, v in pending.items()}
+        report = self.project.carry_answers(answers, self.project.still_ids(self.settings))
+        self.project.set_meta(CARRY_KEY, None)
+        return report
+
+    def rebuild(self) -> dict:
+        """Remake a reviewed project's cards with the current settings (e.g. still objects
+        hidden, shorter tracks) and carry the answers over (Project.carry_answers): a new card
+        gets an answer only when all its detections had it. The project is frozen before and
+        after (snapshots/), so nothing is lost and the two sets of cards can be compared. The
+        answers are set aside in the project first, so a rebuild that is stopped part way
+        loses none of them: running it again finishes the job."""
+        if self.project.get_meta(CARRY_KEY) is None:
+            self.project.snapshot("before-rebuild")
+            answers = self.project.answers_by_detection()
+            self.project.set_meta(CARRY_KEY, {str(k): v for k, v in answers.items()})
+        answered = len(self.project.get_meta(CARRY_KEY))
+        run_id = self.project.start_run("rebuild", self.settings, answered_detections=answered)
+        report = self._build_cards() or {}
+        self.project.finish_run(run_id, **report)
+        self.project.snapshot("rebuilt")
+        return report
 
     # --- stages ------------------------------------------------------------------------
 
@@ -367,9 +405,39 @@ class Pipeline:
             "ffmpeg": imageio_ffmpeg.get_ffmpeg_version(),
         }
 
+    def still(self) -> None:
+        """Measure how much each box differs from the scene's background (still.py). The
+        measure doesn't depend on any setting but the window, so it's kept across rebuilds."""
+        s = self.settings
+        if not s.still_filter:
+            self.project.mark_stage("still")
+            return
+        key = {"window_s": s.still_window_s, "scale": still_mod.SCALE, "pixel_change": still_mod.PIXEL_CHANGE}
+        if self.project.get_meta("still_key") != key or not self.project.det_changes():
+            run_id = self.project.start_run("still", s, **key)
+            frames, boxes, sizes = [], {}, set()
+            for f, dets in self.project.frames_with_detections():
+                frames.append((f.id, f.t, str(self.project.root / f.path)))
+                if dets:
+                    boxes[f.id] = [(k, (d.x1, d.y1, d.x2, d.y2)) for k, d in dets]
+                sizes.add((f.width // still_mod.SCALE, f.height // still_mod.SCALE))
+            size = max(sizes) if sizes else (240, 135)
+            change = still_mod.background_change(
+                frames, boxes, size, s.still_window_s, progress=lambda d, t: self.progress("still", d, t)
+            )
+            self.project.save_det_change(change)
+            self.project.set_meta("still_key", key)
+            self.project.finish_run(run_id, measured=len(change))
+        hidden = self.project.still_ids(s)
+        self.project.set_meta("still_hidden", len(hidden))
+        self.project.mark_stage("still")
+
     def track(self) -> None:
         s = self.settings
-        run_id = self.project.start_run("track", s, fps=self.project.frame_rate(), min_score=s.det_threshold)
+        hidden = self.project.still_ids(s)
+        run_id = self.project.start_run(
+            "track", s, fps=self.project.frame_rate(), min_score=s.det_threshold, still_hidden=len(hidden)
+        )
         self.project.reset_tracking()
         tracker = Tracker(
             s.track_min_iou,
@@ -378,9 +446,10 @@ class Pipeline:
             missed_frames(s.track_max_missed_s, self.project.frame_rate()),
             s.track_min_appearance,
             s.track_direction,
+            s.track_refuse_contested,
         )
         n = self.project.frame_count()
-        for i, (frame, dets) in enumerate(self.project.frames_with_detections(s.det_threshold)):
+        for i, (frame, dets) in enumerate(self.project.frames_with_detections(s.det_threshold, hidden)):
             tracker.update(frame.seq, dets)
             if i % 200 == 0:
                 self.progress("track", i, n)

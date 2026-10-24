@@ -19,6 +19,7 @@ from .diagnostics import card_flags, closest_calls, pieces
 from .equipment import best_match, mark_equipment, rig_candidates
 from .export import export_project
 from .families import family_of, rank_families
+from .lookalike import answered_like, card_looks, groups, unanswered_like
 from .pipeline import card_scores, extra_species, load_timeline, refresh_fish_guesses, species_labels
 from .store import REVIEWED, STATUSES, Project
 
@@ -61,6 +62,13 @@ class MoveIn(BaseModel):
     det_ids: list[int]
 
 
+class LookalikeIn(BaseModel):
+    source: int  # the card whose look-alikes these are
+    ids: list[int]
+    status: str
+    species: str | None = None
+
+
 def _box(d) -> dict:
     return {"x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"], "score": round(d["score"], 3)}
 
@@ -84,6 +92,30 @@ def create_app(project_root: Path) -> FastAPI:
         if row is None:
             raise HTTPException(404, "No such fish")
         return row
+
+    cache: dict = {}
+
+    def looks():
+        """Every card's look (lookalike.py), remade when the cards change; answers are read
+        fresh each time."""
+        stamp = tuple(project.db.execute(
+            "SELECT COUNT(*), MAX(id), (SELECT MAX(id) FROM corrections) FROM fish"
+        ).fetchone())
+        if cache.get("stamp") != stamp:
+            cache.update(stamp=stamp, looks=card_looks(project, settings.crops_per_fish), groups=None)
+        current = cache["looks"]
+        for f in project.db.execute("SELECT id, status, species FROM fish"):
+            current.status[f["id"]], current.answer[f["id"]] = f["status"], f["species"]
+        return current
+
+    def look_groups() -> dict[int, int]:
+        """Look-alike groups, biggest fish leading (for Sort: look-alikes together)."""
+        current = looks()
+        if cache.get("groups") is None:
+            sizes = project.fish_sizes()
+            order = sorted(sizes, key=lambda f: -sizes[f])
+            cache["groups"] = groups(current, order)
+        return cache["groups"]
 
     def family_view(fish_id: int, top: int = 3) -> list[dict]:
         """The model's top families for a card (families.py), each with its names by score
@@ -128,6 +160,8 @@ def create_app(project_root: Path) -> FastAPI:
                 "template": project.get_meta("template"),
                 "last_export": project.get_meta("last_export"),
                 "frames": project.frame_count(),
+                # Boxes hidden as still objects (still.py) that would otherwise be tracked.
+                "still_hidden": len(project.still_detections(settings, settings.det_threshold)),
             }
 
     @app.get("/api/fish")
@@ -135,6 +169,7 @@ def create_app(project_root: Path) -> FastAPI:
         with lock:
             timeline = load_timeline(project)
             sizes = project.fish_sizes()
+            group = look_groups()
             out = []
             for f in project.all_fish():
                 clip, local = timeline.locate(f["start_t"])
@@ -151,6 +186,7 @@ def create_app(project_root: Path) -> FastAPI:
                         "top": guesses[0][0] if guesses else None,
                         "guesses": [g[0] for g in guesses[:3]],
                         "max_px": round(sizes.get(f["id"], 0.0), 1),
+                        "group": group.get(f["id"]),  # its look-alike group (lookalike.py)
                     }
                 )
             return out
@@ -202,6 +238,7 @@ def create_app(project_root: Path) -> FastAPI:
                 calls.append({"det_id": c["det_id"], "frame_id": c["frame_id"], "t": c["t"], "clip": clip,
                               "local_t": local, "box": _box(c), "margin": round(c["link_margin"], 3),
                               "history": None if c["history_sim"] is None else round(c["history_sim"], 3)})
+            current = looks()
             best_view = None
             if best is not None:
                 best_clip, best_local = timeline.locate(best["t"])
@@ -235,6 +272,10 @@ def create_app(project_root: Path) -> FastAPI:
                 "closest_calls": calls,
                 "families": family_view(fish_id),
                 "equipment": bool(review and review["details"] and json.loads(review["details"]).get("equipment")),
+                # Your answer on the card that looks most like this one, and how many unanswered
+                # cards look like it (lookalike.py).
+                "answered_like": answered_like(current, fish_id),
+                "lookalikes": len(unanswered_like(current, fish_id)),
                 "rig": None if rig_match is None else {
                     "card": rig_match.ref_card, "overlap": round(rig_match.overlap, 2),
                     "colour": None if rig_match.colour is None else round(rig_match.colour, 2),
@@ -319,6 +360,67 @@ def create_app(project_root: Path) -> FastAPI:
         with lock:
             project.forget_rig_ref(ref_id)
             return {"ok": True}
+
+    # --- look-alikes (lookalike.py): answered together only from their pictures, with undo
+
+    @app.get("/api/fish/{fish_id}/lookalikes")
+    def lookalikes(fish_id: int, limit: int = 120):
+        with lock:
+            get_fish(fish_id)
+            timeline = load_timeline(project)
+            out = []
+            for fid, sim in unanswered_like(looks(), fish_id)[:limit]:
+                f = project.fish(fid)
+                clip, local = timeline.locate(f["start_t"])
+                out.append({"id": fid, "similarity": round(sim, 3), "best_det": f["best_det"], "clip": clip,
+                            "local_t": local, "seconds": f["end_t"] - f["start_t"],
+                            "flagged": bool(card_flags(project, fid, settings.merge_min_similarity))})
+            return out
+
+    @app.post("/api/lookalikes/answer")
+    def lookalikes_answer(body: LookalikeIn):
+        """Give the cards you left ticked the same answer. Cards with warnings, or answered
+        meanwhile, are left for you; the batch can be undone."""
+        with lock:
+            get_fish(body.source)
+            if body.status not in REVIEWED:
+                raise HTTPException(400, "Pick an answer for them")
+            species_list = species_labels(project)
+            if body.status == "species" and species_list and body.species not in species_list:
+                raise HTTPException(400, "Pick a species from the list")
+            alike = dict(unanswered_like(looks(), body.source))
+            batch = datetime.now(timezone.utc).strftime("like-%Y%m%dT%H%M%S%f")
+            equipment = body.status == "not_fish" and bool(project.answer_details(body.source).get("equipment"))
+            answered, left = [], []
+            for fid in body.ids:
+                if fid not in alike or card_flags(project, fid, settings.merge_min_similarity):
+                    left.append(fid)
+                    continue
+                details = {"batch": batch, "like": body.source, "similarity": round(alike[fid], 3)}
+                if equipment:
+                    details["equipment"] = True
+                project.label_fish(fid, body.status, details, species=body.species)
+                answered.append(fid)
+            return {"batch": batch, "answered": answered, "left": left}
+
+    @app.post("/api/batch/undo")
+    def batch_undo(body: UndoIn):
+        """Put a batch's cards (look-alikes or equipment) back to pending."""
+        return rig_undo(body)
+
+    @app.get("/api/still")
+    def still(limit: int = 60):
+        """Boxes hidden as still objects, a sample spread over the video, for checking."""
+        with lock:
+            rows = project.still_detections(settings, settings.det_threshold)
+            timeline = load_timeline(project)
+            step = max(1, -(-len(rows) // limit))
+            sample = []
+            for d in rows[::step]:
+                clip, local = timeline.locate(d["t"])
+                sample.append({"det_id": d["id"], "frame_id": d["frame_id"], "clip": clip, "local_t": local,
+                               "change": round(d["change"], 3), "box": _box(d)})
+            return {"count": len(rows), "sample": sample}
 
     @app.post("/api/fish/{fish_id}/split")
     def split(fish_id: int, body: SplitIn):

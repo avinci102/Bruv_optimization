@@ -42,7 +42,7 @@ def _scripted(k: int) -> list[Detection]:
 def _project(tmp_path, synthetic_videos):
     template = demo.make_mock_template(tmp_path / "t.xlsx")
     # A short merge window keeps the rig's two visits and the crossing fish on cards of their own.
-    project = create_project(tmp_path / "p", synthetic_videos, template, demo_settings(gap_seconds=1.0))
+    project = create_project(tmp_path / "p", synthetic_videos, template, demo_settings(gap_seconds=1.0, still_filter=False))
     Pipeline(project, detector=ScriptedDetector(_scripted), classifier=demo.DemoClassifier()).run()
     cards = sorted(project.all_fish(), key=lambda f: f["start_t"])
     assert [(round(f["start_t"]), round(f["end_t"])) for f in cards] == [(0, 3), (8, 11), (15, 18)]

@@ -42,14 +42,18 @@ def test_tracker_records_each_link_without_changing_it():
 
 @pytest.mark.parametrize(
     ("fps", "seconds", "frames", "bridged_s"),
-    [(4.0, 1.0, 4, 1.25), (3.0, 1.0, 3, 4 / 3), (1.0, 1.0, 1, 2.0), (2.5, 1.0, 2, 1.2), (4.0, 0.0, 1, 0.5), (4.0, 0.5, 2, 0.75)],
+    [(4.0, 1.0, 4, 1.25), (3.0, 1.0, 3, 4 / 3), (1.0, 1.0, 1, 2.0), (2.5, 1.0, 2, 1.2), (4.0, 0.0, 0, 0.25),
+     (4.0, 0.25, 1, 0.5), (4.0, 0.5, 2, 0.75)],
 )
 def test_missed_time_boundaries(fps, seconds, frames, bridged_s):
-    """The tracker's allowance for a fish going unseen, as built (review V2 asked for these
-    boundaries to be pinned down before anyone changes them)."""
+    """The tracker's allowance for a fish going unseen (review V2 asked for these boundaries
+    to be pinned down before anyone changes them). 0 now links consecutive frames only; it
+    used to be raised to one missed frame."""
     m = missed_frames(seconds, fps)
     assert m == frames and (m + 1) / fps == pytest.approx(bridged_s)
     for unseen, same_track in ((m - 1, True), (m, True), (m + 1, False)):
+        if unseen < 0:
+            continue
         frames_seen = [[(1, _fish(0.1))]] + [[] for _ in range(unseen)] + [[(2, _fish(0.1))]]
         tracks = track_all(frames_seen, max_missed=m)
         assert (len(tracks) == 1) == same_track, (fps, seconds, unseen)

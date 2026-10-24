@@ -759,9 +759,9 @@ code was run on such a project.
      A flagged card is answered for all its pieces only after the reviewer confirms they
      are one fish.
    - `evaluate` reports changes of fish by link margin.
-   - The tracker's missed-time allowance is pinned by tests, unchanged. At 4 fps, 1.0 s
-     bridges 1.25 s; at 2.5 fps, 1.0 s rounds to 2 frames (1.2 s); at least one frame is
-     always allowed.
+   - The tracker's missed-time allowance is pinned by tests. At 4 fps, 1.0 s bridges
+     1.25 s; at 2.5 fps, 1.0 s rounds to 2 frames (1.2 s). (§14 lets 0 mean consecutive
+     frames only, and makes 0.25 s the default.)
 4. **Equipment and detector threshold.**
    - Equipment (`E`, `equipment.py`) becomes a reference, and look-alike cards are queued
      for review. Only cards whose every sighting matches can be answered in one go;
@@ -866,3 +866,97 @@ species, would help. Measured with the model's own scores:
 - **E9:** review tiers, tested with reviewers.
 - **E11:** a lens calibration for the camera and housing.
 - Later: confusion and error-factor tables, once there are enough verified examples.
+
+## 14. After the first 185 answers (24 Oct 2026)
+
+Vinci answered 185 cards of the 44-minute NP339 drop, in about an hour of active review,
+and found it slow going: the same fish and the same mistakes again and again, and the bait
+arm, which never moves, answered card after card. Measured on those answers:
+
+- **Where the time went.** 131 of the 185 answers were "not a fish": 121 the rig (115 the
+  canister), at about 2 s each through the equipment queue. The 49 fish answers took about
+  44 s each, because nearly every fish card needed fixing: 109 fixes (80 sightings moved
+  out, 16 splits, 13 "multiple fish"). 43 of them involved the rig: 25 moved rig sightings
+  out of a card, 18 moved a fish out of a rig card. The other 66 separated two fish. The
+  tracker made 95 of the 109 errors, the joining step 14.
+- **Why the equipment queue fell short.** It matches a card by the box's place and
+  colour, and the detector boxes the arm differently each time (the canister, the canister
+  and pole, larger boxes): 5 references and still 121 answers. It also acts once cards are
+  built, when the arm has already been joined to fish.
+- **The model repeats its mistakes.** Its first guess was right on 28 of 53 fish cards. It
+  called unicornfish "napoleon wrasse" 7 times; the canister "tasselled wobbegong" 54
+  times and the pole "cornetfish" 26.
+- **The same fish comes back.** 29 unicornfish cards over 20 minutes; 19 of them began
+  less than a minute after an earlier unicornfish card ended.
+
+**Changed.** New defaults; a project made before keeps its settings until rebuilt
+(`Settings.load` reads a missing new setting as off).
+
+1. **Still objects are hidden before tracking** (`still.py`). Each box is compared with
+   the scene's background: the median of frames 2 s apart over the minute either side, at
+   a quarter of the saved size, where a pixel differs when a colour channel moves by more
+   than 25 levels. On the answered sightings, half of the equipment boxes had 1% or less
+   of their pixels changed, half of the fish boxes 47% or more. Hiding boxes at least 6%
+   of the frame wide with under 10% changed hides 91% of the sightings answered "not a
+   fish" and none of the 1,689 answered as fish. Without the width limit it also caught
+   33 sightings of tiny, distant fish. A sample of what it hides on unanswered cards showed the
+   canister, the pole, the float line and rocks. The cut-offs were chosen on these same
+   answers; the gap is wide, but the next drop is the real test. Hidden boxes stay in the
+   project (`det_change`), make no cards and aren't counted. The review page shows a sample,
+   since a fish motionless for over a minute would be hidden too.
+2. **Shorter tracks, and contested links refused** (`track_max_missed_s` 0.25: at 4 fps a
+   fish may miss one frame; `track_refuse_contested`: no link where another fish or box
+   was the better match). The tracker re-run on the same detections, scored on the 49
+   fish-to-fish links Vinci's fixes cut (the rig's links aside):
+
+| Tracking (still objects hidden) | Pieces | Wrong links avoided |
+|---|---|---|
+| 1.0 s, as before (rig tracked) | 5,483 | 0 of 49 |
+| 1.0 s | 5,202 | 1 |
+| 0.25 s | 7,964 | 14 |
+| Consecutive frames only (0) | 10,772 | 20 |
+| **0.25 s, contested links refused** | **9,794** | **33** |
+| Consecutive frames only, contested refused | 12,165 | 32 |
+
+   Three quarters of the wrong links (37 of 49) joined consecutive frames, which a shorter
+   gap can't reach; 4 bridged one missed frame and 8 more. Refusing contested links reaches
+   the consecutive ones.
+   More pieces mean more cards of one fish; the look-alikes (4) answer those together.
+   `missed_frames` now allows 0 (consecutive frames only); it used to raise 0 to one frame.
+3. **Rebuilding keeps the answers** (`rebuild`). The answers are set aside per detection
+   first, so a stopped rebuild loses none. A new card gets an earlier answer only when
+   every one of its detections had that answer; cards with some answered and some new
+   detections, or with different answers, wait for the reviewer and are counted. New
+   cards never take the number of a card that's gone. Before, a card merged away could
+   lend its number, and with it its answer's scope, to the next new card.
+4. **Look-alikes** (`lookalike.py`): a card's look is its best crops' mean embedding, and two
+   cards look alike at 0.85, the merge's bar for two pieces of one fish. A card that looks
+   like an answered one shows that answer for one key (`R`); after an answer, its
+   unanswered look-alikes can be answered together from a grid of their pictures (`L`),
+   unticking any that differ, with undo; cards with warnings are left out. A sort puts
+   look-alike groups together. Replaying the 185 answers in order, the closest card
+   answered earlier named 40 of 45 fish cards right and was never wrong (5 had nothing
+   alike enough); the model alone got 24 of 45. It named 106 of 110 "not a fish" cards
+   right. This learns the fish of one video as you go; the library is still what carries
+   them to the next video.
+5. **Species models side by side** (`modeltest.py`, `model-test`): the same crops of the
+   answered cards scored by today's BioCLIP 2, another model, and both together, plus how
+   often earlier answers would have named them. BioCLIP 2.5 Huge (Imageomics, Feb 2026)
+   has a ViT-H/14 image encoder, about twice BioCLIP 2's ViT-L/14, trained on
+   TreeOfLife-200M plus 19M images. Imageomics report 61.3 against 55.6 on their zero-shot
+   species benchmarks and 48.5 against 39.8 on FishNet; none is underwater video, and on
+   plankton both stay near 5. Its 3.9 GB file is mapped like BioCLIP 2's.
+
+**Considered and not adopted (an outside list of suggestions)**
+
+- Training the detector on rig images: needs a GPU and a training set; the still test does
+  the job and keeps fish in front of the arm.
+- A 0.5 s gap: 8 of the 49 wrong links spanned more than 0.5 s.
+- A stricter 10-second join: the joining step made 14 of the 109 errors, and a stricter
+  join means more cards of one fish.
+- 5–10 varied crops per card: guesses already pool up to 5 crops; pooling every saved crop
+  scored 28 of 49, the same as today, and voting across crops 24. Crops not yet embedded
+  are still untested.
+- Fishial as a second opinion: pending. Its 352 MB classifier knows a fixed list of
+  species (775 in the published list): one unicornfish, no redtoothed triggerfish, three
+  butterflyfish, but 27 snappers and 16 groupers, where BioCLIP fails on the key.

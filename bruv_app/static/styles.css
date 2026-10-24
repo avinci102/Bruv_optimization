@@ -188,6 +188,23 @@ details label[hidden] { display: none; }
 #message.ok { color: var(--ok); }
 .empty { text-align: center; padding: 60px 16px; }
 
+/* Look-alikes and still objects */
+.like-hint { margin-top: 8px; padding: 6px 10px; border-left: 3px solid var(--ok); color: var(--text); }
+.like-hint .muted { color: var(--muted); }
+.linkish { border: none; background: none; padding: 0; color: var(--muted); text-decoration: underline dotted; cursor: pointer; font: inherit; }
+.grid-panel { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.45); }
+.grid-panel[hidden] { display: none; }
+.grid-box { width: min(1100px, 94vw); max-height: 90vh; display: flex; flex-direction: column; padding: 14px 16px; border-radius: 8px; background: var(--panel); color: var(--text); }
+.grid-box h2 { margin: 0 0 4px; }
+.grid { overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; padding: 4px 0; }
+.grid figure { position: relative; margin: 0; border: 2px solid var(--border); border-radius: 6px; cursor: pointer; overflow: hidden; }
+.grid figure img { display: block; width: 100%; height: 100px; object-fit: contain; background: #000; }
+.grid figcaption { padding: 2px 6px; font-size: 11px; color: var(--muted); }
+.grid figure.ticked { border-color: var(--ok); }
+.grid figure.ticked::after { content: "✓"; position: absolute; top: 2px; right: 6px; color: var(--ok); font-weight: 700; }
+.grid figure.flagged { border-color: var(--warn); cursor: not-allowed; opacity: 0.7; }
+.grid-actions { display: flex; gap: 8px; justify-content: flex-end; padding-top: 10px; }
+
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; }
 }
