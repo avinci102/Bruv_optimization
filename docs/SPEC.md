@@ -945,7 +945,52 @@ arm, which never moves, answered card after card. Measured on those answers:
    has a ViT-H/14 image encoder, about twice BioCLIP 2's ViT-L/14, trained on
    TreeOfLife-200M plus 19M images. Imageomics report 61.3 against 55.6 on their zero-shot
    species benchmarks and 48.5 against 39.8 on FishNet; none is underwater video, and on
-   plankton both stay near 5. Its 3.9 GB file is mapped like BioCLIP 2's.
+   plankton both stay near 5. Its 3.9 GB file is mapped like BioCLIP 2's. On Vinci's 49
+   cards answered with a name, the same crops for both:
+
+| | First guess right | Right family first | In the top 3 |
+|---|---|---|---|
+| BioCLIP 2 | 28 | 29 | 36 |
+| BioCLIP 2.5 | 23 | 26 | 34 |
+| Both, scores averaged | 25 | 28 | 32 |
+| BioCLIP 2, plus earlier answers | 48 | 49 | – |
+| BioCLIP 2.5, plus earlier answers | 46 | 47 | – |
+
+   By family (right family first, BioCLIP 2 against 2.5): unicornfish 14 of 29 with
+   either, butterflyfish 9 against 7 of 9, triggerfish 5 against 2 of 8, grouper 1 against
+   3 of 3. BioCLIP 2.5 calls the canister a crown-of-thorns starfish (53 cards) where
+   BioCLIP 2 says tasselled wobbegong. It took 3.0 s a crop on this PC, against about 2 s
+   for BioCLIP 2. Few cards, three families, and many cards of the same few fish: no
+   reason here to switch models or to average them, while earlier answers lift either to
+   nearly every card. The answer key's grouper, snapper and parrotfish sightings are the
+   next check.
+
+**Rebuilt on a copy of the NP339 project** (the rules above, the answers carried):
+
+| | Before | After |
+|---|---|---|
+| Cards, not tiny | 1,089 (184 answered) | 1,145 (55 answered) |
+| Tiny cards (hidden until asked for) | 3,579 | 6,790 |
+| Boxes hidden as still objects | – | 1,622 |
+
+- 78 cards got their earlier answer (55 not tiny). Most of the 121 rig answers aren't
+  needed any more: the rig is hidden.
+- 95 cards hold sightings answered before and new ones, mostly unicornfish (37),
+  butterflyfish (25) and triggerfish (19): shorter pieces joined with pieces nobody had
+  answered. They wait for the reviewer, and say what most of their sightings were
+  answered, for one key (`R`). 5 cards mix different answers, 4 of them a fish with "not
+  a fish" (rig remnants).
+- 4 sightings answered as fish are now hidden as still objects.
+- Vinci's 141 separations: 35 separated the rig, now hidden; 55 stay apart; 51 are on one
+  card again. In 48 of those 51 the separated part was never answered; 1 has the same
+  answer on both sides, and 2 put different answers together again (one by the tracker,
+  one by the merge).
+- The 1,090 pending cards, not tiny, fall into 99 look-alike groups. The biggest card has
+  103 unanswered look-alikes: 28 at 0.90 or more, 40 between 0.85 and 0.90, and 35 with
+  warnings, left out of answering together.
+- On the original answers, pairs of answered cards alike enough to suggest each other had
+  the same answer 98.7% of the time at 0.85, 99.8% at 0.90, and all but 2 of 4,928 pairs
+  at 0.93. The look-alike grid starts with only the cards at 0.90 or more ticked.
 
 **Considered and not adopted (an outside list of suggestions)**
 

@@ -133,8 +133,12 @@ look-alikes together · `←` `→` move between cards. Nothing is pre-selected.
     repeats your last answer.
   - After you answer a card, a button offers its unanswered look-alikes. `L` opens them
     as a grid of pictures, most alike first: untick any that differ, and the rest get
-    your answer together. Cards with warnings are left to answer one by one, and the
-    batch can be undone.
+    your answer together. Cards at least 0.90 alike start ticked (on the NP339 answers,
+    99.8% of answered cards that alike had the same answer); the rest start unticked.
+    Cards with warnings are left to answer one by one, and the batch can be undone.
+  - After a rebuild, a card holding sightings you answered before says so ("Before the
+    cards were rebuilt you answered unicornfish for 117 of this card's 126 sightings"),
+    and `R` gives the whole card that answer.
   - **Sort → look-alikes together** puts each group of look-alike cards back to back, so
     a run of the same kind of fish goes quickly with `R`.
 
