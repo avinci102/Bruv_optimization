@@ -152,6 +152,18 @@ figcaption { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .guesses button { display: flex; justify-content: space-between; gap: 8px; text-align: left; }
 .guesses .pct { color: var(--muted); }
 .template-hint { margin-top: 6px; color: var(--accent); font-weight: 600; }
+.guess-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.guess-head select { font-size: 12px; }
+.family-step { margin-top: 8px; padding-left: 10px; border-left: 3px solid var(--accent); }
+.family-step .hint { margin: 0; }
+.guesses .of { color: var(--muted); font-size: 12px; }
+.rig-hint { margin-top: 6px; color: var(--muted); }
+.rig-batch { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.flags { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--warn); border-radius: 6px; background: #fff3df; }
+.flags strong { color: var(--warn); }
+.flags p { margin: 6px 0 0; }
+.pieces figcaption { white-space: normal; line-height: 1.25; }
+.meta .call { color: var(--muted); cursor: pointer; text-decoration: underline dotted; }
 .tag { margin-left: 6px; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .guesses button.recorded { border-color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
 .hint { color: var(--muted); font-size: 12px; margin: 6px 0; }
@@ -191,4 +203,5 @@ details label[hidden] { display: none; }
   }
   .badge.done { background: #173826; }
   .badge.skipped { background: #3a2a10; }
+  .flags { background: #3a2a10; }
 }

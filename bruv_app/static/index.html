@@ -27,6 +27,7 @@
         <option value="1">★ template species 1st</option>
         <option value="2">★ template species in top 2</option>
         <option value="3">★ template species in top 3</option>
+        <option value="rig">⚙ likely equipment</option>
       </select>
     </label>
     <label class="toggle" id="tiny-toggle"><input type="checkbox" id="show-tiny"> <span id="tiny-label">Show tiny fish</span></label>
@@ -55,6 +56,10 @@
         </figure>
       </div>
       <div id="meta" class="meta"></div>
+      <div id="pieces-head" class="strip-head" hidden>
+        <span>Pieces <span class="muted">each tracked stretch, with its best view and its own guess (click to go to it)</span></span>
+      </div>
+      <div id="pieces" class="filmstrip pieces" hidden></div>
       <div class="strip-head">
         <span>Sightings <span id="strip-count" class="muted"></span></span>
         <span>
@@ -73,9 +78,22 @@
       </div>
       <div id="status-badge" class="badge"></div>
       <div id="template-hint" class="template-hint" hidden></div>
+      <div id="rig-hint" class="rig-hint" hidden></div>
+      <div id="rig-batch" class="rig-batch" hidden>
+        <button id="rig-all" title="Answer every queued card shown as equipment (not a fish). Cards with warnings are left to check one by one.">Mark all shown as equipment</button>
+        <button id="rig-undo" hidden>Undo</button>
+      </div>
+      <div id="flags" class="flags" hidden></div>
 
-      <h2>Model guesses</h2>
+      <div class="guess-head">
+        <h2>Model guesses</h2>
+        <select id="guess-mode" title="By family first: pick the family, then the species, or stop at the family (F). The family's score adds up the model's scores for its names, and families are easier to tell apart. By species: the model's top three names.">
+          <option value="family">by family first</option>
+          <option value="species">by species</option>
+        </select>
+      </div>
       <div id="guesses" class="guesses"></div>
+      <div id="family-step" class="guesses family-step" hidden></div>
       <p class="hint">Nothing is pre-selected. Your click is the recorded answer.</p>
 
       <h2>Species</h2>
@@ -88,6 +106,7 @@
       <div class="other-buttons">
         <button data-status="unknown" title="A fish you can't identify">Unknown fish <kbd>U</kbd></button>
         <button data-status="not_fish">Not a fish <kbd>N</kbd></button>
+        <button data-action="equipment" title="Not a fish: part of the rig (bait arm, canister, rope). Cards in the same spot that look the same are then queued under Show → likely equipment.">Equipment <kbd>E</kbd></button>
         <button data-action="multiple" title="The card shows more than one fish: break it into its tracked pieces, each its own card">Multiple fish <kbd>M</kbd></button>
         <button data-status="skipped">Skip <kbd>S</kbd></button>
       </div>
@@ -101,8 +120,8 @@
       </details>
 
       <div id="message" role="status"></div>
-      <p class="hint keys">Keys: <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> guesses · <kbd>/</kbd> search, <kbd>Enter</kbd> record ·
-        <kbd>U</kbd> unknown · <kbd>N</kbd> not a fish · <kbd>M</kbd> multiple fish · <kbd>S</kbd> skip ·
+      <p class="hint keys">Keys: <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> guesses (by family: then <kbd>1</kbd>–<kbd>9</kbd> a species, <kbd>F</kbd> just the family, <kbd>Esc</kbd> back) · <kbd>/</kbd> search, <kbd>Enter</kbd> record ·
+        <kbd>U</kbd> unknown · <kbd>N</kbd> not a fish · <kbd>E</kbd> equipment · <kbd>M</kbd> multiple fish · <kbd>S</kbd> skip ·
         <kbd>↑</kbd><kbd>↓</kbd> pick a sighting, <kbd>X</kbd> split there · <kbd>Space</kbd> tick sightings, <kbd>X</kbd> moves them to a new card ·
         <kbd>P</kbd> same fish as the card before it ·
         <kbd>←</kbd><kbd>→</kbd> cards</p>

@@ -32,7 +32,12 @@ class Settings:
     # Detection. "rfdetr" = Community Fish Detector (RF-DETR), "color" = synthetic-video fake.
     detector: str = "rfdetr"
     detector_weights: str | None = None
+    # The operating point: only boxes scoring this much are tracked and become cards (0.3
+    # comes from the CFD README's example, not a BRUV study; see docs/SOURCES.md).
     det_threshold: float = 0.3
+    # Boxes down to this score are kept too (not tracked), so other thresholds can be tried
+    # on the same detections without running the detector again.
+    det_floor: float = 0.1
     batch_size: int = 4
 
     # Tracking (lightweight IoU + centre distance, Hungarian matching).
@@ -45,6 +50,9 @@ class Settings:
 
     # Continuity merge (review dedupe only; never used for counts).
     gap_seconds: float = 10.0
+    # Record rows in the export: same-species fish within this gap share a row. Kept apart
+    # from gap_seconds, so tuning the merge never changes how rows are grouped.
+    sighting_gap_s: float = 10.0
     # BioCLIP similarity of the two pieces. Most fish score 0.8 or more against each other,
     # so the bar is above that; with the colour check below it blocked 65% of joins between
     # different fish and kept 91% between parts of the same fish (docs/SPEC.md §12).

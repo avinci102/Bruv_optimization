@@ -1,13 +1,17 @@
 """Orchestration: ingest -> sample + detect -> track -> embed -> continuity -> classify.
 
 Every stage persists to the project's SQLite store. Detection, the slow stage, resumes
-from the last saved frame; the later stages are quick and re-run as a block.
+from the last saved frame; the later stages are quick and re-run as a block. Each stage
+run is recorded (settings, code, models; Project.start_run), and a processing run that
+changed anything ends with a read-only snapshot of the results (Project.snapshot).
 """
 
 from __future__ import annotations
 
 import gc
+import json
 import logging
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
@@ -28,10 +32,11 @@ from .config import Settings
 from .continuity import TrackletSummary, merge_tracklets
 from .detect import Detector, make_detector
 from .learn import Check, Library, blend, check, library_stamp, vote
+from .provenance import deployment_id, describe_model, fingerprint
 from .store import Project, box_px
 from .template import read_template
-from .track import Tracker
-from .video import Chapter, Timeline, build_timeline, sample_frames
+from .track import Tracker, missed_frames
+from .video import SAMPLER_VERSION, Chapter, Timeline, build_timeline, probe_capture, sample_frames
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +90,28 @@ def update_extra_species(project: Project, names: list[str]) -> None:
         project.mark_stage("classify", False)
 
 
+def record_videos(project: Project) -> None:
+    """Fingerprint the footage once (provenance.py): results then name the exact recording
+    they came from, and one drop copied to two folders can't pass for two deployments. Also
+    keep what the file says about the camera; lens mode, stabilisation and housing aren't in
+    it, so they stay unknown until recorded (cli capture)."""
+    paths = [Path(c["path"]) for c in project.chapters()]
+    if not paths or not all(p.exists() for p in paths):
+        log.warning("Video files not found, so this project's footage isn't fingerprinted yet")
+        return
+    if project.get_meta("capture") is None:
+        project.set_meta("capture", {**probe_capture(paths[0]), **UNKNOWN_CAPTURE})
+    if project.get_meta("deployment"):
+        return
+    prints = [{"path": str(p), "size": p.stat().st_size, "fingerprint": fingerprint(p)} for p in paths]
+    project.set_meta("video_fingerprints", prints)
+    project.set_meta("deployment", deployment_id([p["fingerprint"] for p in prints]))
+
+
+# How the footage was shot, as far as the file can't tell: recorded by hand (cli capture).
+UNKNOWN_CAPTURE = {"lens": "unknown", "stabilization": "unknown", "housing": "unknown"}
+
+
 def load_timeline(project: Project) -> Timeline:
     return Timeline(
         [
@@ -109,6 +136,50 @@ def text_embedding_path(project: Project) -> Path:
     return project.root / "text_embeddings.npy"
 
 
+_TEXT: dict = {}
+
+
+def guess_scores(project: Project, emb: np.ndarray) -> tuple[list[str], np.ndarray] | None:
+    """Scores over the species names for one image embedding, from the cached label
+    embeddings (no model needed): softmax, blended with the library when it passed its check
+    for this project (learn.py). None before any names were scored."""
+    path = text_embedding_path(project)
+    labels = project.get_meta("guess_labels") or []
+    if not (labels and path.exists()):
+        return None
+    stamp = (str(path), path.stat().st_mtime_ns)
+    if _TEXT.get("stamp") != stamp:
+        _TEXT.update(stamp=stamp, emb=np.load(path))
+    probs = softmax(float(project.get_meta("logit_scale", 100.0)) * (_TEXT["emb"] @ emb))
+    weight = float(project.get_meta("library_weight") or 0.0)
+    if weight:
+        library = _library()
+        probs = blend(probs, vote(emb, library.emb, library.label, labels), weight)
+    return labels, probs
+
+
+def top_guesses(scored: tuple[list[str], np.ndarray] | None, k: int) -> list:
+    if scored is None:
+        return []
+    labels, probs = scored
+    return [[labels[i], round(float(probs[i]), 4)] for i in np.argsort(-probs)[:k]]
+
+
+def _card_crops(dets, settings: Settings) -> tuple[list, list]:
+    """A card's detections by crop quality, and the embedded ones its guesses use."""
+    ranked = sorted(dets, key=lambda d: (d["quality"] or 0.0), reverse=True)
+    return ranked, [d for d in ranked if d["embedding"] is not None][: settings.crops_per_fish]
+
+
+def card_scores(project: Project, fish_id: int, settings: Settings | None = None) -> tuple[list[str], np.ndarray] | None:
+    """The model's scores over every name for a card (its best crops' mean embedding)."""
+    _, embedded = _card_crops(project.fish_detections(fish_id), settings or project.load_settings())
+    if not embedded:
+        return None
+    emb = l2_normalize(np.mean([np.frombuffer(d["embedding"], np.float32) for d in embedded], axis=0))
+    return guess_scores(project, emb)
+
+
 def refresh_fish_guesses(project: Project, fish_id: int, settings: Settings | None = None) -> None:
     """Pick the best crop and recompute top-k guesses from cached embeddings (no model needed)."""
     settings = settings or project.load_settings()
@@ -116,21 +187,11 @@ def refresh_fish_guesses(project: Project, fish_id: int, settings: Settings | No
     if not dets:
         project.set_fish_guesses(fish_id, [], None)
         return
-    ranked = sorted(dets, key=lambda d: (d["quality"] or 0.0), reverse=True)
-    embedded = [d for d in ranked if d["embedding"] is not None][: settings.crops_per_fish]
+    ranked, embedded = _card_crops(dets, settings)
     guesses: list = []
-    path = text_embedding_path(project)
-    labels = project.get_meta("guess_labels") or []
-    if embedded and path.exists() and labels:
+    if embedded:
         emb = l2_normalize(np.mean([np.frombuffer(d["embedding"], np.float32) for d in embedded], axis=0))
-        text_emb = np.load(path)
-        scale = float(project.get_meta("logit_scale", 100.0))
-        probs = softmax(scale * (text_emb @ emb))
-        weight = float(project.get_meta("library_weight") or 0.0)
-        if weight:  # the library passed its check for this project (learn.py)
-            library = _library()
-            probs = blend(probs, vote(emb, library.emb, library.label, labels), weight)
-        guesses = [[labels[i], round(float(probs[i]), 4)] for i in np.argsort(-probs)[: settings.top_k]]
+        guesses = top_guesses(guess_scores(project, emb), settings.top_k)
     best = (embedded or ranked)[0]["id"]
     project.set_fish_guesses(fish_id, guesses, best)
 
@@ -178,7 +239,15 @@ class Pipeline:
         return self._classifier
 
     def run(self, force: bool = False) -> None:
+        runs_before = len(self.project.runs())
         self.ingest()
+        record_videos(self.project)
+        self.project.fill_source_indices()  # frames from older versions
+        self._process(force)
+        if len(self.project.runs()) > runs_before:
+            self.project.snapshot("processed")
+
+    def _process(self, force: bool) -> None:
         self.detect()
         self._detector = None  # free the detector's memory before BioCLIP 2 loads
         gc.collect()
@@ -242,6 +311,11 @@ class Pipeline:
             seq = last.seq + 1
             start = last.t + step
         self.progress("detect", seq, total)
+        if start >= end - 1e-6:
+            self.project.mark_stage("detect")
+            return
+        first_seq = seq
+        run_id = self.project.start_run("detect", s, **self._detect_info(fps, seq))
 
         batch = []
 
@@ -253,7 +327,8 @@ class Pipeline:
                 rel = f"frames/{seq:06d}.jpg"
                 imaging.save_jpeg(small, self.project.root / rel, s.jpeg_quality)
                 frame_id = self.project.add_frame(
-                    seq, frame.t, frame.chapter, frame.local_t, rel, small.shape[1], small.shape[0]
+                    seq, frame.t, frame.chapter, frame.local_t, rel, small.shape[1], small.shape[0],
+                    frame.src_index,
                 )
                 qualities = []
                 for d in dets:
@@ -266,33 +341,52 @@ class Pipeline:
             batch.clear()
             self.progress("detect", seq, total)
 
-        if start < end - 1e-6:
-            for frame in sample_frames(timeline, fps, s.decode_width, start, end, s.hwaccel):
-                batch.append(frame)
-                if len(batch) >= s.batch_size:
-                    flush()
-            if batch:
+        for frame in sample_frames(timeline, fps, s.decode_width, start, end, s.hwaccel):
+            batch.append(frame)
+            if len(batch) >= s.batch_size:
                 flush()
+        if batch:
+            flush()
+        self.project.finish_run(run_id, frames=seq - first_seq, last_seq=seq - 1)
         self.project.mark_stage("detect")
+
+    def _detect_info(self, fps: float, first_seq: int) -> dict:
+        """What a detection run used: the detector (weights by fingerprint), the footage, and
+        the frame sampler, whose ffmpeg build decides which source frames are decoded."""
+        import imageio_ffmpeg  # noqa: PLC0415
+
+        return {
+            "detector": describe_model(self.detector),
+            "kept_from": min(self.settings.det_floor, self.settings.det_threshold),
+            "tracked_from": self.settings.det_threshold,
+            "device": self.device,
+            "fps": fps,
+            "first_seq": first_seq,
+            "deployment": self.project.get_meta("deployment"),
+            "sampler": SAMPLER_VERSION,
+            "ffmpeg": imageio_ffmpeg.get_ffmpeg_version(),
+        }
 
     def track(self) -> None:
         s = self.settings
+        run_id = self.project.start_run("track", s, fps=self.project.frame_rate(), min_score=s.det_threshold)
         self.project.reset_tracking()
         tracker = Tracker(
             s.track_min_iou,
             s.track_max_dist,
             s.track_max_size_ratio,
-            max(1, round(s.track_max_missed_s * self.project.frame_rate())),  # in sampled frames
+            missed_frames(s.track_max_missed_s, self.project.frame_rate()),
             s.track_min_appearance,
             s.track_direction,
         )
         n = self.project.frame_count()
-        for i, (frame, dets) in enumerate(self.project.frames_with_detections()):
+        for i, (frame, dets) in enumerate(self.project.frames_with_detections(s.det_threshold)):
             tracker.update(frame.seq, dets)
             if i % 200 == 0:
                 self.progress("track", i, n)
         tracklets = tracker.finish()
         self.project.save_tracklets(tracklets)
+        self.project.finish_run(run_id, tracklets=len(tracklets))
         self.project.mark_stage("track")
         self.progress("track", n, n)
 
@@ -301,25 +395,40 @@ class Pipeline:
         across runs (a crop's embedding doesn't depend on tracking), so a run that was
         stopped embeds only the crops it hadn't done yet."""
         s = self.settings
-        key = f"{self.classifier.name} pad={s.crop_pad}"
+        model = describe_model(self.classifier)
+        crops_from = f"saved review frames ({s.frame_width} px wide, JPEG quality {s.jpeg_quality})"
+        # Stored embeddings are reused only if made the same way: model, weights, its input,
+        # padding and where the crops came from (the review found model and padding too few).
+        key = json.dumps({"model": self.classifier.name, "weights": model.get("weights"),
+                          "input": model.get("input"), "pad": s.crop_pad, "crops": crops_from}, sort_keys=True)
         # A stand-in (BioCLIP 2 couldn't load) neither reuses nor overwrites the stored
         # embeddings, so the next run with BioCLIP 2 still finds them.
         keep = not (isinstance(self.classifier, HistogramClassifier) and s.classifier != "histogram")
+        run_id = self.project.start_run(
+            "embed", s,
+            classifier=model,
+            stand_in=not keep,  # colour histograms instead of the species model: never pool
+            crops_from=crops_from,
+        )
         stored = self.project.get_meta("embedding_key")
         if stored is None and self.project.get_meta("embedder"):  # projects from before the key
             stored = f"{self.project.get_meta('embedder')} pad={s.crop_pad}"
+        if stored == f"{self.classifier.name} pad={s.crop_pad}":
+            stored = key  # the older key named only model and padding; the crops were these frames
         if keep and stored != key:
-            self.project.clear_embeddings()  # made by another model or crop setting
+            self.project.clear_embeddings()  # made by another model, weights or crop source
         if keep:
             self.project.set_meta("embedding_key", key)
 
         chosen: dict[int, list] = {}
         todo = []
+        skipped = 0
         for tid in self.project.tracklet_ids():
             dets = self.project.tracklet_detections(tid)
             # Tiny fish join no other piece, and their blobs can't be identified, so the
             # species model (the slow step) skips them unless asked to.
             if not s.guess_tiny_fish and max(box_px(d) for d in dets) < s.tiny_fish_px:
+                skipped += 1
                 continue
             dets = sorted(dets, key=lambda d: d["quality"] or 0.0, reverse=True)
             chosen[tid] = dets[: s.crops_per_tracklet]
@@ -346,10 +455,14 @@ class Pipeline:
             self.project.set_tracklet_embedding(tid, l2_normalize(np.mean(embs, axis=0)))
         self.project.set_meta("embedder", self.classifier.name)
         self.project.commit()
+        self.project.finish_run(
+            run_id, tracklets=len(chosen), tiny_skipped=skipped, crops=total, embedded_now=len(todo)
+        )
         self.project.mark_stage("embed")
 
     def merge(self) -> None:
         s = self.settings
+        run_id = self.project.start_run("merge", s)
         summaries = []
         alone = []  # pieces the species model skipped (tiny fish): a card each
         start = {}
@@ -374,14 +487,22 @@ class Pipeline:
                     l2_normalize(np.mean(apps, axis=0)) if apps else None,
                 )
             )
+        evidence = []
         chains = merge_tracklets(
             summaries, s.gap_seconds, s.merge_min_similarity, s.merge_max_size_ratio, s.tiny_fish_px,
-            s.merge_min_colour,
+            s.merge_min_colour, evidence,
         )
         chains = sorted(chains + alone, key=lambda chain: (start[chain[0]], chain[0]))
         for chain in chains:
             self.project.create_fish(chain)
         self.project.commit()
+        frozen = self.project.freeze_groups(run_id)  # the cards before anyone reviews them
+        self.project.save_merge_edges(run_id, evidence)
+        decisions = Counter(e.decision for e in evidence)
+        self.project.finish_run(
+            run_id, pieces=len(start), cards=len(chains), not_embedded=len(alone), detections=frozen,
+            joins_weighed=len(evidence), decisions=dict(decisions),
+        )
         self.project.mark_stage("merge")
         self.progress("merge", len(chains), len(chains))
 
@@ -415,6 +536,9 @@ class Pipeline:
 
     def classify(self) -> None:
         labels = species_labels(self.project)
+        run_id = self.project.start_run(
+            "classify", self.settings, classifier=describe_model(self.classifier), labels=len(labels)
+        )
         text_emb = self._text_embeddings(labels) if labels else None
         path = text_embedding_path(self.project)
         result = Check()
@@ -439,5 +563,9 @@ class Pipeline:
             if i % 50 == 0:
                 self.progress("classify", i, len(fish))
         self.project.commit()
+        self.project.finish_run(
+            run_id, cards=len(fish), guesses=text_emb is not None, library_check=asdict(result),
+            library_stamp=library_stamp(),
+        )
         self.project.mark_stage("classify")
         self.progress("classify", len(fish), len(fish))

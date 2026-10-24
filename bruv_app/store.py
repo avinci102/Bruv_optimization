@@ -1,13 +1,16 @@
 """SQLite project store, so a long video can be processed and reviewed over several sessions.
 
-A project is a folder: project.db, settings.json, frames/ (review JPEGs), exports/.
+A project is a folder: project.db, settings.json, frames/ (review JPEGs), exports/, and
+snapshots/ (frozen, read-only copies of the database, see Project.snapshot).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
-from dataclasses import dataclass
+import stat
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,10 +26,17 @@ CREATE TABLE IF NOT EXISTS chapters (
 CREATE TABLE IF NOT EXISTS frames (
     id INTEGER PRIMARY KEY, seq INTEGER UNIQUE, t REAL, chapter INTEGER, local_t REAL,
     path TEXT, width INTEGER, height INTEGER);
+-- The source video frame each sampled frame is (video.source_index). Its own table, so the
+-- frames table keeps the columns older versions read, and they can still open the project.
+CREATE TABLE IF NOT EXISTS frame_sources (frame_id INTEGER PRIMARY KEY, src_index INTEGER);
+CREATE VIEW IF NOT EXISTS frames_src AS
+    SELECT f.id, f.seq, f.t, f.chapter, f.local_t, f.path, f.width, f.height, s.src_index
+    FROM frames f LEFT JOIN frame_sources s ON s.frame_id=f.id;
 CREATE TABLE IF NOT EXISTS detections (
     id INTEGER PRIMARY KEY, frame_id INTEGER REFERENCES frames(id),
     x1 REAL, y1 REAL, x2 REAL, y2 REAL, score REAL, quality REAL, app BLOB,
-    tracklet_id INTEGER, embedding BLOB);
+    tracklet_id INTEGER, embedding BLOB,
+    link_cost REAL, link_margin REAL, history_sim REAL);
 CREATE TABLE IF NOT EXISTS tracklets (
     id INTEGER PRIMARY KEY, fish_id INTEGER, start_t REAL, end_t REAL, embedding BLOB);
 CREATE TABLE IF NOT EXISTS fish (
@@ -36,6 +46,30 @@ CREATE TABLE IF NOT EXISTS fish (
 CREATE TABLE IF NOT EXISTS stages (name TEXT PRIMARY KEY, done_at TEXT);
 CREATE TABLE IF NOT EXISTS corrections (
     id INTEGER PRIMARY KEY, at TEXT, action TEXT, fish_id INTEGER, details TEXT);
+-- One row per stage run: the settings, code and models it used, and what it made.
+CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY, stage TEXT, started_at TEXT, finished_at TEXT,
+    settings TEXT, code TEXT, info TEXT);
+-- The cards as the machine built them, before any review: tracker and merge decisions
+-- stay scoreable after a reviewer splits or merges cards.
+CREATE TABLE IF NOT EXISTS original_groups (
+    run_id INTEGER, det_id INTEGER, tracklet_id INTEGER, fish_id INTEGER,
+    PRIMARY KEY (run_id, det_id));
+-- Every answer given, with the detections the card held when it was given (its scope): a
+-- label never spreads to detections the reviewer didn't see on the card. details: the
+-- card's warnings when it was answered (diagnostics.py) and that the reviewer confirmed them.
+CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, status TEXT, species TEXT, scope TEXT,
+    details TEXT);
+-- Equipment a reviewer marked (equipment.py): the card, its usual box and its colours.
+CREATE TABLE IF NOT EXISTS rig_refs (
+    id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, x1 REAL, y1 REAL, x2 REAL, y2 REAL,
+    colour BLOB, active INTEGER NOT NULL DEFAULT 1);
+-- Every join the merge weighed between two pieces (tracklets), with its evidence, and
+-- whether it was made: "joined", "lost" (a better join took one end), or the check it failed.
+CREATE TABLE IF NOT EXISTS merge_edges (
+    run_id INTEGER, a INTEGER, b INTEGER, gap REAL, similarity REAL, colour REAL,
+    size_ratio REAL, decision TEXT, PRIMARY KEY (run_id, a, b));
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
@@ -73,6 +107,7 @@ class FrameRow:
     path: str
     width: int
     height: int
+    src_index: int | None = None  # the source video frame (video.source_index)
 
 
 class Project:
@@ -83,7 +118,32 @@ class Project:
         self.db = sqlite3.connect(self.root / "project.db", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.db.commit()
+
+    @classmethod
+    def read_only(cls, db_path: Path) -> "Project":
+        """Open a database without changing it, e.g. a snapshot (snapshots/x.db: its project
+        folder, for frames and settings, is the one above)."""
+        db_path = Path(db_path)
+        self = cls.__new__(cls)
+        self.root = db_path.parent.parent if db_path.parent.name == "snapshots" else db_path.parent
+        self.db = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        return self
+
+    def _migrate(self) -> None:
+        """Bring a project made by an older version up to date (columns are only added)."""
+        # Never add columns to frames: older versions build a record from all of them.
+        added = {
+            "detections": {"link_cost": "REAL", "link_margin": "REAL", "history_sim": "REAL"},
+            "reviews": {"details": "TEXT"},
+        }
+        for table, columns in added.items():
+            have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for name, kind in columns.items():
+                if name not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
     # --- settings & meta -------------------------------------------------------------
 
@@ -108,6 +168,108 @@ class Project:
         )
         self.db.commit()
 
+    # --- run records & snapshots -------------------------------------------------------
+
+    def start_run(self, stage: str, settings: Settings, **info) -> int:
+        """Record a stage starting: the settings and code it runs with, plus `info` (models,
+        inputs). finish_run adds what it made."""
+        from .provenance import code_revision  # noqa: PLC0415
+
+        cur = self.db.execute(
+            "INSERT INTO runs(stage, started_at, settings, code, info) VALUES(?, ?, ?, ?, ?)",
+            (stage, _now(), json.dumps(asdict(settings)), code_revision(), json.dumps(info)),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def finish_run(self, run_id: int, **info) -> None:
+        row = self.db.execute("SELECT info FROM runs WHERE id=?", (run_id,)).fetchone()
+        merged = {**json.loads(row["info"] or "{}"), **info}
+        self.db.execute(
+            "UPDATE runs SET finished_at=?, info=? WHERE id=?", (_now(), json.dumps(merged), run_id)
+        )
+        self.db.commit()
+
+    def runs(self, stage: str | None = None) -> list[sqlite3.Row]:
+        if stage is None:
+            return self.db.execute("SELECT * FROM runs ORDER BY id").fetchall()
+        return self.db.execute("SELECT * FROM runs WHERE stage=? ORDER BY id", (stage,)).fetchall()
+
+    def freeze_groups(self, run_id: int) -> int:
+        """Keep the cards as the machine built them (detection -> tracklet -> card)."""
+        cur = self.db.execute(
+            """INSERT OR REPLACE INTO original_groups(run_id, det_id, tracklet_id, fish_id)
+               SELECT ?, d.id, d.tracklet_id, t.fish_id FROM detections d
+               JOIN tracklets t ON t.id=d.tracklet_id""",
+            (run_id,),
+        )
+        self.db.commit()
+        return cur.rowcount
+
+    def save_merge_edges(self, run_id: int, edges) -> None:
+        self.db.executemany(
+            """INSERT OR REPLACE INTO merge_edges(run_id, a, b, gap, similarity, colour, size_ratio, decision)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(run_id, e.a, e.b, e.gap, e.similarity, e.colour, e.size_ratio, e.decision) for e in edges],
+        )
+        self.db.commit()
+
+    def merge_edges(self, run_id: int | None = None) -> list[sqlite3.Row]:
+        """The joins the merge weighed: by the given merge run, or the latest one."""
+        if run_id is None:
+            run_id = self.db.execute("SELECT MAX(run_id) FROM merge_edges").fetchone()[0]
+        return self.db.execute("SELECT * FROM merge_edges WHERE run_id=? ORDER BY a, b", (run_id,)).fetchall()
+
+    def original_groups(self, run_id: int | None = None) -> dict[int, tuple[int, int]]:
+        """Detection id -> (tracklet id, card id) as first built: by the given merge run, or
+        the latest one."""
+        if run_id is None:
+            run_id = self.db.execute("SELECT MAX(run_id) FROM original_groups").fetchone()[0]
+        rows = self.db.execute(
+            "SELECT det_id, tracklet_id, fish_id FROM original_groups WHERE run_id=?", (run_id,)
+        )
+        return {r[0]: (r[1], r[2]) for r in rows}
+
+    def snapshot(self, label: str) -> Path:
+        """Freeze the project's database as it is now: a compact, read-only copy in snapshots/,
+        with a manifest saying what made it. Results scored from a snapshot can be
+        reproduced, whatever is reviewed or re-run afterwards."""
+        from .provenance import code_revision, fingerprint  # noqa: PLC0415
+
+        self.fill_source_indices()
+        self.db.commit()
+        folder = self.root / "snapshots"
+        folder.mkdir(exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in label) or "snapshot"
+        path = folder / f"{stamp}-{safe}.db"
+        n = 1
+        while path.exists():
+            n += 1
+            path = folder / f"{stamp}-{safe}-{n}.db"
+        self.db.execute("VACUUM INTO ?", (str(path),))
+        counts = {
+            table: self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
+            for table in ("frames", "detections", "tracklets", "fish", "corrections")
+        }
+        manifest = {
+            "label": label,
+            "made_at": _now(),
+            "project": str(self.root),
+            "deployment": self.get_meta("deployment"),
+            "videos": self.get_meta("video_fingerprints"),
+            "code": code_revision(),
+            "settings": asdict(self.load_settings()),
+            "runs": [dict(r) for r in self.runs()],
+            "counts": counts,
+            "reviewed": self.reviewed_count(),
+            "database": fingerprint(path, quick=False),
+        }
+        path.with_suffix(".json").write_text(json.dumps(manifest, indent=2))
+        for p in (path, path.with_suffix(".json")):
+            os.chmod(p, stat.S_IREAD)
+        return path
+
     def stage_done(self, name: str) -> bool:
         return self.db.execute("SELECT 1 FROM stages WHERE name=?", (name,)).fetchone() is not None
 
@@ -131,11 +293,13 @@ class Project:
     def chapters(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM chapters ORDER BY idx").fetchall()
 
-    def add_frame(self, seq, t, chapter, local_t, path, width, height) -> int:
+    def add_frame(self, seq, t, chapter, local_t, path, width, height, src_index=None) -> int:
         cur = self.db.execute(
             "INSERT INTO frames(seq, t, chapter, local_t, path, width, height) VALUES(?,?,?,?,?,?,?)",
             (seq, t, chapter, local_t, path, width, height),
         )
+        if src_index is not None:
+            self.db.execute("INSERT INTO frame_sources(frame_id, src_index) VALUES(?, ?)", (cur.lastrowid, src_index))
         return cur.lastrowid
 
     def add_detections(self, frame_id: int, dets: list[Detection], qualities: list[float]) -> None:
@@ -148,15 +312,34 @@ class Project:
         self.db.commit()
 
     def last_frame(self) -> FrameRow | None:
-        row = self.db.execute("SELECT * FROM frames ORDER BY seq DESC LIMIT 1").fetchone()
+        row = self.db.execute("SELECT * FROM frames_src ORDER BY seq DESC LIMIT 1").fetchone()
         return FrameRow(**dict(row)) if row else None
 
     def frame(self, frame_id: int) -> FrameRow | None:
-        row = self.db.execute("SELECT * FROM frames WHERE id=?", (frame_id,)).fetchone()
+        row = self.db.execute("SELECT * FROM frames_src WHERE id=?", (frame_id,)).fetchone()
         return FrameRow(**dict(row)) if row else None
 
     def frame_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM frames").fetchone()[0]
+
+    def fill_source_indices(self) -> int:
+        """Give frames saved before source frame numbers were kept a number worked out from
+        their time. That is exact when detection ran in one go from the start of the video;
+        older versions handed back frames one step late after a resume, so the project is
+        flagged and anything that relies on the numbers checks them against the saved frames."""
+        from .video import source_index  # noqa: PLC0415
+
+        rows = self.db.execute(
+            """SELECT f.id, f.local_t, c.fps FROM frames f JOIN chapters c ON c.idx=f.chapter
+               LEFT JOIN frame_sources s ON s.frame_id=f.id WHERE s.frame_id IS NULL"""
+        ).fetchall()
+        if rows:
+            self.db.executemany(
+                "INSERT INTO frame_sources(frame_id, src_index) VALUES(?, ?)",
+                [(r["id"], source_index(r["local_t"], r["fps"])) for r in rows],
+            )
+            self.set_meta("src_index_inferred", True)
+        return len(rows)
 
     def frame_rate(self) -> float:
         """Sampled frames per second, from the stored frames' times (1.0 before any)."""
@@ -164,11 +347,12 @@ class Project:
         steps = [b - a for a, b in zip(times, times[1:]) if b > a]
         return 1.0 / float(np.median(steps)) if steps else 1.0
 
-    def frames_with_detections(self):
-        """Yield (FrameRow, [(det id, Detection)]) in time order."""
-        frames = self.db.execute("SELECT * FROM frames ORDER BY seq").fetchall()
+    def frames_with_detections(self, min_score: float = 0.0):
+        """Yield (FrameRow, [(det id, Detection)]) in time order: the detections scoring at
+        least `min_score` (the rest are kept below the operating threshold, untracked)."""
+        frames = self.db.execute("SELECT * FROM frames_src ORDER BY seq").fetchall()
         dets: dict[int, list] = {}
-        for d in self.db.execute("SELECT * FROM detections ORDER BY id"):
+        for d in self.db.execute("SELECT * FROM detections WHERE score >= ? ORDER BY id", (min_score,)):
             dets.setdefault(d["frame_id"], []).append(
                 (d["id"], Detection(d["x1"], d["y1"], d["x2"], d["y2"], d["score"], from_blob(d["app"])))
             )
@@ -179,7 +363,9 @@ class Project:
 
     def reset_tracking(self) -> None:
         # Crop embeddings stay: they don't depend on tracking, so a rerun can reuse them.
-        self.db.execute("UPDATE detections SET tracklet_id=NULL")
+        self.db.execute(
+            "UPDATE detections SET tracklet_id=NULL, link_cost=NULL, link_margin=NULL, history_sim=NULL"
+        )
         self.db.execute("DELETE FROM tracklets")
         self.db.execute("DELETE FROM fish")
         self.db.commit()
@@ -191,9 +377,10 @@ class Project:
     def save_tracklets(self, tracklets) -> None:
         for tr in tracklets:
             self.db.execute("INSERT INTO tracklets(id) VALUES(?)", (tr.id,))
+            links = getattr(tr, "links", {})
             self.db.executemany(
-                "UPDATE detections SET tracklet_id=? WHERE id=?",
-                [(tr.id, key) for _, key in tr.members],
+                "UPDATE detections SET tracklet_id=?, link_cost=?, link_margin=?, history_sim=? WHERE id=?",
+                [(tr.id, *links.get(key, (None, None, None)), key) for _, key in tr.members],
             )
         self.db.execute(
             """UPDATE tracklets SET
@@ -279,7 +466,9 @@ class Project:
     def all_fish(self) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM fish ORDER BY start_t, id").fetchall()
 
-    def label_fish(self, fish_id: int, status: str, **fields) -> None:
+    def label_fish(self, fish_id: int, status: str, details: dict | None = None, **fields) -> None:
+        """Record an answer. `details` goes with it into the review log (e.g. the card's
+        warnings, and that the reviewer confirmed them)."""
         if status not in STATUSES:
             raise ValueError(f"Bad status: {status}")
         species = fields.get("species") if status == "species" else None
@@ -299,7 +488,56 @@ class Project:
                 fish_id,
             ),
         )
+        scope = [d["id"] for d in self.fish_detections(fish_id)] if status != "pending" else []
+        self.db.execute(
+            "INSERT INTO reviews(at, fish_id, status, species, scope, details) VALUES(?, ?, ?, ?, ?, ?)",
+            (_now(), fish_id, status, species, json.dumps(scope), json.dumps(details) if details else None),
+        )
         self.db.commit()
+
+    def add_rig_ref(self, fish_id: int, box, colour) -> int:
+        cur = self.db.execute(
+            "INSERT INTO rig_refs(at, fish_id, x1, y1, x2, y2, colour) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (_now(), fish_id, box.x1, box.y1, box.x2, box.y2, to_blob(colour)),
+        )
+        self.db.commit()
+        return cur.lastrowid
+
+    def rig_refs(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM rig_refs WHERE active=1 ORDER BY id").fetchall()
+
+    def forget_rig_ref(self, ref_id: int) -> None:
+        """Stop queueing cards like this reference; answers already given stay."""
+        self.db.execute("UPDATE rig_refs SET active=0 WHERE id=?", (ref_id,))
+        self.db.commit()
+
+    def reviews_in_batch(self, batch: str) -> list[int]:
+        """Cards whose current answer came from the given batch (e.g. of equipment)."""
+        rows = self.db.execute(
+            """SELECT r.fish_id, r.details FROM reviews r
+               JOIN (SELECT fish_id, MAX(id) AS last FROM reviews GROUP BY fish_id) l ON l.last=r.id
+               WHERE r.details IS NOT NULL"""
+        )
+        return [r["fish_id"] for r in rows if json.loads(r["details"]).get("batch") == batch]
+
+    def answer_details(self, fish_id: int) -> dict:
+        """What was kept with the card's current answer (e.g. equipment, confirmed warnings)."""
+        review = self.last_review(fish_id)
+        return json.loads(review["details"]) if review and review["details"] else {}
+
+    def last_review(self, fish_id: int) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT * FROM reviews WHERE fish_id=? ORDER BY id DESC LIMIT 1", (fish_id,)
+        ).fetchone()
+
+    def label_scopes(self) -> dict[int, set[int]]:
+        """Card id -> the detections its current answer was given for (from its latest
+        review). Cards answered before scopes were recorded aren't listed."""
+        rows = self.db.execute(
+            """SELECT r.fish_id, r.scope FROM reviews r
+               JOIN (SELECT fish_id, MAX(id) AS last FROM reviews GROUP BY fish_id) l ON l.last=r.id"""
+        )
+        return {r["fish_id"]: set(json.loads(r["scope"])) for r in rows}
 
     def reviewed_count(self) -> int:
         q = f"SELECT COUNT(*) FROM fish WHERE status IN ({','.join('?' * len(REVIEWED))})"

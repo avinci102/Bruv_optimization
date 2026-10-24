@@ -1,7 +1,9 @@
 """Sightings, MaxN and time of first arrival, all from per-frame detections.
 
-Only human-confirmed labels count. A fish's label applies to every detection of that fish,
-then each sampled frame is counted on its own; merges never change the counts.
+Only human-confirmed labels count. A fish's label applies to the detections it was given
+for, then each sampled frame is counted on its own; merges never change the counts, and
+abundance is never deduplicated by card. double_count_checks lists what could still count
+one fish twice: two boxes on one fish, or one card holding two boxes at once.
 """
 
 from __future__ import annotations
@@ -61,6 +63,58 @@ def compute_maxn(counts: dict[float, Counter]) -> list[MaxNRow]:
             elif n > row.maxn:
                 row.maxn, row.t_maxn = n, t
     return sorted(best.values(), key=lambda r: (r.first_t, r.species))
+
+
+@dataclass
+class Observation:
+    """A counted detection: when, on which card, counted as what, and where in the frame."""
+
+    t: float
+    det_id: int
+    fish_id: int
+    key: str
+    box: tuple[float, float, float, float]  # x1, y1, x2, y2 (0-1)
+
+
+@dataclass
+class CountCheck:
+    t: float
+    kind: str  # "overlapping boxes" or "one card, two boxes"
+    key: str
+    det_ids: tuple[int, int]
+    fish_ids: tuple[int, int]
+
+
+def _overlap(a, b) -> tuple[float, float]:
+    """(IoU, share of the smaller box inside the other)."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    area_a, area_b = (a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])
+    union = area_a + area_b - inter
+    return (inter / union if union > 0 else 0.0), (inter / min(area_a, area_b) if min(area_a, area_b) > 0 else 0.0)
+
+
+def double_count_checks(observations: list[Observation], min_iou: float = 0.5, inside: float = 0.8) -> list[CountCheck]:
+    """Frames where one fish may be counted twice under the same label: two boxes that
+    overlap heavily (the detector boxed one fish twice, or a fish and part of it), or two
+    boxes of one card at the same moment (two fish on one card, or one fish boxed twice).
+    Both count as two; a reviewer decides which they are."""
+    by_frame: dict[float, list[Observation]] = defaultdict(list)
+    for o in observations:
+        by_frame[o.t].append(o)
+    out = []
+    for t, obs in sorted(by_frame.items()):
+        for i, a in enumerate(obs):
+            for b in obs[i + 1 :]:
+                if a.key != b.key:
+                    continue
+                share_iou, share_inside = _overlap(a.box, b.box)
+                if share_iou >= min_iou or share_inside >= inside:
+                    out.append(CountCheck(t, "overlapping boxes", a.key, (a.det_id, b.det_id), (a.fish_id, b.fish_id)))
+                elif a.fish_id == b.fish_id:
+                    out.append(CountCheck(t, "one card, two boxes", a.key, (a.det_id, b.det_id), (a.fish_id, b.fish_id)))
+    return out
 
 
 def compute_sightings(

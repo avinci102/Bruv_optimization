@@ -4,6 +4,12 @@
 Each track expects its fish to keep swimming the way it was going, so two fish that cross
 keep their own tracks. At 1 fps fish move a long way between frames, so tracks fragment;
 continuity.py stitches the fragments back together for review.
+
+Each link is recorded with its evidence (Tracklet.links), without changing how links are
+chosen: its cost; its margin, how much worse the next-best option was (another track for
+this box, or another box for this track; small or negative means a close call); and how
+alike the box's colours are to everything the track held before it (a drop there can mark
+the point where a track jumped to another fish).
 """
 
 from __future__ import annotations
@@ -47,6 +53,10 @@ class Tracklet:
     last_box: Detection | None = None
     last_frame: int = -1
     velocity: tuple[float, float] = (0.0, 0.0)  # box shift per sampled frame, from the last match
+    # detection key -> (cost, margin, colour likeness to the track so far), for each box
+    # that continued the track (see the module docstring); margin None: no other option.
+    links: dict[int, tuple[float, float | None, float | None]] = field(default_factory=dict)
+    colour_sum: np.ndarray | None = field(default=None, repr=False)
 
     def predicted(self, frame: int) -> Detection:
         """Where the fish should be by `frame` if it keeps its direction and speed."""
@@ -54,9 +64,34 @@ class Tracklet:
         dx, dy = self.velocity[0] * dt, self.velocity[1] * dt
         return Detection(b.x1 + dx, b.y1 + dy, b.x2 + dx, b.y2 + dy, b.score, b.app)
 
+    def add_colour(self, app: np.ndarray | None) -> None:
+        if app is not None:
+            self.colour_sum = app.copy() if self.colour_sum is None else self.colour_sum + app
+
+    def history_likeness(self, app: np.ndarray | None) -> float | None:
+        if app is None or self.colour_sum is None:
+            return None
+        return float(np.dot(app, self.colour_sum) / max(float(np.linalg.norm(self.colour_sum)), 1e-12))
+
 
 def _centre(d: Detection) -> tuple[float, float]:
     return (d.x1 + d.x2) / 2, (d.y1 + d.y2) / 2
+
+
+def missed_frames(seconds: float, fps: float) -> int:
+    """Settings.track_max_missed_s as sampled frames: how many frames in a row a track may
+    go without its fish. As built (not yet changed; see docs/SPEC.md §13): the longest gap
+    between two sightings a track bridges is (n + 1) / fps, so 1.0 s at 4 fps bridges 1.25 s;
+    round() takes halves to even (1.0 s at 2.5 fps is 2 frames); one frame is the minimum."""
+    return max(1, round(seconds * fps))
+
+
+def _margin(cost: np.ndarray, r: int, c: int) -> float | None:
+    """How much worse the next-best allowed option was: another track taking this box, or
+    this track taking another box. None when there was no other option."""
+    others = np.concatenate([np.delete(cost[:, c], r), np.delete(cost[r, :], c)])
+    others = others[others < _INF]
+    return float(others.min() - cost[r, c]) if others.size else None
 
 
 class Tracker:
@@ -117,7 +152,9 @@ class Tracker:
                     continue
                 key, det = detections[c]
                 track = self.active[r]
+                track.links[key] = (float(cost[r, c]), _margin(cost, r, c), track.history_likeness(det.app))
                 track.members.append((frame, key))
+                track.add_colour(det.app)
                 (x0, y0), (x1, y1) = _centre(track.last_box), _centre(det)
                 dt = frame - track.last_frame
                 track.velocity = ((x1 - x0) / dt, (y1 - y0) / dt)
@@ -128,6 +165,7 @@ class Tracker:
             if c in matched_dets:
                 continue
             track = Tracklet(self._next_id, [(frame, key)], det, frame)
+            track.add_colour(det.app)
             self._next_id += 1
             self.active.append(track)
 
