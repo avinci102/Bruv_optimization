@@ -46,6 +46,7 @@ log = logging.getLogger(__name__)
 Progress = Callable[[str, int, int], None]
 POST_DETECT_STAGES = ("still", "track", "embed", "merge", "classify")
 CARRY_KEY = "rebuild_answers"  # answers a rebuild set aside for its new cards (detection id -> answer)
+EARLIER_KEY = "answers_before_rebuild"  # the same, kept after the rebuild for the review page
 
 
 def _quiet(stage: str, done: int, total: int) -> None:
@@ -291,6 +292,8 @@ class Pipeline:
             return None
         answers = {int(k): v for k, v in pending.items()}
         report = self.project.carry_answers(answers, self.project.still_ids(self.settings))
+        # Kept, so a card that holds some of these sightings can say what they were answered.
+        self.project.set_meta(EARLIER_KEY, pending)
         self.project.set_meta(CARRY_KEY, None)
         return report
 

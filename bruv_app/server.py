@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from .equipment import best_match, mark_equipment, rig_candidates
 from .export import export_project
 from .families import family_of, rank_families
 from .lookalike import answered_like, card_looks, groups, unanswered_like
-from .pipeline import card_scores, extra_species, load_timeline, refresh_fish_guesses, species_labels
+from .pipeline import EARLIER_KEY, card_scores, extra_species, load_timeline, refresh_fish_guesses, species_labels
 from .store import REVIEWED, STATUSES, Project
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -107,6 +108,21 @@ def create_app(project_root: Path) -> FastAPI:
         for f in project.db.execute("SELECT id, status, species FROM fish"):
             current.status[f["id"]], current.answer[f["id"]] = f["status"], f["species"]
         return current
+
+    def earlier_answer(dets) -> dict | None:
+        """What a card's sightings were answered before the cards were last rebuilt, when
+        some were: the answer most of them had, how many had it, and how many answers."""
+        if "earlier" not in cache:
+            cache["earlier"] = project.get_meta(EARLIER_KEY) or {}
+        held = Counter()
+        for d in dets:
+            a = cache["earlier"].get(str(d["id"]))
+            if a:
+                held[(a["status"], a["species"])] += 1
+        if not held:
+            return None
+        (status, species), n = held.most_common(1)[0]
+        return {"status": status, "species": species, "sightings": n, "of": len(dets), "answers": len(held)}
 
     def look_groups() -> dict[int, int]:
         """Look-alike groups, biggest fish leading (for Sort: look-alikes together)."""
@@ -276,6 +292,8 @@ def create_app(project_root: Path) -> FastAPI:
                 # cards look like it (lookalike.py).
                 "answered_like": answered_like(current, fish_id),
                 "lookalikes": len(unanswered_like(current, fish_id)),
+                # Some of its sightings were answered before the cards were rebuilt.
+                "earlier": earlier_answer(dets) if f["status"] in ("pending", "skipped") else None,
                 "rig": None if rig_match is None else {
                     "card": rig_match.ref_card, "overlap": round(rig_match.overlap, 2),
                     "colour": None if rig_match.colour is None else round(rig_match.colour, 2),

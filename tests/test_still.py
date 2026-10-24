@@ -4,12 +4,14 @@ without losing the answers (docs/SPEC.md §13, after the first 185 answers)."""
 import json
 
 import numpy as np
+from fastapi.testclient import TestClient
 
 from bruv_app import demo
 from bruv_app.config import Settings
 from bruv_app.detect import ColorBlobDetector, Detection
 from bruv_app.export import export_project
-from bruv_app.pipeline import CARRY_KEY, Pipeline, create_project
+from bruv_app.pipeline import CARRY_KEY, EARLIER_KEY, Pipeline, create_project
+from bruv_app.server import create_app
 from bruv_app.still import background_change, is_still
 from bruv_app.store import REVIEWED
 from bruv_app.track import track_all
@@ -137,6 +139,28 @@ def test_rebuilding_keeps_the_answers_and_new_cards_get_new_numbers(project):
     assert any(s.endswith("before-rebuild.db") for s in snaps) and any(s.endswith("rebuilt.db") for s in snaps)
     run = json.loads(project.runs("rebuild")[-1]["info"])
     assert run["carried"] == report["carried"] and run["answered_detections"] == len(by_det)
+
+
+def test_a_partly_answered_card_says_what_its_sightings_were(project):
+    """Sightings moved off an answered card and never answered join it again in a rebuild
+    (tracking doesn't know about the move): the card waits for you, and the review page
+    says what most of its sightings were answered."""
+    first = project.all_fish()[0]
+    dets = [d["id"] for d in project.fish_detections(first["id"])]
+    project.label_fish(first["id"], "species", species=demo.RED)
+    project.move_to_new_fish(first["id"], dets[-3:])
+    answered = set(dets[:-3])
+    report = Pipeline(project, classifier=demo.DemoClassifier()).rebuild()
+    assert report["partly_answered"] >= 1 and set(project.get_meta(EARLIER_KEY)) == {str(d) for d in answered}
+    client = TestClient(create_app(project.root))
+    for f in project.all_fish():
+        dets = {d["id"] for d in project.fish_detections(f["id"])}
+        earlier = client.get(f"/api/fish/{f['id']}").json()["earlier"]
+        if f["status"] == "pending" and dets & answered:
+            assert earlier == {"status": "species", "species": demo.RED, "sightings": len(dets & answered),
+                               "of": len(dets), "answers": 1}
+        else:
+            assert earlier is None
 
 
 def test_a_stopped_rebuild_loses_no_answers(project):

@@ -232,6 +232,7 @@ async function show(index) {
   d.families ??= [];
   d.answered_like ??= null;
   d.lookalikes ??= 0;
+  d.earlier ??= null;
   state.detail = d;
   state.selected = null;
 
@@ -465,23 +466,38 @@ function renderFlags(d) {
   box.append(hint);
 }
 
-// A card that looks like one you answered (lookalike.py): that answer, for one key (R).
-// Otherwise R repeats your last answer. Nothing is recorded until you press it.
+// What R would answer, best evidence first: what most of this card's own sightings were
+// answered before the cards were rebuilt; else the answered card it looks most like
+// (lookalike.py); else your last answer. Nothing is recorded until you press it.
+function repeatable(d) {
+  if (d.status !== "pending" && d.status !== "skipped") return null;
+  if (d.earlier && d.earlier.answers === 1) return { kind: "earlier", ...d.earlier };
+  if (d.answered_like) return { kind: "like", ...d.answered_like };
+  return state.lastAnswer ? { kind: "last", ...state.lastAnswer } : null;
+}
+
 function renderLike(d) {
   const hint = $("like-hint");
-  const open = d.status === "pending" || d.status === "skipped";
-  const like = open ? d.answered_like : null;
-  const last = open ? state.lastAnswer : null;
-  hint.hidden = !like && !last;
-  if (like) {
+  const a = repeatable(d);
+  const mixed = (d.status === "pending" || d.status === "skipped") && d.earlier && d.earlier.answers > 1;
+  hint.hidden = !a && !mixed;
+  if (mixed) {
+    hint.innerHTML = `⚠ Before the cards were rebuilt, this card's sightings had ${d.earlier.answers} different answers ` +
+      "(most of them <strong></strong>): check it, and use Multiple fish (M) if it mixes fish.";
+    hint.querySelector("strong").textContent = answerName(d.earlier);
+  } else if (a && a.kind === "earlier") {
+    hint.innerHTML = `Before the cards were rebuilt you answered <strong></strong> for ${a.sightings} of this card's ` +
+      `${a.of} sightings. <kbd>R</kbd> gives the whole card that answer.`;
+    hint.querySelector("strong").textContent = answerName(a);
+  } else if (a && a.kind === "like") {
     hint.innerHTML = `Looks like <a href="#"></a>, which you answered <strong></strong> ` +
-      `<span class="muted">(${pct(like.similarity)} alike)</span>. <kbd>R</kbd> gives it the same answer.`;
-    hint.querySelector("a").textContent = `#${like.card}`;
-    hint.querySelector("a").onclick = (e) => { e.preventDefault(); goToCard(like.card); };
-    hint.querySelector("strong").textContent = answerName(like);
-  } else if (last) {
+      `<span class="muted">(${pct(a.similarity)} alike)</span>. <kbd>R</kbd> gives it the same answer.`;
+    hint.querySelector("a").textContent = `#${a.card}`;
+    hint.querySelector("a").onclick = (e) => { e.preventDefault(); goToCard(a.card); };
+    hint.querySelector("strong").textContent = answerName(a);
+  } else if (a) {
     hint.innerHTML = `<span class="muted"><kbd>R</kbd>: same as your last answer, <strong></strong>.</span>`;
-    hint.querySelector("strong").textContent = answerName(last);
+    hint.querySelector("strong").textContent = answerName(a);
   }
 }
 
@@ -495,8 +511,7 @@ async function goToCard(id) {
 function repeatAnswer() {
   const d = state.detail;
   if (!d) return;
-  const open = d.status === "pending" || d.status === "skipped";
-  const a = open && d.answered_like ? d.answered_like : state.lastAnswer;
+  const a = repeatable(d) || (d.status === "pending" || d.status === "skipped" ? null : state.lastAnswer);
   if (!a) {
     message("Nothing to repeat yet: answer a card first.", "error");
     return;
