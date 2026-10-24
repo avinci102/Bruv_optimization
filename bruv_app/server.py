@@ -18,7 +18,8 @@ from . import imaging
 from .diagnostics import card_flags, closest_calls, pieces
 from .equipment import best_match, mark_equipment, rig_candidates
 from .export import export_project
-from .pipeline import extra_species, load_timeline, refresh_fish_guesses, species_labels
+from .families import family_of, rank_families
+from .pipeline import card_scores, extra_species, load_timeline, refresh_fish_guesses, species_labels
 from .store import REVIEWED, STATUSES, Project
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -83,6 +84,20 @@ def create_app(project_root: Path) -> FastAPI:
         if row is None:
             raise HTTPException(404, "No such fish")
         return row
+
+    def family_view(fish_id: int, top: int = 3) -> list[dict]:
+        """The model's top families for a card (families.py), each with its names by score
+        within the family, and the name that records just the family, if any."""
+        scored = card_scores(project, fish_id, settings)
+        if scored is None:
+            return []
+        labels, probs = scored
+        ranked = rank_families(labels, probs, family_of(project, labels))
+        return [
+            {"key": f.key, "name": f.name, "p": round(f.p, 4), "best": round(f.best, 4), "entry": f.entry,
+             "members": [[name, round(p, 4)] for name, p in f.members]}
+            for f in ranked[:top]
+        ]
 
     @app.get("/")
     def index():
@@ -218,6 +233,7 @@ def create_app(project_root: Path) -> FastAPI:
                 "pieces": piece_view,
                 "flags": [{"kind": x.kind, "text": x.text} for x in card_flags(project, fish_id, settings.merge_min_similarity, parts)],
                 "closest_calls": calls,
+                "families": family_view(fish_id),
                 "equipment": bool(review and review["details"] and json.loads(review["details"]).get("equipment")),
                 "rig": None if rig_match is None else {
                     "card": rig_match.ref_card, "overlap": round(rig_match.overlap, 2),

@@ -125,6 +125,15 @@ the audio track.
 `N` not a fish · `E` equipment · `S` skip · `←` `→` move between cards. Nothing is
 pre-selected.
 
+- **Guesses by family first** (the menu next to "Model guesses"; "by species" shows the
+  model's top three names instead). `1` `2` `3` pick a family: one with a single name
+  (unicornfish) is recorded at once; otherwise its names follow, best first. `1`–`9` pick
+  one, `F` records just the family ("grouper family", "unknown shark"), `Esc` goes back.
+  Families come from your template's groups (its type list); a mixed list such as
+  "species of interest" isn't one, so its names stand alone. They're ranked by their best
+  name's score, as species are. The export's `MaxN_by_family` sheet counts each family's
+  fish frame by frame, whether they were answered by species or by family.
+
 - **Cards that may hold more than one fish** show a warning box: two of the card's pieces
   look less alike than the joining rule asks, the pieces clearly favour different
   species, or the card holds two boxes in one frame. A **Pieces** row under the photo

@@ -165,6 +165,21 @@ def top_guesses(scored: tuple[list[str], np.ndarray] | None, k: int) -> list:
     return [[labels[i], round(float(probs[i]), 4)] for i in np.argsort(-probs)[:k]]
 
 
+def _card_crops(dets, settings: Settings) -> tuple[list, list]:
+    """A card's detections by crop quality, and the embedded ones its guesses use."""
+    ranked = sorted(dets, key=lambda d: (d["quality"] or 0.0), reverse=True)
+    return ranked, [d for d in ranked if d["embedding"] is not None][: settings.crops_per_fish]
+
+
+def card_scores(project: Project, fish_id: int, settings: Settings | None = None) -> tuple[list[str], np.ndarray] | None:
+    """The model's scores over every name for a card (its best crops' mean embedding)."""
+    _, embedded = _card_crops(project.fish_detections(fish_id), settings or project.load_settings())
+    if not embedded:
+        return None
+    emb = l2_normalize(np.mean([np.frombuffer(d["embedding"], np.float32) for d in embedded], axis=0))
+    return guess_scores(project, emb)
+
+
 def refresh_fish_guesses(project: Project, fish_id: int, settings: Settings | None = None) -> None:
     """Pick the best crop and recompute top-k guesses from cached embeddings (no model needed)."""
     settings = settings or project.load_settings()
@@ -172,8 +187,7 @@ def refresh_fish_guesses(project: Project, fish_id: int, settings: Settings | No
     if not dets:
         project.set_fish_guesses(fish_id, [], None)
         return
-    ranked = sorted(dets, key=lambda d: (d["quality"] or 0.0), reverse=True)
-    embedded = [d for d in ranked if d["embedding"] is not None][: settings.crops_per_fish]
+    ranked, embedded = _card_crops(dets, settings)
     guesses: list = []
     if embedded:
         emb = l2_normalize(np.mean([np.frombuffer(d["embedding"], np.float32) for d in embedded], axis=0))

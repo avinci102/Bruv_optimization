@@ -813,6 +813,46 @@ code was run on such a project.
 Many guesses sit close to a tie, so even JPEG loss tips a third of them. Which source is
 right more often needs answered cards.
 
+**Vinci's projects, frozen after the first answers (24 Oct).** Both review projects were
+processed before cards were frozen at build. Their cards as first built were rebuilt by
+re-running tracking and joining on a copy (same detections, embeddings and settings). Every
+card nobody had touched came out identical: 4,520 of 4,520 on the 44-minute video, and 230
+of 230 on the 2-minute clip. Those cards are now frozen in each project, with the tracker's
+link evidence and the merge's join evidence, plus a snapshot.
+
+The first fixes, scored against the cards as built:
+
+- 44-minute video: 8 fixes on 7 cards. Five cut inside one tracked piece, where the tracker
+  followed the wrong fish. Three separated pieces of different fish that had been joined:
+  unicornfish-looking pieces that the species model can't tell apart.
+- No card warning had flagged those 7 cards. But at 4 of the 6 places where a tracked piece
+  was cut, the tracker's record had marked that link as one of the card's two closest calls.
+- Close calls are too common to flag (about 1 link in 9, on 519 of 706 cards with links).
+  Showing each card's closest call is the useful form.
+- 2-minute clip: the warnings caught 2 of its 3 joining errors.
+
+**Families first (24 Oct).** Vinci asked whether identifying the family first, then the
+species, would help. Measured with the model's own scores:
+
+| | Exact answer | Family of the top guess | Family by adding up its names |
+|---|---|---|---|
+| 26 answered cards | 21 | 22 | 22 |
+| Answer key, grouper sightings (29) | 0 | 13 | 17 |
+| Answer key, snapper sightings (20) | 0 | 2 | 2 |
+| Answer key, parrotfish sightings (6) | 0 | 0 | 0 |
+
+- Most answers so far are already family-level names (unicornfish, butterflyfish), so for
+  them the species and the family are the same.
+- Adding up a family's names helps groupers, but on cards the model is unsure of, long lists
+  win by their length: sharks or rays became the top family for 64 of the 962 cards not tiny.
+  So families are ranked by their best name.
+- Snappers and parrotfish go unrecognised either way: the model names other families for
+  them, which only a better model, better prompts or better crops can change.
+- The review page offers the family-first step (`families.py`). The export counts MaxN per
+  family, frame by frame.
+- Next to try (E8): ask the model about family names directly, rather than adding up
+  species.
+
 **Next, and what each needs**
 
 - **Annotated footage.** The review's design is 12 deployments, a 20 s random window and

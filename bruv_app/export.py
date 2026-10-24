@@ -41,6 +41,7 @@ MAXN_HEADER = [
     "first_arrival_s",
     "review",  # "complete", or "provisional" while cards are still unanswered
 ]
+FAMILY_MAXN_HEADER = ["family", "maxn", "clip_maxn", "time_maxn", "clip_first_seen", "time_first_seen", "names", "review"]
 STATUS_HEADER = ["item", "value"]
 BY_MINUTE_HEADER = ["minute", "clip", "from", "detections", "counted", "not_fish", "unreviewed", "unreviewed_tiny"]
 CHECKS_HEADER = ["check", "label", "clip", "time", "detections", "cards", "on_maxn_frame"]
@@ -220,6 +221,7 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
             [m.species, m.maxn, clip_m, seconds_to_time(t_m), clip_f, seconds_to_time(t_f),
              round(m.first_t - settings.start_s, 1), "complete" if complete else "provisional"]
         )
+    family_rows = family_maxn(project, labels, detections, timeline, complete)
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     if out_path is None:
@@ -280,6 +282,7 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
     export_workbook(
         info, out_path, record_rows, MAXN_HEADER, maxn_rows, DETAILS_HEADER, details_rows,
         {
+            "MaxN_by_family": (FAMILY_MAXN_HEADER, family_rows),
             "review_status": (STATUS_HEADER, status_rows),
             "review_by_minute": (BY_MINUTE_HEADER, minute_rows),
             "checks": (CHECKS_HEADER, checks),
@@ -289,6 +292,30 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
     )
     project.set_meta("last_export", str(out_path))
     return out_path
+
+
+def family_maxn(project: Project, labels: dict[int, str], detections, timeline, complete: bool) -> list[list]:
+    """MaxN per family (families.py): each frame's fish counted by their family first, then
+    the most at once. Answers at species and at family level ("grouper family") count
+    together, and never by adding up the species' own MaxN, which can come from different
+    moments."""
+    from .families import display_name, family_entry, family_of  # noqa: PLC0415
+
+    names = sorted({key for key in labels.values() if key != UNKNOWN})
+    family = family_of(project, names)
+    members: dict[str, list[str]] = defaultdict(list)
+    for name in names:
+        members[family[name]].append(name)
+    by_card = {fid: family[key] for fid, key in labels.items() if key != UNKNOWN}
+    rows = []
+    for m in compute_maxn(per_frame_counts(detections, by_card)):
+        clip_m, t_m = timeline.locate(m.t_maxn)
+        clip_f, t_f = timeline.locate(m.first_t)
+        rows.append([
+            display_name(m.species, family_entry(members[m.species], m.species)), m.maxn, clip_m, seconds_to_time(t_m),
+            clip_f, seconds_to_time(t_f), "; ".join(members[m.species]), "complete" if complete else "provisional",
+        ])
+    return rows
 
 
 def review_status(project, settings, fish_rows, fish_dets, counted, scopes) -> tuple[list, list, bool]:
