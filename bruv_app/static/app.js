@@ -25,6 +25,7 @@ function loadGuessMode() {
 }
 
 const NOT_IN_TEMPLATE = "not in template";
+const SURE_ALIKE = 0.9;  // look-alikes this alike start ticked in the L grid
 const EXTRA_HINT = "Not in the template's species list: exported as its 'other' entry, with this name in the comment.";
 
 const STATUS_TEXT = {
@@ -174,7 +175,9 @@ function showProgress() {
 }
 
 async function init() {
-  await Promise.all([loadSummary(), loadCards(), loadRig()]);
+  await Promise.all([loadSummary(), loadCards()]);
+  // The equipment queue can take a few seconds on a long video: it follows when ready.
+  loadRig().then(() => { updateFilterCounts(); updateRigBar(); });
   const dd = state.summary.dropdowns;
   state.template = new Set(dd.species || []);
   state.other = (dd.species || []).find((s) => s.trim().toLowerCase().startsWith("other")) || null;
@@ -546,7 +549,8 @@ function updateLikeBar() {
 
 // A grid of pictures over the page. Tickable: click to untick a card that differs.
 function openGrid({ title, hint, items, tickable = false, okText = null, onOk = null }) {
-  state.grid = { items, onOk, okText, ticked: new Set(tickable ? items.filter((i) => !i.flagged).map((i) => i.id) : []) };
+  const start = tickable ? items.filter((i) => !i.flagged && i.ticked !== false) : [];
+  state.grid = { items, onOk, okText, ticked: new Set(start.map((i) => i.id)) };
   $("grid-title").textContent = title;
   $("grid-hint").textContent = hint;
   const grid = $("grid");
@@ -596,10 +600,13 @@ function openLikeGrid() {
   const name = answerName(s);
   openGrid({
     title: `Cards that look like #${s.id}, which you answered ${name}`,
-    hint: "Most alike first. Click a picture to untick a card that isn't the same kind of fish; " +
-      "the ticked ones get the same answer, and you can undo it. Cards with warnings (orange) are left to answer one by one.",
+    hint: "Most alike first. Click a picture to untick a card that isn't the same kind of fish, or to tick one; " +
+      `cards less than ${pct(SURE_ALIKE)} alike start unticked. The ticked ones get the same answer, and you can undo it. ` +
+      "Cards with warnings (orange) are left to answer one by one.",
     items: s.cards.map((c) => ({
-      id: c.id, det: c.best_det, flagged: c.flagged,
+      // Ticked to start with when 0.90 alike or more: on Vinci's answers, 99.8% of answered
+      // cards that alike had the same answer, against 98.7% from 0.85. The rest start unticked.
+      id: c.id, det: c.best_det, flagged: c.flagged, ticked: c.similarity >= SURE_ALIKE,
       caption: `#${c.id} · ${c.clip} ${fmtTime(c.local_t)} · ${pct(c.similarity)} alike`,
     })),
     tickable: true,
