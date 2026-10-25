@@ -253,12 +253,22 @@ def cmd_model_test(args) -> None:
         raise ValueError(f"No project in {path}")
     project = Project.read_only(db)  # only read: the review page can stay open on it
     out = Path(args.out) if args.out else project.root / "model_test"
-    classifier = None
-    if args.model == "bioclip-2.5":
-        print("Loading BioCLIP 2.5 (3.9 GB, read from disk as needed)…")
-        classifier = BioClip25Classifier(device=project.load_settings().resolved_device())
+    device = project.load_settings().resolved_device()
+    classifiers = []
+    for name in args.model:
+        if name == "bioclip-2.5":
+            print("Loading BioCLIP 2.5 (3.9 GB, read from disk as needed)…")
+            classifiers.append(BioClip25Classifier(device=device))
+        elif name == "fishial":
+            from .fishial import FishialClassifier  # noqa: PLC0415
+
+            weights = Path(args.fishial) if args.fishial else model_cache() / "fishial-v0.10.2" / "extracted" / "model.pt"
+            if not weights.is_file():
+                raise ValueError(f"Fishial's model.pt isn't at {weights}: unzip classification_model_v0.10.2.zip "
+                                 "there, or pass --fishial")
+            classifiers.append(FishialClassifier(weights, device=device))
     with keep_awake():
-        result, saved = run(project, classifier, out, Path(args.key) if args.key else None, _progress())
+        result, saved = run(project, classifiers, out, Path(args.key) if args.key else None, _progress())
     print("\n".join(report_lines(result)))
     print(f"Saved {saved}")
 
@@ -546,8 +556,9 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("model-test", help="species models side by side on your answered cards")
     p.add_argument("--project", required=True, help="a project folder or snapshot .db (only read)")
-    p.add_argument("--model", choices=["bioclip-2.5", "none"], default="bioclip-2.5",
-                   help="the model to compare with today's (none: today's alone, plus your answers)")
+    p.add_argument("--model", nargs="+", choices=["bioclip-2.5", "fishial", "none"], default=["bioclip-2.5"],
+                   help="the models to compare with today's (none: today's alone, plus your answers)")
+    p.add_argument("--fishial", help="Fishial's model.pt (default: the app's model folder, fishial-v0.10.2/extracted)")
     p.add_argument("--key", help="the team's answer key (.xlsx), to score its clip_1 sightings too")
     p.add_argument("--out", help="folder for the saved embeddings and results (default: <project>/model_test)")
     p.set_defaults(func=cmd_model_test)
