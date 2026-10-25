@@ -962,8 +962,26 @@ arm, which never moves, answered card after card. Measured on those answers:
    BioCLIP 2 says tasselled wobbegong. It took 3.0 s a crop on this PC, against about 2 s
    for BioCLIP 2. Few cards, three families, and many cards of the same few fish: no
    reason here to switch models or to average them, while earlier answers lift either to
-   nearly every card. The answer key's grouper, snapper and parrotfish sightings are the
-   next check.
+   nearly every card.
+
+   On the answer key's clip_1 sightings, a sighting counts as found when a card on screen
+   then has the right family first. A median of 19 cards share the screen with a sighting,
+   so each model is set against what calling families at random, at its own rates, would
+   find:
+
+| Key sightings | BioCLIP 2 | by chance | BioCLIP 2.5 | by chance |
+|---|---|---|---|---|
+| Grouper (29) | 13 | 12 | 27 | 20 |
+| Snapper (21) | 3 | 4 | 9 | 7 |
+| Parrotfish (6) | 0 | 0 | 0 | 0 |
+
+   BioCLIP 2 does no better than chance on these families; BioCLIP 2.5 calls far more fish
+   groupers (53 of the 822 cards tested), and finds somewhat more grouper sightings than
+   chance would. Judged only by the card overlapping each sighting longest, BioCLIP 2.5
+   finds 5 of the 29 grouper sightings and BioCLIP 2 none. The key has no boxes, so it
+   can't say which card is the grouper: answered grouper and snapper cards are what would
+   settle it. BioCLIP 2.5 calls unicornfish "bumphead parrotfish" (11 cards) as BioCLIP 2
+   calls them "napoleon wrasse" (7). Embedding the 2,300 crops took about 10 s each here.
 
 **Rebuilt on a copy of the NP339 project** (the rules above, the answers carried):
 
