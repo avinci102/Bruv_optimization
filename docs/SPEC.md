@@ -687,9 +687,182 @@ along a drop, so ±50%):
 
 - a marker at a set distance (a rough size for fish near it, a real counting zone, and a
   visibility check);
-- the same camera settings on every drop: linear lens, stabilisation off, white balance
-  locked;
+- the same camera settings on every drop (stabilisation off, white balance locked), with
+  the lens or field-of-view mode recorded (`capture`). Whether a linear or dewarped mode
+  helps the model is untested, and it changes the area the counts cover (§13, E11);
 - a level, still rig, good light and a clean lens;
 - ropes and the bait arm away from the middle of the view (the detector took the bait arm
   for a fish 3 times on the first clip);
 - a slate or hand signal when the divers leave, which marks where the analysis starts.
+
+## 13. Accuracy foundations: the independent review (Oct 2026)
+
+An independent accuracy and architecture review (V2, 20 Oct 2026, of revision `859d1f2`)
+recommended keeping the architecture and strengthening parts of it, in five tasks, under
+mandatory scientific safeguards. It judged the earlier joining experiments (§12) weak
+evidence: halves of tracked stretches stood in for "the same fish", same-frame pairs for
+"different fish", all from one clip. So **no threshold, model or tracker changed here.**
+This section builds the tools to measure, and the safeguards. New defaults wait for
+annotated footage.
+
+**B0, the baseline:** the settings at `859d1f2`. That means 4 fps, frames decoded at 1280 px
+and saved at 960 px (JPEG 85), detector 0.30, the tracker and joining rules of §12, tiny
+fish under 40 px with no guesses, and 3 crops per piece, 5 per card, padding 0.1. Vinci's
+44-minute run used 55 px for tiny fish. Older versions, B0 among them, still open
+projects made by this one: a test pins the frames table to B0's columns, and B0's own
+code was run on such a project.
+
+**Found while building**
+
+- **Frame times after a resume were one step late** (0.25 s at 4 fps, 1 s at 1 fps). After
+  a seek, ffmpeg's fps filter numbered frames from the first one it decoded. Counts were
+  right; times, and any crop taken from the video, were not. Fixed (the filter is anchored
+  with `start_time`), and tested with a 29.97 fps video whose frames show their own
+  number. Vinci's three projects each ran in one go from the start, so theirs were right.
+- **The camera is a DJI Osmo Action 4**, not a GoPro: 2688 × 1512, 10-bit HEVC, 29.97 fps.
+  The 2-minute clip is a re-encode of it.
+- Decoding chosen frames from the long video stalled until its end (ffmpeg held the last
+  frame back), and ran a 16 GB PC out of memory alongside the species model. Both fixed.
+
+**Built, by the review's tasks**
+
+1. **A reproducible benchmark.**
+   - Every stage run is recorded (`runs`): settings, code version, the models by
+     fingerprint, and whether BioCLIP 2 or the colour-histogram stand-in ran.
+   - The footage is fingerprinted, giving a deployment id.
+   - Every frame keeps its source frame number (`frame_sources`).
+   - The cards as first built are frozen (`original_groups`).
+   - Processing ends with a read-only snapshot.
+   - An evaluation sidecar (`evaluate.py`) holds annotated boxes keyed by deployment and
+     source frame. It scores detection, tracking (A: changes of fish inside a piece) and
+     joining (B: wrong joins of pure pieces) separately, plus MaxN. Boxes are matched one
+     to one, and `score` now matches the same way.
+2. **Native-resolution crops.**
+   - `grab_frames` decodes exact source frames.
+   - `crop-test` (E1) compares A (the 960 px JPEG), A′ (the same frame without JPEG),
+     B (1280 px) and C (the original frame). Every arm uses the same sightings, boxes
+     and padding. Each crop is checked against the saved frame first.
+   - Results are split by native size, image position and tiny or not.
+   - Capture details (`capture`) record the camera, size, lens mode, stabilisation and
+     housing.
+   - The embedding cache key now names the weights, the model's input and the crop
+     source.
+   - E11 (correcting the lens) needs a calibration of this camera and housing, and isn't
+     done.
+3. **Continuity.**
+   - The tracker records each link's cost, its margin over the next-best option, and how
+     alike the box is to the track so far.
+   - The merge records every join it weighed (`merge_edges`, about 15,000 on the
+     44-minute video), with its evidence and decision.
+   - Cards get warnings (`diagnostics.py`): pieces less alike than a join needs (the A~B,
+     B~C, A unlike C chain), pieces that clearly disagree on species, or two boxes at once.
+     A flagged card is answered for all its pieces only after the reviewer confirms they
+     are one fish.
+   - `evaluate` reports changes of fish by link margin.
+   - The tracker's missed-time allowance is pinned by tests, unchanged. At 4 fps, 1.0 s
+     bridges 1.25 s; at 2.5 fps, 1.0 s rounds to 2 frames (1.2 s); at least one frame is
+     always allowed.
+4. **Equipment and detector threshold.**
+   - Equipment (`E`, `equipment.py`) becomes a reference, and look-alike cards are queued
+     for review. Only cards whose every sighting matches can be answered in one go;
+     batches can be undone.
+   - The detector keeps boxes down to 0.1 (`det_floor`), but only 0.30 and up are tracked.
+   - `evaluate --thresholds` draws detection curves without re-running the detector.
+5. **Labels.**
+   - Each answer keeps its scope, the detections it was given for, and counts only
+     those.
+   - The export reports how complete the review is, tiny fish apart, and marks MaxN
+     provisional until done. It also lists possible double counts.
+   - Record rows use their own `sighting_gap_s`, not the merge window.
+   - The library groups examples by recording and checks itself nested, with at least 3
+     recordings. Cards with unconfirmed warnings stay out of it.
+
+**The review's safeguards, and where they live**
+
+| Safeguard | Where |
+|---|---|
+| Detection, identity, grouping, label and abundance kept apart | detections and runs; `original_groups`; cards; `reviews` with scope; `metrics.py` |
+| Confirmation tied to a reviewed scope; a flagged card inspected first | `reviews.scope`; warnings and confirmation (`server.py`) |
+| One fish, one detection; no deduplication by card | `double_count_checks`; MaxN counts detections per frame |
+| Review completeness at export; hidden tiny fish not counted as reviewed | `review_status`, `review_by_minute`, provisional MaxN; the page's progress line |
+| Record-row grouping apart from merge tuning | `sighting_gap_s` |
+
+**First measurements on the 44-minute video** (exploratory, few answers)
+
+- **Warnings:** 83 of the 437 cards with several pieces (959 cards not tiny).
+  - 75 have pieces that look different.
+  - 29 have pieces that clearly disagree on species. Flagging any difference in top
+    guess would have marked 79; ordinary doubt between look-alikes (butterflyfish or
+    angelfish) was most of it.
+- **Equipment:** marking one bait-canister card queued 94 cards.
+  - The 70 that match throughout were all the canister.
+  - The 24 left out, each with sightings elsewhere or unlike the rig, included three
+    whose best view is a real fish joined onto a canister track, and a diver's hand.
+- **Alignment:** at 11 spots across the video, the saved review frame differed from its
+  own source frame by about 3 grey levels, and from the neighbouring frames by 4.0–4.6.
+  Its frame numbers are right.
+- **E1, 20 pieces (47 crops, all aligned), no answers yet:**
+
+| Crops from | Top guess differs from today's (crops) | (pieces) | Mean top score |
+|---|---|---|---|
+| A, review JPEG (today) | – | – | 0.58 |
+| A′, same 960 px frame, no JPEG | 15 of 47 | 4 of 20 | 0.59 |
+| B, 1280 px decode | 20 of 47 | 8 of 20 | 0.60 |
+| C, original 2688 px frame | 20 of 47 | 9 of 20 | 0.62 |
+
+Many guesses sit close to a tie, so even JPEG loss tips a third of them. Which source is
+right more often needs answered cards.
+
+**Vinci's projects, frozen after the first answers (24 Oct).** Both review projects were
+processed before cards were frozen at build. Their cards as first built were rebuilt by
+re-running tracking and joining on a copy (same detections, embeddings and settings). Every
+card nobody had touched came out identical: 4,520 of 4,520 on the 44-minute video, and 230
+of 230 on the 2-minute clip. Those cards are now frozen in each project, with the tracker's
+link evidence and the merge's join evidence, plus a snapshot.
+
+The first fixes, scored against the cards as built:
+
+- 44-minute video: 8 fixes on 7 cards. Five cut inside one tracked piece, where the tracker
+  followed the wrong fish. Three separated pieces of different fish that had been joined:
+  unicornfish-looking pieces that the species model can't tell apart.
+- No card warning had flagged those 7 cards. But at 4 of the 6 places where a tracked piece
+  was cut, the tracker's record had marked that link as one of the card's two closest calls.
+- Close calls are too common to flag (about 1 link in 9, on 519 of 706 cards with links).
+  Showing each card's closest call is the useful form.
+- 2-minute clip: the warnings caught 2 of its 3 joining errors.
+
+**Families first (24 Oct).** Vinci asked whether identifying the family first, then the
+species, would help. Measured with the model's own scores:
+
+| | Exact answer | Family of the top guess | Family by adding up its names |
+|---|---|---|---|
+| 26 answered cards | 21 | 22 | 22 |
+| Answer key, grouper sightings (29) | 0 | 13 | 17 |
+| Answer key, snapper sightings (20) | 0 | 2 | 2 |
+| Answer key, parrotfish sightings (6) | 0 | 0 | 0 |
+
+- Most answers so far are already family-level names (unicornfish, butterflyfish), so for
+  them the species and the family are the same.
+- Adding up a family's names helps groupers, but on cards the model is unsure of, long lists
+  win by their length: sharks or rays became the top family for 64 of the 962 cards not tiny.
+  So families are ranked by their best name.
+- Snappers and parrotfish go unrecognised either way: the model names other families for
+  them, which only a better model, better prompts or better crops can change.
+- The review page offers the family-first step (`families.py`). The export counts MaxN per
+  family, frame by frame.
+- Next to try (E8): ask the model about family names directly, rather than adding up
+  species.
+
+**Next, and what each needs**
+
+- **Annotated footage.** The review's design is 12 deployments, a 20 s random window and
+  a 20 s challenge window each, split by deployment before any tuning. A page to draw
+  missed fish's boxes would make the sidecar practical; `annotation-sheet` starts one
+  from a run's boxes.
+- **Experiments E2–E4** (tracker and joining sweeps), card-level E6 (re-tracking at each
+  threshold) and E10 (detector sizes), on those annotations.
+- **E8:** taxonomy (stable taxon ids and ranks), abstention and calibration. Needs the
+  template's species list and labelled examples.
+- **E9:** review tiers, tested with reviewers.
+- **E11:** a lens calibration for the camera and housing.
+- Later: confusion and error-factor tables, once there are enough verified examples.

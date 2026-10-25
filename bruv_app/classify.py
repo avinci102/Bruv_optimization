@@ -8,6 +8,7 @@ recomputed (after a split or merge) without loading the model again.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -87,6 +88,7 @@ class BioClip2Classifier:
             ) from exc
         self.torch = torch
         self.device = device
+        self.weights_path = None
         # "squash" resizes the whole crop to 224x224, as Imageomics' pybioclip does; the
         # default centre crop would cut the head and tail off a long, thin fish.
         try:
@@ -126,7 +128,8 @@ class BioClip2Classifier:
                 )
         finally:
             logging.getLogger().removeFilter(quiet)
-        weights, mapping = map_safetensors(download_pretrained_from_hf(self.MODEL_ID.removeprefix("hf-hub:")))
+        self.weights_path = download_pretrained_from_hf(self.MODEL_ID.removeprefix("hf-hub:"))
+        weights, mapping = map_safetensors(self.weights_path)
         model.load_state_dict(weights, strict=True, assign=True)
         # The one tensor not in the checkpoint: the text tower's causal mask, built as in
         # open_clip's build_causal_mask (-inf above the diagonal).
@@ -136,6 +139,20 @@ class BioClip2Classifier:
         if left:
             raise RuntimeError(f"not in the checkpoint: {', '.join(left)}")
         return model, preprocess, mapping
+
+    def describe(self) -> dict:  # pragma: no cover - needs weights
+        """For run records: the model, the exact weights revision and file, and the device."""
+        from .provenance import fingerprint  # noqa: PLC0415
+
+        path = Path(self.weights_path) if self.weights_path else None
+        return {
+            "name": self.name,
+            "model": self.MODEL_ID,
+            "revision": path.parent.name if path and path.parent.parent.name == "snapshots" else None,
+            "weights": fingerprint(path) if path and path.exists() else None,
+            "device": self.device,
+            "input": "224x224 squash",
+        }
 
     def _encode_short(self, tokens):  # pragma: no cover - needs weights
         """encode_text over the prompts' own length instead of the full 77-token context.

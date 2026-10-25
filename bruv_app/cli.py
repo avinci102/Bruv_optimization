@@ -112,12 +112,20 @@ def cmd_process(args) -> None:
 
 def print_library_check(project) -> None:
     """Say whether your library of confirmed examples now shapes this project's guesses."""
+    from .learn import MIN_GROUPS  # noqa: PLC0415
+
     result = project.get_meta("library_check") or {}
     if not result.get("examples"):
         return
-    used = "so guesses use it" if result["weight"] else "so guesses don't use it yet"
-    print(f"Your library, guessing {result['examples']} examples from other videos: the species model alone "
-          f"got {result['zero_shot']:.0%}, with the library {result['blended']:.0%}, {used}.")
+    groups = result.get("groups", 0)
+    if result["weight"]:
+        used = "so guesses use it"
+    elif groups < MIN_GROUPS:
+        used = f"but it needs examples from at least {MIN_GROUPS} recordings before guesses can use it"
+    else:
+        used = "so guesses don't use it yet"
+    print(f"Your library, guessing {result['examples']} examples each from the other recordings ({groups} in all): "
+          f"the species model alone got {result['zero_shot']:.0%}, with the library {result['blended']:.0%}, {used}.")
 
 
 def cmd_learn(args) -> None:
@@ -136,11 +144,12 @@ def cmd_learn(args) -> None:
     if args.remove:
         print(f"Removed {remove_source(str(Path(args.remove).resolve()))} examples")
     library = Library.load()
-    print(f"Library: {len(library.label)} examples ({library_path()})")
+    print(f"Library: {len(library.label)} examples from {len(set(library.group.tolist()))} recordings ({library_path()})")
     for source, counts in library.summary().items():
         print(f"  {source}: " + ", ".join(f"{label} {n}" for label, n in sorted(counts.items())))
-    print("A project's guesses use the library once it beats the species model alone on videos it")
-    print("didn't learn from. Running process on a project refreshes its guesses; reviews stay.")
+    print("A project's guesses use the library once it beats the species model alone on recordings it")
+    print("didn't learn from (copies of one recording count once). Running process on a project")
+    print("refreshes its guesses; reviews stay.")
 
 
 def serve(root: Path, port: int, open_browser: bool) -> None:
@@ -165,6 +174,88 @@ def cmd_export(args) -> None:
 
     path = export_project(Project(Path(args.project)), Path(args.out) if args.out else None)
     print(f"Saved {path}")
+
+
+def cmd_capture(args) -> None:
+    from .pipeline import record_videos  # noqa: PLC0415
+
+    project = _open_project(args.project)
+    record_videos(project)  # what the file itself says about the camera, if not yet kept
+    capture = project.get_meta("capture") or {}
+    for key in ("lens", "stabilization", "housing", "notes"):
+        if getattr(args, key) is not None:
+            capture[key] = getattr(args, key)
+    project.set_meta("capture", capture)
+    print("How this footage was shot:")
+    for key, value in capture.items():
+        print(f"  {key}: {value}")
+
+
+def cmd_crop_test(args) -> None:
+    from .classify import make_classifier  # noqa: PLC0415
+    from .crops import run, summary_lines  # noqa: PLC0415
+
+    project = _open_project(args.project)
+    settings = project.load_settings()
+    classifier = make_classifier(settings, settings.resolved_device())
+    if classifier.name != project.get_meta("classifier"):
+        raise RuntimeError(
+            f"The species model loaded as {classifier.name}, but the project was scored with "
+            f"{project.get_meta('classifier')}; the comparison needs the same model"
+        )
+    summary, out = run(project, classifier, tiny=args.tiny, limit=args.limit, progress=_progress())
+    print("\n".join(summary_lines(summary)))
+    print(f"Saved {out}")
+
+
+def cmd_snapshot(args) -> None:
+    from .store import Project  # noqa: PLC0415
+
+    root = Path(args.project)
+    if not (root / "project.db").exists():
+        raise ValueError(f"No project in {root}")
+    print(f"Saved a frozen, read-only copy of the results: {Project(root).snapshot(args.label)}")
+
+
+def _open_project(source: str):
+    """A project folder, or a snapshot (.db) opened read-only."""
+    from .store import Project  # noqa: PLC0415
+
+    path = Path(source)
+    if path.suffix.lower() == ".db" and path.is_file():
+        return Project.read_only(path)
+    if not (path / "project.db").exists():
+        raise ValueError(f"No project in {path}")
+    return Project(path)
+
+
+def cmd_evaluate(args) -> None:
+    from .evaluate import evaluate_project, read_sidecar, threshold_curve  # noqa: PLC0415
+
+    project = _open_project(args.project)
+    boxes = read_sidecar(Path(args.annotations))
+    print("\n".join(evaluate_project(project, boxes).lines()))
+    if args.thresholds:
+        print("Detection at other score thresholds (the run's own boxes; tracks and cards not re-run):")
+        for p in threshold_curve(project, boxes, args.thresholds):
+            print(f"  {p.threshold:.2f}: {p.kept} boxes kept; annotated frames: {p.matched} fish found, "
+                  f"{p.missed} missed, {p.false} false; precision {p.precision:.0%}, recall {p.recall:.0%}")
+
+
+def cmd_annotation_sheet(args) -> None:
+    from .evaluate import annotation_sheet, write_sidecar  # noqa: PLC0415
+
+    windows = []
+    for w in args.window:
+        try:
+            start, end = (float(x) for x in w.split("-"))
+        except ValueError as exc:
+            raise ValueError(f"A window is two times in seconds, like 600-620 (got {w})") from exc
+        windows.append((start, end))
+    rows = annotation_sheet(_open_project(args.project), windows)
+    path = write_sidecar(Path(args.out), rows)
+    frames = len({(r.chapter, r.src_index) for r in rows})
+    print(f"Saved {path}: {len(rows)} rows over {frames} frames, all 'unchecked' until annotated")
 
 
 def cmd_score(args) -> None:
@@ -362,6 +453,38 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", required=True, help="the project to score (e.g. re-run with new rules)")
     p.add_argument("--answers", required=True, help="a copy of the same project with reviewed cards")
     p.set_defaults(func=cmd_score)
+
+    p = sub.add_parser("evaluate", help="score a project (or a snapshot) against independent annotations")
+    p.add_argument("--project", required=True, help="a project folder, or a snapshot .db")
+    p.add_argument("--annotations", required=True, help="the evaluation sidecar (.csv)")
+    p.add_argument("--thresholds", nargs="+", type=float, metavar="T",
+                   help="also score detection at these score thresholds, e.g. 0.1 0.2 0.3 0.4 0.5")
+    p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("annotation-sheet", help="start an evaluation sidecar from a project's frames")
+    p.add_argument("--project", required=True)
+    p.add_argument("--window", nargs="+", required=True, metavar="START-END", help="seconds, e.g. 600-620")
+    p.add_argument("--out", required=True, help="the .csv to write")
+    p.set_defaults(func=cmd_annotation_sheet)
+
+    p = sub.add_parser("capture", help="record how the footage was shot (lens mode, stabilisation, housing)")
+    p.add_argument("--project", required=True)
+    p.add_argument("--lens", help="lens or field-of-view mode as set on the camera, e.g. wide, linear, standard/dewarp")
+    p.add_argument("--stabilization", help="e.g. off, on, horizon lock")
+    p.add_argument("--housing", help="e.g. none, flat port, dome port")
+    p.add_argument("--notes")
+    p.set_defaults(func=cmd_capture)
+
+    p = sub.add_parser("crop-test", help="E1: compare crops from the review JPEG, 1280 px and source frames")
+    p.add_argument("--project", required=True)
+    p.add_argument("--limit", type=int, help="pieces to test, spread over the video (default: all)")
+    p.add_argument("--tiny", action="store_true", help="include tiny pieces (reported apart)")
+    p.set_defaults(func=cmd_crop_test)
+
+    p = sub.add_parser("snapshot", help="freeze a read-only copy of a project's results (e.g. before review)")
+    p.add_argument("--project", required=True)
+    p.add_argument("--label", default="manual", help="a word or two saying why, e.g. before-review")
+    p.set_defaults(func=cmd_snapshot)
 
     p = sub.add_parser("learn", help="your library of confirmed fish, which can sharpen the guesses")
     p.add_argument("--add", nargs="+", metavar="PROJECT", help="add a reviewed project's confirmed cards")

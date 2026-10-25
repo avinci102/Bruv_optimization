@@ -70,6 +70,7 @@ class RFDETRDetector:
         weights = Path(weights)
         if not weights.exists():
             raise FileNotFoundError(f"Detector weights not found: {weights}")
+        self.weights = weights
         self.threshold = threshold
         try:  # pragma: no cover - needs weights
             self.model = rfdetr.from_checkpoint(str(weights), device=device)
@@ -92,6 +93,17 @@ class RFDETRDetector:
                 ) from exc
             raise
         self.name = f"cfd-rfdetr:{weights.name}@{self.model.model_config.resolution}"
+
+    def describe(self) -> dict:  # pragma: no cover - needs weights
+        """For run records: the exact weights (by fingerprint), resolution and threshold."""
+        from .provenance import fingerprint  # noqa: PLC0415
+
+        return {
+            "name": self.name,
+            "weights": fingerprint(self.weights),
+            "resolution": self.model.model_config.resolution,
+            "threshold": self.threshold,
+        }
 
     def detect(self, images: list[np.ndarray]) -> list[list[Detection]]:  # pragma: no cover
         # Equivalent to CFD's rf_detr_batch_inference.py (CFD passes PIL images; uint8 RGB
@@ -170,5 +182,6 @@ def make_detector(settings, device: str) -> Detector:
                 "No detector weights set. Download a Community Fish Detector RF-DETR .pth "
                 "(Nano for CPU) and pass --weights."
             )
-        return RFDETRDetector(Path(settings.detector_weights), settings.det_threshold, device)
+        # Keep boxes down to the floor; tracking uses only those at the threshold.
+        return RFDETRDetector(Path(settings.detector_weights), min(settings.det_floor, settings.det_threshold), device)
     raise ValueError(f"Unknown detector: {settings.detector}")

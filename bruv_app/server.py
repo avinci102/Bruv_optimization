@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -14,8 +15,11 @@ from PIL import Image
 from pydantic import BaseModel
 
 from . import imaging
+from .diagnostics import card_flags, closest_calls, pieces
+from .equipment import best_match, mark_equipment, rig_candidates
 from .export import export_project
-from .pipeline import extra_species, load_timeline, refresh_fish_guesses, species_labels
+from .families import family_of, rank_families
+from .pipeline import card_scores, extra_species, load_timeline, refresh_fish_guesses, species_labels
 from .store import REVIEWED, STATUSES, Project
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -29,6 +33,20 @@ class LabelIn(BaseModel):
     sex: str | None = None
     behavior: str | None = None
     comment: str | None = None
+    # The reviewer has checked the card's warnings (diagnostics.py) and it is one fish.
+    confirm: bool = False
+
+
+class EquipmentIn(BaseModel):
+    confirm: bool = False
+
+
+class BatchIn(BaseModel):
+    ids: list[int]
+
+
+class UndoIn(BaseModel):
+    batch: str
 
 
 class SplitIn(BaseModel):
@@ -66,6 +84,20 @@ def create_app(project_root: Path) -> FastAPI:
         if row is None:
             raise HTTPException(404, "No such fish")
         return row
+
+    def family_view(fish_id: int, top: int = 3) -> list[dict]:
+        """The model's top families for a card (families.py), each with its names by score
+        within the family, and the name that records just the family, if any."""
+        scored = card_scores(project, fish_id, settings)
+        if scored is None:
+            return []
+        labels, probs = scored
+        ranked = rank_families(labels, probs, family_of(project, labels))
+        return [
+            {"key": f.key, "name": f.name, "p": round(f.p, 4), "best": round(f.best, 4), "entry": f.entry,
+             "members": [[name, round(p, 4)] for name, p in f.members]}
+            for f in ranked[:top]
+        ]
 
     @app.get("/")
     def index():
@@ -151,6 +183,25 @@ def create_app(project_root: Path) -> FastAPI:
                 )
             clip_in, t_in = timeline.locate(f["start_t"])
             clip_out, t_out = timeline.locate(f["end_t"])
+            parts = pieces(project, fish_id)
+            review = project.last_review(fish_id)
+            rig_match = (
+                best_match(dets, project.rig_refs(), settings.merge_min_colour)
+                if f["status"] in ("pending", "skipped") else None
+            )
+            piece_view = []
+            for p in parts:
+                clip, local = timeline.locate(p.start_t)
+                piece_view.append({
+                    "tracklet": p.tracklet, "clip": clip, "local_t": local, "seconds": p.end_t - p.start_t,
+                    "detections": p.detections, "best_det": p.best_det, "guesses": p.guesses,
+                })
+            calls = []
+            for c in closest_calls(project, fish_id):
+                clip, local = timeline.locate(c["t"])
+                calls.append({"det_id": c["det_id"], "frame_id": c["frame_id"], "t": c["t"], "clip": clip,
+                              "local_t": local, "box": _box(c), "margin": round(c["link_margin"], 3),
+                              "history": None if c["history_sim"] is None else round(c["history_sim"], 3)})
             best_view = None
             if best is not None:
                 best_clip, best_local = timeline.locate(best["t"])
@@ -179,6 +230,16 @@ def create_app(project_root: Path) -> FastAPI:
                 "tracklets": project.fish_tracklets(fish_id),
                 "best": best_view,
                 "filmstrip": strip,
+                "pieces": piece_view,
+                "flags": [{"kind": x.kind, "text": x.text} for x in card_flags(project, fish_id, settings.merge_min_similarity, parts)],
+                "closest_calls": calls,
+                "families": family_view(fish_id),
+                "equipment": bool(review and review["details"] and json.loads(review["details"]).get("equipment")),
+                "rig": None if rig_match is None else {
+                    "card": rig_match.ref_card, "overlap": round(rig_match.overlap, 2),
+                    "colour": None if rig_match.colour is None else round(rig_match.colour, 2),
+                    "odd": rig_match.odd,
+                },
             }
 
     @app.post("/api/fish/{fish_id}/label")
@@ -188,10 +249,75 @@ def create_app(project_root: Path) -> FastAPI:
             species_list = species_labels(project)  # the template's list plus the extra names
             if body.status == "species" and species_list and body.species not in species_list:
                 raise HTTPException(400, "Pick a species from the list")
+            # One answer for every piece of a flagged card only once the reviewer confirms
+            # they're one fish; the confirmation is kept with the answer.
+            flags = card_flags(project, fish_id, settings.merge_min_similarity) if body.status in REVIEWED else []
+            if flags and not body.confirm:
+                raise HTTPException(
+                    409, "Check this card first: " + " ".join(x.text for x in flags)
+                    + " Answer again to confirm it's one fish, or use Multiple fish.",
+                )
+            details = {"flags": [x.kind for x in flags], "confirmed": True} if flags else None
             try:
-                project.label_fish(fish_id, body.status, **body.model_dump(exclude={"status"}))
+                project.label_fish(fish_id, body.status, details, **body.model_dump(exclude={"status", "confirm"}))
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+            return {"ok": True}
+
+    # --- equipment (equipment.py): marked by the reviewer, look-alikes queued, never auto-removed
+
+    @app.post("/api/fish/{fish_id}/equipment")
+    def equipment(fish_id: int, body: EquipmentIn):
+        with lock:
+            get_fish(fish_id)
+            flags = card_flags(project, fish_id, settings.merge_min_similarity)
+            if flags and not body.confirm:
+                raise HTTPException(409, "Check this card first: " + " ".join(x.text for x in flags))
+            return {"ref": mark_equipment(project, fish_id)}
+
+    @app.get("/api/rig")
+    def rig():
+        with lock:
+            found = rig_candidates(project, settings.merge_min_colour)
+            return {
+                "refs": [{"id": r["id"], "card": r["fish_id"]} for r in project.rig_refs()],
+                "candidates": {
+                    fid: {"ref": m.ref, "card": m.ref_card, "overlap": round(m.overlap, 2),
+                          "colour": None if m.colour is None else round(m.colour, 2), "odd": m.odd}
+                    for fid, m in found.items()
+                },
+            }
+
+    @app.post("/api/rig/mark")
+    def rig_mark(body: BatchIn):
+        """Answer queued cards as equipment together. A card with sightings unlike the rig (a
+        fish joined on?) or with warnings is left to check one by one."""
+        with lock:
+            found = rig_candidates(project, settings.merge_min_colour)
+            batch = datetime.now(timezone.utc).strftime("rig-%Y%m%dT%H%M%S%f")
+            marked, left = [], []
+            for fid in body.ids:
+                if fid not in found:
+                    continue
+                if found[fid].odd or card_flags(project, fid, settings.merge_min_similarity):
+                    left.append(fid)
+                    continue
+                mark_equipment(project, fid, batch, found[fid])
+                marked.append(fid)
+            return {"batch": batch, "marked": marked, "left": left}
+
+    @app.post("/api/rig/undo")
+    def rig_undo(body: UndoIn):
+        with lock:
+            ids = project.reviews_in_batch(body.batch)
+            for fid in ids:
+                project.label_fish(fid, "pending")
+            return {"undone": ids}
+
+    @app.post("/api/rig/{ref_id}/forget")
+    def rig_forget(ref_id: int):
+        with lock:
+            project.forget_rig_ref(ref_id)
             return {"ok": True}
 
     @app.post("/api/fish/{fish_id}/split")
