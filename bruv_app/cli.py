@@ -208,6 +208,71 @@ def cmd_crop_test(args) -> None:
     print(f"Saved {out}")
 
 
+def cmd_rebuild(args) -> None:
+    from .pipeline import Pipeline  # noqa: PLC0415
+    from .store import Project  # noqa: PLC0415
+
+    root = Path(args.project)
+    if not (root / "project.db").exists():
+        raise ValueError(f"No project in {root}")
+    project = Project(root)
+    settings = project.load_settings()
+    if args.latest_rules:
+        defaults = Settings()
+        for key in ("still_filter", "still_min_width", "still_max_change", "still_window_s",
+                    "track_max_missed_s", "track_refuse_contested"):
+            setattr(settings, key, getattr(defaults, key))
+    if args.track_gap is not None:
+        settings.track_max_missed_s = args.track_gap
+    project.save_settings(settings)
+    before = len(project.all_fish())
+    print(f"Rebuilding {before} cards: still objects {'hidden' if settings.still_filter else 'tracked'}, "
+          f"tracks bridge {settings.track_max_missed_s:g} s"
+          + (", contested links refused" if settings.track_refuse_contested else "") + "…")
+    with keep_awake():
+        report = Pipeline(project, progress=_progress()).rebuild()
+    print(f"Done: {len(project.all_fish())} cards (was {before}); {project.get_meta('still_hidden', 0)} "
+          "sightings hidden as still objects.")
+    print(f"  {report['carried']} cards got your earlier answer (all their sightings had it)")
+    print(f"  {report['partly_answered']} hold answered and new sightings, {report['conflicting']} mix "
+          "different answers: both left for you")
+    if report["hidden_answered_fish"]:
+        print(f"  {report['hidden_answered_fish']} sightings you answered as fish are now hidden as still: "
+              "check them on the review page (Hidden still objects)")
+    print("The cards before and after are frozen in snapshots/.")
+
+
+def cmd_model_test(args) -> None:
+    from .classify import BioClip25Classifier  # noqa: PLC0415
+    from .modeltest import report_lines, run  # noqa: PLC0415
+    from .store import Project  # noqa: PLC0415
+
+    path = Path(args.project)
+    db = path if path.suffix.lower() == ".db" else path / "project.db"
+    if not db.is_file():
+        raise ValueError(f"No project in {path}")
+    project = Project.read_only(db)  # only read: the review page can stay open on it
+    out = Path(args.out) if args.out else project.root / "model_test"
+    device = project.load_settings().resolved_device()
+    classifiers = []
+    for name in args.model:
+        if name == "bioclip-2.5":
+            print("Loading BioCLIP 2.5 (3.9 GB, read from disk as needed)…")
+            classifiers.append(BioClip25Classifier(device=device))
+        elif name == "fishial":
+            from .fishial import FishialClassifier  # noqa: PLC0415
+
+            weights = Path(args.fishial) if args.fishial else model_cache() / "fishial-v0.10.2" / "extracted" / "model.pt"
+            if not weights.is_file():
+                raise ValueError(f"Fishial's model.pt isn't at {weights}: unzip classification_model_v0.10.2.zip "
+                                 "there, or pass --fishial")
+            classifiers.append(FishialClassifier(weights, device=device))
+    with keep_awake():
+        result, saved = run(project, classifiers, out, Path(args.key) if args.key else None, _progress())
+    print("\n".join(report_lines(result)))
+    print(f"Saved {saved}")
+
+
 def cmd_snapshot(args) -> None:
     from .store import Project  # noqa: PLC0415
 
@@ -480,6 +545,23 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--limit", type=int, help="pieces to test, spread over the video (default: all)")
     p.add_argument("--tiny", action="store_true", help="include tiny pieces (reported apart)")
     p.set_defaults(func=cmd_crop_test)
+
+    p = sub.add_parser("rebuild", help="remake a reviewed project's cards and keep its answers")
+    p.add_argument("--project", required=True)
+    p.add_argument("--latest-rules", action="store_true",
+                   help="adopt the current defaults: still objects hidden, short tracks, contested links refused")
+    p.add_argument("--track-gap", type=float, metavar="SECONDS",
+                   help="how long a fish may go unseen and keep its track (0.25 at 4 fps: one frame)")
+    p.set_defaults(func=cmd_rebuild)
+
+    p = sub.add_parser("model-test", help="species models side by side on your answered cards")
+    p.add_argument("--project", required=True, help="a project folder or snapshot .db (only read)")
+    p.add_argument("--model", nargs="+", choices=["bioclip-2.5", "fishial", "none"], default=["bioclip-2.5"],
+                   help="the models to compare with today's (none: today's alone, plus your answers)")
+    p.add_argument("--fishial", help="Fishial's model.pt (default: the app's model folder, fishial-v0.10.2/extracted)")
+    p.add_argument("--key", help="the team's answer key (.xlsx), to score its clip_1 sightings too")
+    p.add_argument("--out", help="folder for the saved embeddings and results (default: <project>/model_test)")
+    p.set_defaults(func=cmd_model_test)
 
     p = sub.add_parser("snapshot", help="freeze a read-only copy of a project's results (e.g. before review)")
     p.add_argument("--project", required=True)

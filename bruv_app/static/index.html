@@ -13,6 +13,7 @@
     <span id="project" class="muted"></span>
     <div class="progress" title="Cards reviewed"><div id="bar"></div></div>
     <span id="progress-text">0 of 0 reviewed</span>
+    <button id="still-note" class="linkish" hidden title="Boxes that matched the scene's background the whole time (the bait arm, canister, rope, rocks). They make no cards and aren't counted. Click to check them."></button>
     <label class="toggle" title="Pending: not reviewed yet. Skipped: put off for later. Reviewed: recorded as a species, unknown fish or not a fish.">Status
       <select id="status">
         <option value="pending">Pending</option>
@@ -35,6 +36,7 @@
       <select id="sort">
         <option value="size">biggest fish first</option>
         <option value="time">in time order</option>
+        <option value="group">look-alikes together</option>
       </select>
     </label>
     <button id="export" class="primary">Export to Excel</button>
@@ -84,6 +86,11 @@
         <button id="rig-undo" hidden>Undo</button>
       </div>
       <div id="flags" class="flags" hidden></div>
+      <div id="like-hint" class="like-hint" hidden></div>
+      <div id="like-batch" class="rig-batch" hidden>
+        <button id="like-open" title="See the unanswered cards that look like the card you just answered, and answer the ones you leave ticked the same way">Answer look-alikes together <kbd>L</kbd></button>
+        <button id="like-undo" hidden>Undo</button>
+      </div>
 
       <div class="guess-head">
         <h2>Model guesses</h2>
@@ -124,9 +131,22 @@
         <kbd>U</kbd> unknown · <kbd>N</kbd> not a fish · <kbd>E</kbd> equipment · <kbd>M</kbd> multiple fish · <kbd>S</kbd> skip ·
         <kbd>↑</kbd><kbd>↓</kbd> pick a sighting, <kbd>X</kbd> split there · <kbd>Space</kbd> tick sightings, <kbd>X</kbd> moves them to a new card ·
         <kbd>P</kbd> same fish as the card before it ·
+        <kbd>R</kbd> same answer as the look-alike you answered (or your last answer) · <kbd>L</kbd> answer look-alikes together ·
         <kbd>←</kbd><kbd>→</kbd> cards</p>
     </aside>
   </main>
+
+  <div id="grid-panel" class="grid-panel" hidden>
+    <div class="grid-box">
+      <h2 id="grid-title"></h2>
+      <p id="grid-hint" class="hint"></p>
+      <div id="grid" class="grid"></div>
+      <div class="grid-actions">
+        <button id="grid-ok" class="primary"></button>
+        <button id="grid-cancel">Close <kbd>Esc</kbd></button>
+      </div>
+    </div>
+  </div>
 
   <div id="empty" class="empty" hidden>
     <h2>No fish cards yet</h2>

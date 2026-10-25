@@ -201,6 +201,17 @@ class BioClip2Classifier:
         return prompt_ensemble(self._encode_text, labels, self.templates)
 
 
+class BioClip25Classifier(BioClip2Classifier):
+    """BioCLIP 2.5 Huge (February 2026): a ViT-H/14 image encoder, about twice BioCLIP 2's
+    ViT-L/14, trained on TreeOfLife-200M plus 19M more images. Imageomics report 61.3 against
+    55.6 for BioCLIP 2 on their zero-shot species benchmarks (none of them underwater video).
+    Loaded the same way: its 3.9 GB checkpoint is mapped, not copied, so it needs disk cache
+    and time rather than free memory. modeltest.py compares the two on reviewed cards."""
+
+    name = "bioclip-2.5"
+    MODEL_ID = "hf-hub:imageomics/bioclip-2.5-vith14"
+
+
 def map_safetensors(path) -> tuple[dict, object]:
     """Tensors of a .safetensors file as read-only views of the file mapped into memory.
 
@@ -252,9 +263,9 @@ def make_classifier(settings, device: str) -> Classifier:
     """Build the configured classifier, falling back to histograms if BioCLIP can't load."""
     if settings.classifier == "histogram":
         return HistogramClassifier()
-    if settings.classifier == "bioclip":
+    if settings.classifier in ("bioclip", "bioclip-2.5"):
         try:
-            return BioClip2Classifier(device=device)
+            return (BioClip25Classifier if settings.classifier == "bioclip-2.5" else BioClip2Classifier)(device=device)
         except Exception as exc:  # noqa: BLE001 — any load failure means "use the fallback"
             hint = ""
             if isinstance(exc, MemoryError) or "paging file" in str(exc) or "not enough memory" in str(exc):

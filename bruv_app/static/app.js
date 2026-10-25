@@ -6,6 +6,10 @@ const state = {
   template: new Set(), other: null, tinyPx: 40, ticked: new Set(),
   rig: new Map(), lastBatch: null,  // cards queued as likely equipment; the last batch marked
   familyOpen: null,  // the family picked in "by family first", while its species are shown
+  lastAnswer: null,  // your last answer here (R repeats it when no look-alike was answered)
+  likeSource: null,  // the card you just answered and its unanswered look-alikes (L)
+  likeBatch: null,  // the last look-alikes answered together, for undo
+  grid: null,  // the picture grid shown over the page (look-alikes, or hidden still objects)
 };
 
 function pct(p) {
@@ -21,6 +25,7 @@ function loadGuessMode() {
 }
 
 const NOT_IN_TEMPLATE = "not in template";
+const SURE_ALIKE = 0.9;  // look-alikes this alike start ticked in the L grid
 const EXTRA_HINT = "Not in the template's species list: exported as its 'other' entry, with this name in the comment.";
 
 const STATUS_TEXT = {
@@ -83,7 +88,21 @@ function visibleCards(status = $("status").value, rule = $("filter").value, show
     const rank = templateRank(c.guesses);
     return rank > 0 && rank <= Number(rule);
   });
-  return $("sort").value === "size" ? list.sort((a, b) => b.max_px - a.max_px) : list;
+  const sort = $("sort").value;
+  if (sort === "size") return list.sort((a, b) => b.max_px - a.max_px);
+  if (sort === "group") {
+    // Look-alike groups (the server's), biggest fish's group first, each in time order; so
+    // a run of the same kind of fish comes together and R answers it quickly.
+    const byId = new Map(state.cards.map((c) => [c.id, c]));
+    const lead = (c) => (c.group == null ? -1 : (byId.get(c.group) || c).max_px);
+    return list.sort((a, b) => lead(b) - lead(a) || (a.group ?? 0) - (b.group ?? 0) || a.start_t - b.start_t);
+  }
+  return list;
+}
+
+// How an answer reads: the species, or "not a fish" / "unknown fish".
+function answerName(a) {
+  return a.status === "species" ? a.species : a.status === "not_fish" ? "not a fish" : "unknown fish";
 }
 
 // "Same fish as the card before it": the card just before it in the video, skipping hidden
@@ -114,6 +133,9 @@ function updateFilterCounts() {
 async function loadSummary() {
   state.summary = await api("/api/summary");
   $("project").textContent = state.summary.project;
+  const still = state.summary.still_hidden || 0;
+  $("still-note").hidden = !still;
+  $("still-note").textContent = `${still} still-object boxes hidden`;
   showProgress();
 }
 
@@ -153,7 +175,9 @@ function showProgress() {
 }
 
 async function init() {
-  await Promise.all([loadSummary(), loadCards(), loadRig()]);
+  await Promise.all([loadSummary(), loadCards()]);
+  // The equipment queue can take a few seconds on a long video: it follows when ready.
+  loadRig().then(() => { updateFilterCounts(); updateRigBar(); });
   const dd = state.summary.dropdowns;
   state.template = new Set(dd.species || []);
   state.other = (dd.species || []).find((s) => s.trim().toLowerCase().startsWith("other")) || null;
@@ -209,6 +233,9 @@ async function show(index) {
   d.closest_calls ??= [];
   d.rig ??= null;
   d.families ??= [];
+  d.answered_like ??= null;
+  d.lookalikes ??= 0;
+  d.earlier ??= null;
   state.detail = d;
   state.selected = null;
 
@@ -251,6 +278,8 @@ async function show(index) {
   renderFilmstrip(d);
   renderPieces(d);
   renderFlags(d);
+  renderLike(d);
+  updateLikeBar();
   const rig = d.rig;
   $("rig-hint").hidden = !rig;
   if (rig) {
@@ -440,6 +469,203 @@ function renderFlags(d) {
   box.append(hint);
 }
 
+// What R would answer, best evidence first: what most of this card's own sightings were
+// answered before the cards were rebuilt; else the answered card it looks most like
+// (lookalike.py); else your last answer. Nothing is recorded until you press it.
+function repeatable(d) {
+  if (d.status !== "pending" && d.status !== "skipped") return null;
+  if (d.earlier && d.earlier.answers === 1) return { kind: "earlier", ...d.earlier };
+  if (d.answered_like) return { kind: "like", ...d.answered_like };
+  return state.lastAnswer ? { kind: "last", ...state.lastAnswer } : null;
+}
+
+function renderLike(d) {
+  const hint = $("like-hint");
+  const a = repeatable(d);
+  const mixed = (d.status === "pending" || d.status === "skipped") && d.earlier && d.earlier.answers > 1;
+  hint.hidden = !a && !mixed;
+  if (mixed) {
+    hint.innerHTML = `⚠ Before the cards were rebuilt, this card's sightings had ${d.earlier.answers} different answers ` +
+      "(most of them <strong></strong>): check it, and use Multiple fish (M) if it mixes fish.";
+    hint.querySelector("strong").textContent = answerName(d.earlier);
+  } else if (a && a.kind === "earlier") {
+    hint.innerHTML = `Before the cards were rebuilt you answered <strong></strong> for ${a.sightings} of this card's ` +
+      `${a.of} sightings. <kbd>R</kbd> gives the whole card that answer.`;
+    hint.querySelector("strong").textContent = answerName(a);
+  } else if (a && a.kind === "like") {
+    hint.innerHTML = `Looks like <a href="#"></a>, which you answered <strong></strong> ` +
+      `<span class="muted">(${pct(a.similarity)} alike)</span>. <kbd>R</kbd> gives it the same answer.`;
+    hint.querySelector("a").textContent = `#${a.card}`;
+    hint.querySelector("a").onclick = (e) => { e.preventDefault(); goToCard(a.card); };
+    hint.querySelector("strong").textContent = answerName(a);
+  } else if (a) {
+    hint.innerHTML = `<span class="muted"><kbd>R</kbd>: same as your last answer, <strong></strong>.</span>`;
+    hint.querySelector("strong").textContent = answerName(a);
+  }
+}
+
+async function goToCard(id) {
+  $("status").value = "all";
+  updateFilterCounts();
+  const i = visibleCards().findIndex((c) => c.id === id);
+  if (i >= 0) await show(i);
+}
+
+function repeatAnswer() {
+  const d = state.detail;
+  if (!d) return;
+  const a = repeatable(d) || (d.status === "pending" || d.status === "skipped" ? null : state.lastAnswer);
+  if (!a) {
+    message("Nothing to repeat yet: answer a card first.", "error");
+    return;
+  }
+  record(a.status, a.status === "species" ? a.species : null);
+}
+
+// After an answer: the unanswered cards that look like that card, to answer together (L).
+async function loadLikeSource(id, status, species) {
+  try {
+    const cards = await api(`/api/fish/${id}/lookalikes`);
+    state.likeSource = cards.length ? { id, status, species, cards } : null;
+  } catch (e) {
+    state.likeSource = null;  // (an older server has no look-alikes)
+  }
+  updateLikeBar();
+}
+
+function updateLikeBar() {
+  const s = state.likeSource;
+  $("like-batch").hidden = !s && !state.likeBatch;
+  $("like-open").hidden = !s;
+  if (s) {
+    const n = s.cards.length;
+    $("like-open").innerHTML = `${n} unanswered card${n === 1 ? "" : "s"} look${n === 1 ? "s" : ""} like #${s.id} ` +
+      `(<span class="name"></span>): answer together <kbd>L</kbd>`;
+    $("like-open").querySelector(".name").textContent = answerName(s);
+  }
+  $("like-undo").hidden = !state.likeBatch;
+  if (state.likeBatch) $("like-undo").textContent = `Undo: the ${state.likeBatch.answered.length} look-alikes just answered`;
+}
+
+// A grid of pictures over the page. Tickable: click to untick a card that differs.
+function openGrid({ title, hint, items, tickable = false, okText = null, onOk = null }) {
+  const start = tickable ? items.filter((i) => !i.flagged && i.ticked !== false) : [];
+  state.grid = { items, onOk, okText, ticked: new Set(start.map((i) => i.id)) };
+  $("grid-title").textContent = title;
+  $("grid-hint").textContent = hint;
+  const grid = $("grid");
+  grid.replaceChildren();
+  for (const it of items) {
+    const fig = document.createElement("figure");
+    fig.innerHTML = `<img loading="lazy" src="/crop/${it.det}" alt=""><figcaption></figcaption>`;
+    fig.querySelector("figcaption").textContent = it.caption;
+    if (it.flagged) {
+      fig.classList.add("flagged");
+      fig.title = "This card has warnings: answer it on its own";
+    } else if (tickable) {
+      fig.classList.toggle("ticked", state.grid.ticked.has(it.id));
+      fig.onclick = () => {
+        const t = state.grid.ticked;
+        if (t.has(it.id)) t.delete(it.id);
+        else t.add(it.id);
+        fig.classList.toggle("ticked", t.has(it.id));
+        updateGridOk();
+      };
+    }
+    grid.append(fig);
+  }
+  $("grid-ok").hidden = !onOk;
+  updateGridOk();
+  $("grid-panel").hidden = false;
+}
+
+function updateGridOk() {
+  const g = state.grid;
+  if (!g || !g.onOk) return;
+  $("grid-ok").textContent = g.okText(g.ticked.size);
+  $("grid-ok").disabled = !g.ticked.size;
+}
+
+function closeGrid() {
+  $("grid-panel").hidden = true;
+  state.grid = null;
+}
+
+function openLikeGrid() {
+  const s = state.likeSource;
+  if (!s) {
+    message("Answer a card first: its unanswered look-alikes can then be answered together.", "error");
+    return;
+  }
+  const name = answerName(s);
+  openGrid({
+    title: `Cards that look like #${s.id}, which you answered ${name}`,
+    hint: "Most alike first. Click a picture to untick a card that isn't the same kind of fish, or to tick one; " +
+      `cards less than ${pct(SURE_ALIKE)} alike start unticked. The ticked ones get the same answer, and you can undo it. ` +
+      "Cards with warnings (orange) are left to answer one by one.",
+    items: s.cards.map((c) => ({
+      // Ticked to start with when 0.90 alike or more: on Vinci's answers, 99.8% of answered
+      // cards that alike had the same answer, against 98.7% from 0.85. The rest start unticked.
+      id: c.id, det: c.best_det, flagged: c.flagged, ticked: c.similarity >= SURE_ALIKE,
+      caption: `#${c.id} · ${c.clip} ${fmtTime(c.local_t)} · ${pct(c.similarity)} alike`,
+    })),
+    tickable: true,
+    okText: (n) => `Answer the ${n} ticked as ${name}`,
+    onOk: answerLikeGrid,
+  });
+}
+
+async function answerLikeGrid() {
+  const s = state.likeSource;
+  const ids = [...state.grid.ticked];
+  try {
+    const res = await api("/api/lookalikes/answer", { source: s.id, ids, status: s.status, species: s.species });
+    for (const id of res.answered) Object.assign(state.cards.find((c) => c.id === id) || {}, { status: s.status, species: s.species });
+    state.likeBatch = res;
+    state.likeSource = null;
+    closeGrid();
+    updateFilterCounts();
+    await loadSummary();
+    await show(state.index);
+    message(`Answered ${res.answered.length} look-alike card${res.answered.length === 1 ? "" : "s"} as ${answerName(s)}` +
+      (res.left.length ? `; ${res.left.length} left to answer one by one.` : "."), "ok");
+  } catch (e) {
+    message(e.message, "error");
+  }
+}
+
+async function undoLikeBatch() {
+  const b = state.likeBatch;
+  if (!b) return;
+  try {
+    const res = await api("/api/batch/undo", { batch: b.batch });
+    for (const id of res.undone) Object.assign(state.cards.find((c) => c.id === id) || {}, { status: "pending", species: null });
+    state.likeBatch = null;
+    updateFilterCounts();
+    await loadSummary();
+    await show(state.index);
+    message(`Undone: ${res.undone.length} card${res.undone.length === 1 ? " is" : "s are"} pending again.`, "ok");
+  } catch (e) {
+    message(e.message, "error");
+  }
+}
+
+// Boxes hidden as still objects (still.py), a sample over the video, to check none is a fish.
+async function openStill() {
+  try {
+    const r = await api("/api/still");
+    openGrid({
+      title: `${r.count} boxes hidden as still objects`,
+      hint: "These matched the scene's background for the minute either side (the bait arm, canister, rope, rocks), " +
+        "so they make no cards and aren't counted. A fish here would have stayed motionless for over a minute. " +
+        "If you see one, note its time: the still filter can be switched off for a rebuild.",
+      items: r.sample.map((x) => ({ id: x.det_id, det: x.det_id, caption: `${x.clip} ${fmtTime(x.local_t)} · ${pct(x.change)} changed` })),
+    });
+  } catch (e) {
+    message(e.message, "error");
+  }
+}
+
 // Show one sighting of the card (click it, or ↑ and ↓); splitting starts there.
 function selectSighting(i) {
   const d = state.detail;
@@ -524,6 +750,10 @@ async function record(status, species = null) {
   const card = state.cards.find((c) => c.id === d.id);
   card.status = status;
   card.species = species;
+  if (answering) {
+    state.lastAnswer = { status, species };
+    loadLikeSource(d.id, status, species);  // not awaited: the next card shows meanwhile
+  }
   updateFilterCounts();
   await loadSummary();
   // Advance: a card that no longer matches Status (e.g. "Pending") drops out, so the same index is next.
@@ -707,6 +937,13 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (!$("grid-panel").hidden) {  // the picture grid is open: Esc closes it, Enter confirms
+    if (e.key === "Escape") closeGrid();
+    else if (e.key === "Enter" && state.grid && state.grid.onOk && state.grid.ticked.size) state.grid.onOk();
+    else return;
+    e.preventDefault();
+    return;
+  }
   const d = state.detail;
   const guesses = d ? d.guesses : [];
   const byFamily = d && $("guess-mode").value === "family" && d.families.length;
@@ -737,6 +974,10 @@ document.addEventListener("keydown", (e) => {
     split();
   } else if (e.key === "p" || e.key === "P") {
     mergePrev();
+  } else if (e.key === "r" || e.key === "R") {
+    repeatAnswer();
+  } else if (e.key === "l" || e.key === "L") {
+    openLikeGrid();
   } else if (e.key === "ArrowUp") {
     selectSighting(state.selectedIndex < 0 ? 0 : state.selectedIndex - 1);
   } else if (e.key === "ArrowDown") {
@@ -765,6 +1006,11 @@ document.querySelector('.other-buttons [data-action="multiple"]').onclick = mult
 document.querySelector('.other-buttons [data-action="equipment"]').onclick = markEquipment;
 $("rig-all").onclick = markAllEquipment;
 $("rig-undo").onclick = undoBatch;
+$("like-open").onclick = openLikeGrid;
+$("like-undo").onclick = undoLikeBatch;
+$("grid-cancel").onclick = closeGrid;
+$("grid-ok").onclick = () => state.grid && state.grid.onOk && state.grid.onOk();
+$("still-note").onclick = openStill;
 loadGuessMode();
 $("guess-mode").onchange = (e) => {
   e.target.blur();  // so the review keys work straight away

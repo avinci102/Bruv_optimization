@@ -9,7 +9,8 @@ Each link is recorded with its evidence (Tracklet.links), without changing how l
 chosen: its cost; its margin, how much worse the next-best option was (another track for
 this box, or another box for this track; small or negative means a close call); and how
 alike the box's colours are to everything the track held before it (a drop there can mark
-the point where a track jumped to another fish).
+the point where a track jumped to another fish). With refuse_contested, a link whose margin
+is below 0 isn't made at all: the box starts a new track (Settings.track_refuse_contested).
 """
 
 from __future__ import annotations
@@ -80,10 +81,11 @@ def _centre(d: Detection) -> tuple[float, float]:
 
 def missed_frames(seconds: float, fps: float) -> int:
     """Settings.track_max_missed_s as sampled frames: how many frames in a row a track may
-    go without its fish. As built (not yet changed; see docs/SPEC.md §13): the longest gap
-    between two sightings a track bridges is (n + 1) / fps, so 1.0 s at 4 fps bridges 1.25 s;
-    round() takes halves to even (1.0 s at 2.5 fps is 2 frames); one frame is the minimum."""
-    return max(1, round(seconds * fps))
+    go without its fish. The longest gap between two sightings a track bridges is
+    (n + 1) / fps: 1.0 s at 4 fps bridges 1.25 s, 0.25 s bridges 0.5 s (one missed frame),
+    and 0 links consecutive frames only. round() takes halves to even (1.0 s at 2.5 fps is
+    2 frames)."""
+    return max(0, round(seconds * fps))
 
 
 def _margin(cost: np.ndarray, r: int, c: int) -> float | None:
@@ -103,6 +105,7 @@ class Tracker:
         max_missed: int = 1,
         min_appearance: float = 0.5,
         direction: bool = True,
+        refuse_contested: bool = False,
     ):
         self.min_iou = min_iou
         self.max_dist = max_dist
@@ -110,6 +113,9 @@ class Tracker:
         self.max_missed = max_missed
         self.min_appearance = min_appearance
         self.direction = direction
+        # Settings.track_refuse_contested: no link where another option was better (margin
+        # below 0); the box starts a new track and the track waits for its fish.
+        self.refuse_contested = refuse_contested
         self.active: list[Tracklet] = []
         self.finished: list[Tracklet] = []
         self._next_id = 1
@@ -150,9 +156,12 @@ class Tracker:
             for r, c in zip(rows, cols):
                 if cost[r, c] >= _INF:
                     continue
+                margin = _margin(cost, r, c)
+                if self.refuse_contested and margin is not None and margin < 0:
+                    continue
                 key, det = detections[c]
                 track = self.active[r]
-                track.links[key] = (float(cost[r, c]), _margin(cost, r, c), track.history_likeness(det.app))
+                track.links[key] = (float(cost[r, c]), margin, track.history_likeness(det.app))
                 track.members.append((frame, key))
                 track.add_colour(det.app)
                 (x0, y0), (x1, y1) = _centre(track.last_box), _centre(det)

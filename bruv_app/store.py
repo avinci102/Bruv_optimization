@@ -70,9 +70,14 @@ CREATE TABLE IF NOT EXISTS rig_refs (
 CREATE TABLE IF NOT EXISTS merge_edges (
     run_id INTEGER, a INTEGER, b INTEGER, gap REAL, similarity REAL, colour REAL,
     size_ratio REAL, decision TEXT, PRIMARY KEY (run_id, a, b));
+-- How much of each detection's box differs from the scene's background (still.py): the
+-- bait arm and canister barely differ, fish do. Its own table, like frame_sources.
+CREATE TABLE IF NOT EXISTS det_change (det_id INTEGER PRIMARY KEY, change REAL);
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
+CREATE INDEX IF NOT EXISTS review_fish ON reviews(fish_id);
+CREATE INDEX IF NOT EXISTS correction_fish ON corrections(fish_id);
 """
 
 # Review outcomes. "species" means a species was picked.
@@ -347,17 +352,52 @@ class Project:
         steps = [b - a for a, b in zip(times, times[1:]) if b > a]
         return 1.0 / float(np.median(steps)) if steps else 1.0
 
-    def frames_with_detections(self, min_score: float = 0.0):
+    def frames_with_detections(self, min_score: float = 0.0, exclude: set[int] | None = None):
         """Yield (FrameRow, [(det id, Detection)]) in time order: the detections scoring at
-        least `min_score` (the rest are kept below the operating threshold, untracked)."""
+        least `min_score` (the rest are kept below the operating threshold, untracked), less
+        any in `exclude` (e.g. still objects)."""
         frames = self.db.execute("SELECT * FROM frames_src ORDER BY seq").fetchall()
         dets: dict[int, list] = {}
         for d in self.db.execute("SELECT * FROM detections WHERE score >= ? ORDER BY id", (min_score,)):
+            if exclude and d["id"] in exclude:
+                continue
             dets.setdefault(d["frame_id"], []).append(
                 (d["id"], Detection(d["x1"], d["y1"], d["x2"], d["y2"], d["score"], from_blob(d["app"])))
             )
         for f in frames:
             yield FrameRow(**dict(f)), dets.get(f["id"], [])
+
+    # --- still objects (still.py) ----------------------------------------------------------
+
+    def save_det_change(self, values: dict[int, float]) -> None:
+        self.db.execute("DELETE FROM det_change")
+        self.db.executemany("INSERT INTO det_change(det_id, change) VALUES(?, ?)", list(values.items()))
+        self.db.commit()
+
+    def det_changes(self) -> dict[int, float]:
+        return dict(self.db.execute("SELECT det_id, change FROM det_change").fetchall())
+
+    def still_ids(self, settings: Settings) -> set[int]:
+        """Detections the still-object test hides (none if it's off or hasn't run)."""
+        if not settings.still_filter:
+            return set()
+        rows = self.db.execute(
+            """SELECT d.id FROM detections d JOIN det_change c ON c.det_id=d.id
+               WHERE d.x2 - d.x1 >= ? AND c.change < ?""",
+            (settings.still_min_width, settings.still_max_change),
+        )
+        return {r[0] for r in rows}
+
+    def still_detections(self, settings: Settings, min_score: float) -> list[sqlite3.Row]:
+        """The hidden still objects scoring at least `min_score`, in time order."""
+        if not settings.still_filter:
+            return []
+        return self.db.execute(
+            """SELECT d.*, c.change, f.t, f.path, f.width, f.height FROM detections d
+               JOIN det_change c ON c.det_id=d.id JOIN frames f ON f.id=d.frame_id
+               WHERE d.x2 - d.x1 >= ? AND c.change < ? AND d.score >= ? ORDER BY f.t, d.id""",
+            (settings.still_min_width, settings.still_max_change, min_score),
+        ).fetchall()
 
     # --- tracklets & fish ------------------------------------------------------------------
 
@@ -411,8 +451,16 @@ class Project:
         return self.db.execute("SELECT * FROM tracklets ORDER BY start_t, id").fetchall()
 
     def create_fish(self, tracklet_ids: list[int]) -> int:
-        cur = self.db.execute("INSERT INTO fish(status) VALUES('pending')")
-        fish_id = cur.lastrowid
+        # A new card never takes the number of a card that's gone (merged away, or rebuilt):
+        # answers and fixes are logged by card number, and an old card's answer must never
+        # be read as the new card's.
+        fish_id = self.db.execute(
+            """SELECT MAX(COALESCE((SELECT MAX(id) FROM fish), 0),
+                          COALESCE((SELECT MAX(fish_id) FROM reviews), 0),
+                          COALESCE((SELECT MAX(fish_id) FROM corrections), 0),
+                          COALESCE((SELECT MAX(fish_id) FROM rig_refs), 0)) + 1"""
+        ).fetchone()[0]
+        self.db.execute("INSERT INTO fish(id, status) VALUES(?, 'pending')", (fish_id,))
         self.db.executemany(
             "UPDATE tracklets SET fish_id=? WHERE id=?", [(fish_id, t) for t in tracklet_ids]
         )
@@ -538,6 +586,55 @@ class Project:
                JOIN (SELECT fish_id, MAX(id) AS last FROM reviews GROUP BY fish_id) l ON l.last=r.id"""
         )
         return {r["fish_id"]: set(json.loads(r["scope"])) for r in rows}
+
+    def answers_by_detection(self) -> dict[int, dict]:
+        """Detection id -> the answer it holds now: each answered card's answer, for the
+        detections it was given for that are still on the card. What a rebuild carries over."""
+        scopes = self.label_scopes()
+        out: dict[int, dict] = {}
+        q = f"SELECT * FROM fish WHERE status IN ({','.join('?' * len(REVIEWED))})"
+        for f in self.db.execute(q, REVIEWED).fetchall():
+            details = self.answer_details(f["id"])
+            answer = {k: f[k] for k in ("status", "species", "type", "sex", "behavior", "comment")}
+            answer.update(card=f["id"], equipment=bool(details.get("equipment")))
+            scope = scopes.get(f["id"])
+            for d in self.fish_detections(f["id"]):
+                if scope is None or d["id"] in scope:
+                    out[d["id"]] = answer
+        return out
+
+    def carry_answers(self, answers: dict[int, dict], hidden: set[int] = frozenset()) -> dict:
+        """Give rebuilt cards the answers their detections held (answers_by_detection).
+
+        A card gets an answer only when every one of its detections had that same answer,
+        so nothing is answered for a sighting nobody saw. A card with no answered detections
+        stays pending; one with some, or with different answers, stays pending and is
+        counted. Detections now hidden as still objects aren't on any card; those answered
+        as fish are counted, so a fish the still test hid can be found. Returns the counts."""
+        report = {"carried": 0, "partly_answered": 0, "conflicting": 0, "new": 0,
+                  "hidden_answered_fish": sum(1 for d in hidden if answers.get(d, {}).get("status") in ("species", "unknown"))}
+        key = ("status", "species")
+        for f in self.all_fish():
+            dets = [d["id"] for d in self.fish_detections(f["id"])]
+            held = [answers[d] for d in dets if d in answers]
+            if not held:
+                report["new"] += 1
+                continue
+            if len({tuple(a[k] for k in key) for a in held}) > 1:
+                report["conflicting"] += 1
+                continue
+            if len(held) < len(dets):
+                report["partly_answered"] += 1
+                continue
+            # The other fields from the old card that gave most of these detections.
+            source = max({a["card"]: a for a in held}.values(), key=lambda a: sum(h["card"] == a["card"] for h in held))
+            details = {"carried": True, "from": sorted({a["card"] for a in held})}
+            if source["equipment"]:
+                details["equipment"] = True
+            fields = {k: source[k] for k in ("species", "type", "sex", "behavior", "comment")}
+            self.label_fish(f["id"], source["status"], details, **fields)
+            report["carried"] += 1
+        return report
 
     def reviewed_count(self) -> int:
         q = f"SELECT COUNT(*) FROM fish WHERE status IN ({','.join('?' * len(REVIEWED))})"

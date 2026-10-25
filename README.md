@@ -122,8 +122,37 @@ the audio track.
 ## Review keys
 
 `1` `2` `3` pick a model guess · `/` search species, `Enter` records it · `U` unknown fish ·
-`N` not a fish · `E` equipment · `S` skip · `←` `→` move between cards. Nothing is
-pre-selected.
+`N` not a fish · `E` equipment · `S` skip · `R` same answer as a look-alike · `L` answer
+look-alikes together · `←` `→` move between cards. Nothing is pre-selected.
+
+- **The same fish over and over.** Short tracks keep each card to one fish, so a fish that
+  circles the bait comes back as many cards. Two cards look alike when their pictures'
+  embeddings are 0.85 alike or more (the bar for joining two pieces of one fish):
+  - A card that looks like one you've answered says so ("Looks like #4202, which you
+    answered unicornfish"), and `R` gives it the same answer. With no such card, `R`
+    repeats your last answer.
+  - After you answer a card, a button offers its unanswered look-alikes. `L` opens them
+    as a grid of pictures, most alike first: untick any that differ, and the rest get
+    your answer together. Cards at least 0.90 alike start ticked (on the NP339 answers,
+    99.8% of answered cards that alike had the same answer); the rest start unticked.
+    Cards with warnings are left to answer one by one, and the batch can be undone.
+  - After a rebuild, a card holding sightings you answered before says so ("Before the
+    cards were rebuilt you answered unicornfish for 117 of this card's 126 sightings"),
+    and `R` gives the whole card that answer.
+  - **Sort → look-alikes together** puts each group of look-alike cards back to back, so
+    a run of the same kind of fish goes quickly with `R`.
+
+  On the first 185 answers of the 44-minute NP339 drop, replayed in order, the closest
+  card answered earlier named the fish right on 40 of 45 cards and was never wrong; the
+  model alone got 24. It learns the fish of one video as you go; it doesn't make the
+  model better at the next video (that's the library, below).
+- **Still objects are hidden.** The bait arm, canister, float line and rocks sit still for
+  the whole drop. A box that hardly differs from the scene's background (the median of
+  the frames in the minute either side) makes no card and isn't counted, while a fish
+  swimming in front of the arm still does. The header says how many boxes were hidden;
+  click it to check a sample. On the NP339 answers this hid 91% of the sightings answered
+  "not a fish" and none of the 1,689 answered as fish. A fish that stays motionless for
+  over a minute would be hidden too, so look at the sample now and then.
 
 - **Guesses by family first** (the menu next to "Model guesses"; "by species" shows the
   model's top three names instead). `1` `2` `3` pick a family: one with a single name
@@ -141,8 +170,8 @@ pre-selected.
   Answering such a card asks you to confirm that all its pieces are one fish; otherwise
   use `M` or tick and move. The card's line also names the tracker's closest call, a
   place to look if the card may have jumped to another fish.
-- **Equipment** (`E`): a card showing the bait arm, canister or rope is recorded as not a
-  fish, and cards that sit in the same place and look the same are queued under
+- **Equipment** (`E`), for equipment that moves (a swaying rope, a diver's hand): a card
+  showing it is recorded as not a fish, and cards that sit in the same place and look the same are queued under
   **Show → ⚙ likely equipment**. There, "Mark the … that match throughout as equipment"
   answers in one go the cards whose every sighting is in the rig's place with the rig's
   colours; a card with sightings elsewhere (a fish the tracker joined onto the rig) is
@@ -181,9 +210,10 @@ pre-selected.
     tick this. Left unreviewed, they stay out of the counts, and the progress line shows
     them apart ("tiny fish: 0 of 177"): hidden is not the same as reviewed. Each card
     shows its fish's size at its largest.
-  - **Sort:** biggest fish first (the default), or in time order. Big fish are the
-    clearest and the ones the counts rest on, so if a review stops early, what's left is
-    the small, doubtful tail. Time order helps to follow a fish that comes and goes.
+  - **Sort:** biggest fish first (the default), in time order, or look-alikes together.
+    Big fish are the clearest and the ones the counts rest on, so if a review stops early,
+    what's left is the small, doubtful tail. Time order helps to follow a fish that comes
+    and goes.
 
 ## Teaching it your fish
 
@@ -222,10 +252,24 @@ sightings you pulled apart (splits, moves, "Multiple fish") that are on one card
 It matches sightings by source frame and box, one to one, so it works across frame
 rates too, and it refuses two projects of different footage.
 
+To remake a reviewed project's cards with new rules and keep your answers:
+
+```bat
+scripts\run_windows.bat rebuild --project projects\site1 --latest-rules
+```
+
+`--latest-rules` adopts the current defaults (still objects hidden, tracks that bridge at
+most one missed frame, contested links refused); `--track-gap 0` links consecutive frames
+only. A new card gets your earlier answer only when every one of its sightings had that
+answer; the rest wait for you, and the command says how many. The cards before and after
+are frozen in `snapshots\`. A rebuild that is stopped part way loses no answers: run it
+again. Projects made before these rules keep their old behaviour until rebuilt this way.
+
 ## Measuring accuracy
 
-These tools follow the independent accuracy review (docs/SPEC.md §13). None of them
-changes a default: new settings wait until they've been tested on annotated footage.
+These tools follow the independent accuracy review (docs/SPEC.md §13). Defaults change
+only once measured on answers: the still objects, the shorter tracks and the refused
+contested links were measured on the first 185 NP339 answers.
 
 - **Every result is traceable.** Each processing step records its settings, the code
   version and the model files (by fingerprint); each video is fingerprinted, and a
@@ -248,6 +292,16 @@ changes a default: new settings wait until they've been tested on annotated foot
   (`experiments\` in the project). Answered cards turn agreement into accuracy.
 - **How the footage was shot.** `capture --project … --lens wide --housing "flat port"`
   records what the video file can't tell (lens mode, stabilisation, housing).
+- **Other species models.** `model-test --project … --model bioclip-2.5 fishial --key
+  answer_key.xlsx` scores today's BioCLIP 2, BioCLIP 2.5, the two together and Fishial on
+  the same crops of your answered cards, plus how often your earlier answers would have
+  named them. Fishial answers from its own list of species, so it's scored by family, and
+  as a second opinion (when it and BioCLIP 2 agree or disagree, who was right); its
+  `model.pt` goes in the app's model folder under `fishial-v0.10.2\extracted`. With a
+  key, it also checks the key's clip_1 sightings, against chance. BioCLIP 2.5 is a 3.9 GB
+  download, read from disk as needed, and about half as fast; the embeddings are saved in
+  `model_test\` for a second run. The project is only read, so its review page can stay
+  open. On NP339 neither BioCLIP 2.5 nor Fishial beat BioCLIP 2 overall (SPEC §14).
 
 ## Development
 
@@ -258,7 +312,7 @@ pytest
 
 The tests use synthetic data only (fake detector, synthetic video, mock template).
 
-Layout: `bruv_app/` holds the package (video → detect → track → continuity → classify →
-store → metrics → template/export, plus server and static UI; provenance, evaluate,
-diagnostics, equipment and crops for measuring accuracy). `tests/` holds the tests, and
+Layout: `bruv_app/` holds the package (video → detect → still → track → continuity →
+classify → store → metrics → template/export, plus server and static UI with lookalike;
+provenance, evaluate, diagnostics, equipment, crops and modeltest for measuring accuracy). `tests/` holds the tests, and
 `scripts/` the Windows helpers.
