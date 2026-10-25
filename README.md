@@ -292,12 +292,16 @@ contested links were measured on the first 185 NP339 answers.
   (`experiments\` in the project). Answered cards turn agreement into accuracy.
 - **How the footage was shot.** `capture --project … --lens wide --housing "flat port"`
   records what the video file can't tell (lens mode, stabilisation, housing).
-- **Other species models.** `model-test --project … --key answer_key.xlsx` scores today's
-  BioCLIP 2, BioCLIP 2.5 and the two together on the same crops of your answered cards,
-  plus how often your earlier answers would have named them. With a key, it also checks
-  the key's clip_1 sightings. BioCLIP 2.5 is a 3.9 GB download, read from disk as needed,
-  and about half as fast; its embeddings are saved in `model_test\` for a second run. The
-  project is only read, so its review page can stay open.
+- **Other species models.** `model-test --project … --model bioclip-2.5 fishial --key
+  answer_key.xlsx` scores today's BioCLIP 2, BioCLIP 2.5, the two together and Fishial on
+  the same crops of your answered cards, plus how often your earlier answers would have
+  named them. Fishial answers from its own list of species, so it's scored by family, and
+  as a second opinion (when it and BioCLIP 2 agree or disagree, who was right); its
+  `model.pt` goes in the app's model folder under `fishial-v0.10.2\extracted`. With a
+  key, it also checks the key's clip_1 sightings, against chance. BioCLIP 2.5 is a 3.9 GB
+  download, read from disk as needed, and about half as fast; the embeddings are saved in
+  `model_test\` for a second run. The project is only read, so its review page can stay
+  open. On NP339 neither BioCLIP 2.5 nor Fishial beat BioCLIP 2 overall (SPEC §14).
 
 ## Development
 

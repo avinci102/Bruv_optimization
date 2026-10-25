@@ -1020,6 +1020,20 @@ arm, which never moves, answered card after card. Measured on those answers:
 - 5–10 varied crops per card: guesses already pool up to 5 crops; pooling every saved crop
   scored 28 of 49, the same as today, and voting across crops 24. Crops not yet embedded
   are still untested.
-- Fishial as a second opinion: pending. Its 352 MB classifier knows a fixed list of
-  species (775 in the published list): one unicornfish, no redtoothed triggerfish, three
-  butterflyfish, but 27 snappers and 16 groupers, where BioCLIP fails on the key.
+- Fishial as a second opinion (`fishial.py`, `model-test --model fishial`). Its 352 MB
+  classifier (v0.10.2: DinoV2 with sub-center ArcFace) knows 866 species by scientific
+  name, many of them American and European fishing species; its genera are mapped to the
+  template's families. It is fast here (0.39 s a crop) but did poorly on this footage:
+
+| | Right family first, your 49 named cards | Key grouper (chance) | Key snapper (chance) |
+|---|---|---|---|
+| BioCLIP 2 | 29 | 13 (12) of 29 | 3 (4) of 21 |
+| BioCLIP 2.5 | 26 | 27 (20) | 9 (7) |
+| Fishial | 8 | 16 (12) | 9 (8) |
+
+  By family on the named cards it got triggerfish 7 of 8 (BioCLIP 2: 5), but unicornfish 0
+  of 29, butterflyfish 1 of 9 (it calls them batfish) and grouper 0 of 3. With BioCLIP 2 it
+  agreed on the family for 10 cards, 6 of them right; of the 39 where they disagreed,
+  BioCLIP 2 was right on 23 and Fishial on 2, so agreement isn't a confidence signal
+  either. Having no "other" answer, it calls the canister a doctorfish (45 cards) or a
+  whitetip reef shark (39). Not adopted.
