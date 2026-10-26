@@ -6,11 +6,15 @@ minutes comes back as many cards. Each card's look is the mean embedding of its 
 the same one its guesses use, and two cards look alike when those are at least 0.85 alike.
 That's the merge's bar for joining two pieces of one fish (Settings.merge_min_similarity).
 
-Two rules use it, and neither answers anything by itself:
+Three rules use it, and none answers anything by itself:
 - a card that looks like one you've answered shows that answer, for one key (R);
+- cards at least 0.90 alike to an answered card make up the quick-confirm queue (Show →
+  quick confirm), where each is shown beside the answered card and Y gives it that answer;
 - after you answer a card, the unanswered cards that look like it can be answered together
-  from a grid of their pictures, where you untick any that differ. Cards with warnings are
-  left out of that, as in the equipment queue.
+  from a scrolling list of their pictures, one per piece, where you untick any that
+  differ. A card joins that list only if every one of its pieces looks like the card you
+  answered, not just its average (a fish joined onto another would pass on the average),
+  and cards with warnings are left out, as in the equipment queue.
 
 Replaying the first 185 answers on the NP339 drop in the order they were given, the closest
 earlier-answered card named the fish right on 40 of 45 cards, and was never wrong; for the
@@ -94,6 +98,45 @@ def unanswered_like(looks: Looks, fish_id: int, min_similarity: float = LOOKALIK
     return sorted(out, key=lambda x: -x[1])
 
 
+def neighbours(looks: Looks, min_similarity: float = LOOKALIKE) -> dict[int, list[tuple[int, float]]]:
+    """Card id -> the other cards that look like it, most alike first. It doesn't depend
+    on answers, so it can be worked out once when a project is published (a static review
+    site then finds a card's answered look-alike from it and the answers so far)."""
+    out: dict[int, list[tuple[int, float]]] = {}
+    for start in range(0, len(looks.ids), 512):
+        sims = looks.emb[start:start + 512] @ looks.emb.T
+        for row, card in enumerate(looks.ids[start:start + 512]):
+            hits = np.flatnonzero(sims[row] >= min_similarity)
+            pairs = [(int(looks.ids[j]), float(sims[row, j])) for j in hits if int(looks.ids[j]) != int(card)]
+            out[int(card)] = sorted(pairs, key=lambda p: -p[1])
+    return out
+
+
+def card_pieces(project: Project, fish_id: int, ref: np.ndarray | None) -> list[dict]:
+    """A card's tracked pieces, each with the sighting to show for it (views.py) and how
+    alike the piece is to `ref` (a card's look): None when the piece or `ref` has none."""
+    from .store import from_blob  # noqa: PLC0415
+    from .views import best_view  # noqa: PLC0415
+
+    out = []
+    for tid in project.fish_tracklets(fish_id):
+        row = project.db.execute("SELECT embedding, start_t, end_t FROM tracklets WHERE id=?", (tid,)).fetchone()
+        dets = project.tracklet_detections(tid)
+        if not dets:
+            continue
+        emb = from_blob(row["embedding"])
+        sim = float(emb @ ref) if emb is not None and ref is not None else None
+        out.append({"tracklet": tid, "det": best_view(dets)["id"], "similarity": sim,
+                    "start_t": row["start_t"], "seconds": row["end_t"] - row["start_t"]})
+    return out
+
+
+def every_piece_alike(parts: list[dict], min_similarity: float = LOOKALIKE) -> bool:
+    """Every piece of a card looks like the reference, not just the card's average: a card
+    that joined another fish onto this one fails. A piece that can't be compared fails."""
+    return bool(parts) and all(p["similarity"] is not None and p["similarity"] >= min_similarity for p in parts)
+
+
 def groups(looks: Looks, order: list[int], min_similarity: float = LOOKALIKE) -> dict[int, int]:
     """Card id -> its look-alike group: each card joins the first earlier card in `order`
     that leads a group and looks like it, or leads a new one. Cards without a look get none."""
@@ -113,3 +156,18 @@ def groups(looks: Looks, order: list[int], min_similarity: float = LOOKALIKE) ->
         leaders.append(i)
         out[fish_id] = fish_id
     return out
+
+
+def best_answered(looks: Looks, min_similarity: float = LOOKALIKE) -> dict[int, tuple[int, float]]:
+    """Unanswered card id -> (the answered card it looks most like, how alike), for every
+    unanswered card with an answered look-alike at least `min_similarity` alike: what the
+    quick-confirm queue and the R key offer."""
+    done = np.array([looks.status.get(int(f)) in REVIEWED for f in looks.ids], dtype=bool)
+    open_ = np.array([looks.status.get(int(f)) in ("pending", "skipped") for f in looks.ids], dtype=bool)
+    if not done.any() or not open_.any():
+        return {}
+    sims = looks.emb[open_] @ looks.emb[done].T
+    pick = sims.argmax(axis=1)
+    best = sims[np.arange(len(pick)), pick]
+    open_ids, done_ids = looks.ids[open_], looks.ids[done]
+    return {int(c): (int(done_ids[k]), float(s)) for c, k, s in zip(open_ids, pick, best) if s >= min_similarity}

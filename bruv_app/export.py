@@ -141,7 +141,8 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
         else:
             continue
         scope = scopes.get(f["id"])
-        dets = [d for d in fish_dets[f["id"]] if scope is None or d["id"] in scope]
+        # Sightings outside the review window (rig being set down or lifted) aren't counted.
+        dets = [d for d in fish_dets[f["id"]] if (scope is None or d["id"] in scope) and project.in_window(d["t"])]
         if not dets:
             continue
         labels[f["id"]] = key
@@ -166,6 +167,13 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
             ", ".join(map(str, c.det_ids)), ", ".join(map(str, sorted(set(c.fish_ids)))), (c.key, c.t) in peaks,
         ])
     status_rows.append(["double-count checks", f"{len(checks)} (see the checks sheet)"])
+    start, end = project.review_window()
+    if start is not None or end is not None:
+        status_rows.append([
+            "review window (sightings outside it are not counted)",
+            f"{seconds_to_time(start or 0)} to {seconds_to_time(end) if end is not None else 'the end'}: "
+            f"{len(project.outside_window())} cards wholly outside",
+        ])
     warnings = all_flags(project, settings.merge_min_similarity)
     status_of = {f["id"]: f["status"] for f in fish_rows}
     confirmed = {fid for fid in warnings if status_of[fid] in REVIEWED and _confirmed(project, fid)}
@@ -196,7 +204,9 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
             comments.insert(0, "Unidentified fish")
             species = None
         elif s.species in extras or (template_species and s.species not in template_species):
-            comments.insert(0, s.species)
+            # An extra name, or a family the template can't record without a species
+            # ("moray_eel": written "moray eel" in the comment).
+            comments.insert(0, s.species.replace("_", " "))
             species = other
         record_rows.append(
             {
@@ -335,9 +345,15 @@ def review_status(project, settings, fish_rows, fish_dets, counted, scopes) -> t
 
     tiny = [f for f in fish_rows if sizes.get(f["id"], 0.0) < tiny_px]
     big = [f for f in fish_rows if sizes.get(f["id"], 0.0) >= tiny_px]
-    unanswered = [f for f in fish_rows if f["status"] in ("pending", "skipped")]
+    # Tiny fish are out of the review's scope (docs/SPEC.md §15), and so are cards wholly
+    # outside the review window: neither keeps the counts provisional; both are reported.
+    out_of_window = project.outside_window()
+    tiny_ids = {f["id"] for f in tiny}
+    unanswered = [f for f in fish_rows if f["status"] in ("pending", "skipped")
+                  and f["id"] not in tiny_ids and f["id"] not in out_of_window]
+    tiny_unanswered = [f for f in tiny if f["status"] in ("pending", "skipped") and f["id"] not in out_of_window]
     outside = sum(
-        len(fish_dets[f["id"]]) - len(counted.get(f["id"], []))
+        sum(1 for d in fish_dets[f["id"]] if project.in_window(d["t"])) - len(counted.get(f["id"], []))
         for f in fish_rows if f["status"] in ("species", "unknown")
     )
     complete = not unanswered and not outside
@@ -346,11 +362,12 @@ def review_status(project, settings, fish_rows, fish_dets, counted, scopes) -> t
     legacy = sum(1 for f in fish_rows if f["status"] in REVIEWED and f["id"] not in scopes)
     equipment = [f for f in fish_rows if f["status"] == "not_fish" and project.answer_details(f["id"]).get("equipment")]
     rows = [
-        ["review", "complete" if complete else
-         f"provisional: {len(unanswered)} cards not answered ({sum(f in tiny for f in unanswered)} of them tiny)"],
+        ["review", "complete" if complete else f"provisional: {len(unanswered)} cards not answered"],
+        ["tiny fish (out of the review's scope, not counted unless answered)",
+         f"{len(tiny_unanswered)} cards not answered"],
         ["sampled rate", f"{project.frame_rate():g} frames per second"],
         ["cards (all / answered / skipped / pending / detections)", "{} / {} / {} / {} / {}".format(*tally(fish_rows))],
-        [f"  not tiny (â‰¥ {tiny_px:g} px)", "{} / {} / {} / {} / {}".format(*tally(big))],
+        [f"  not tiny (≥ {tiny_px:g} px)", "{} / {} / {} / {} / {}".format(*tally(big))],
         [f"  tiny (< {tiny_px:g} px, hidden until asked for)", "{} / {} / {} / {} / {}".format(*tally(tiny))],
         ["detections counted", sum(len(d) for d in counted.values())],
         ["  of them unknown fish (in no species' MaxN)", unknown],

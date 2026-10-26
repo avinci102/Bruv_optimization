@@ -1093,3 +1093,27 @@ are out of the volunteers' scope.
 - 4 against 8 frames a second is tested offline on dataset A. `score` matches sightings
   across frame rates. Datasets A and B are processed at 4 fps, to stay comparable with
   NP339.
+
+**Built for the alpha** (branch `claude/pilot-workflow`, before the 30 Oct freeze):
+- Two-level answers. `families.resolve_answer` checks the answer and returns the recorded
+  name and family; `reviews.family` stores the family. `F` is always offered in the
+  family step. A family with no "family" entry in the template (moray eels) is recorded by
+  its key and exported as the "other" entry with the name in the comment.
+- Quick-confirm queue (Show → ⚡ quick confirm), for cards at least 0.90 alike to an
+  answered card: both pictures side by side, `Y` takes the answer. Each answer's
+  `reviews.details` holds `suggestion` (the look-alike card and the model's first guess),
+  `matched` ("same", "same family" or "different"), `queue` ("quick" when answered from
+  the queue) and `seconds` (time on the card, up to 600).
+- The look-alike list (`L`) scrolls, in bands (≥0.93, 0.90–0.93, 0.85–0.90 unticked),
+  shows one picture per tracked piece, and keeps the answered card pinned for comparison.
+  A card is left to answer one by one if any piece is under 0.85 alike to the answered
+  card (`lookalike.every_piece_alike`), or it has warnings. The `suggestion_log` table
+  records each card shown, with the decision: answered, left or unticked.
+- Best views prefer side-on, whole fish (`views.best_view`: quality × length-to-height,
+  less at the frame's edge).
+- Review window (`review-window` command, meta `review_window`): cards wholly outside it
+  are hidden and not counted, and neither are detections outside it.
+- Tiny fish are out of scope: unanswered, they don't make the counts provisional; the
+  `review_status` sheet counts them.
+- `check-setup` says what processing will run on (graphics card, PyTorch build, device).
+- For static hosting, `lookalike.neighbours` precomputes each card's look-alikes at publish.

@@ -73,6 +73,11 @@ CREATE TABLE IF NOT EXISTS merge_edges (
 -- How much of each detection's box differs from the scene's background (still.py): the
 -- bait arm and canister barely differ, fish do. Its own table, like frame_sources.
 CREATE TABLE IF NOT EXISTS det_change (det_id INTEGER PRIMARY KEY, change REAL);
+-- Look-alikes shown in the "answer together" list (lookalike.py) and whether the reviewer
+-- left each one ticked: the evidence an auto-accept threshold would be set from.
+CREATE TABLE IF NOT EXISTS suggestion_log (
+    id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, source INTEGER, similarity REAL,
+    decision TEXT, batch TEXT);
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
@@ -142,7 +147,9 @@ class Project:
         # Never add columns to frames: older versions build a record from all of them.
         added = {
             "detections": {"link_cost": "REAL", "link_margin": "REAL", "history_sim": "REAL"},
-            "reviews": {"details": "TEXT"},
+            # family: an answer's family (families.py), kept apart from the species, which
+            # is optional (docs/SPEC.md §15).
+            "reviews": {"details": "TEXT", "family": "TEXT"},
         }
         for table, columns in added.items():
             have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
@@ -516,7 +523,8 @@ class Project:
 
     def label_fish(self, fish_id: int, status: str, details: dict | None = None, **fields) -> None:
         """Record an answer. `details` goes with it into the review log (e.g. the card's
-        warnings, and that the reviewer confirmed them)."""
+        warnings, and that the reviewer confirmed them); so does `family` (an answer's
+        family, which the fish table has no column for)."""
         if status not in STATUSES:
             raise ValueError(f"Bad status: {status}")
         species = fields.get("species") if status == "species" else None
@@ -537,11 +545,54 @@ class Project:
             ),
         )
         scope = [d["id"] for d in self.fish_detections(fish_id)] if status != "pending" else []
+        family = fields.get("family") if status == "species" else None
         self.db.execute(
-            "INSERT INTO reviews(at, fish_id, status, species, scope, details) VALUES(?, ?, ?, ?, ?, ?)",
-            (_now(), fish_id, status, species, json.dumps(scope), json.dumps(details) if details else None),
+            "INSERT INTO reviews(at, fish_id, status, species, scope, details, family) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (_now(), fish_id, status, species, json.dumps(scope), json.dumps(details) if details else None, family),
         )
         self.db.commit()
+
+    def log_suggestions(self, rows: list[tuple[int, int, float, str, str]]) -> None:
+        """(card, source card, similarity, decision, batch) for look-alikes a reviewer saw."""
+        self.db.executemany(
+            "INSERT INTO suggestion_log(at, fish_id, source, similarity, decision, batch) VALUES(?, ?, ?, ?, ?, ?)",
+            [(_now(), *row) for row in rows],
+        )
+        self.db.commit()
+
+    def answer_family(self, fish_id: int) -> str | None:
+        """The family recorded with a card's current answer (None before families were kept)."""
+        review = self.last_review(fish_id)
+        return review["family"] if review is not None and "family" in review.keys() else None
+
+    # --- the review window: the part of the video that is reviewed and counted ----------
+
+    def review_window(self) -> tuple[float | None, float | None]:
+        """(start, end) in seconds of the combined video; None where it's open. Before the
+        start the rig is being set down, after the end it is being lifted: divers, hands
+        and drifting rope, no survey."""
+        window = self.get_meta("review_window") or {}
+        return window.get("start_s"), window.get("end_s")
+
+    def set_review_window(self, start_s: float | None, end_s: float | None) -> None:
+        if start_s is not None and end_s is not None and end_s <= start_s:
+            raise ValueError("The review window must end after it starts")
+        self.set_meta("review_window", {"start_s": start_s, "end_s": end_s})
+
+    def in_window(self, t: float) -> bool:
+        start, end = self.review_window()
+        return (start is None or t >= start) and (end is None or t <= end)
+
+    def outside_window(self) -> set[int]:
+        """Cards wholly outside the review window: not reviewed and not counted."""
+        start, end = self.review_window()
+        if start is None and end is None:
+            return set()
+        rows = self.db.execute("SELECT id, start_t, end_t FROM fish").fetchall()
+        return {
+            r["id"] for r in rows
+            if r["end_t"] is not None and ((start is not None and r["end_t"] < start) or (end is not None and r["start_t"] > end))
+        }
 
     def add_rig_ref(self, fish_id: int, box, colour) -> int:
         cur = self.db.execute(

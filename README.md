@@ -24,7 +24,9 @@ The first run installs everything. It can install Python 3.13 for you if it's mi
 winget), and it downloads the fish detector and species model, a few GB in all. On a PC
 with an NVIDIA graphics card it installs the GPU version of PyTorch (about 3 GB more),
 which makes processing many times faster; if the card's driver is too old, it says so
-and runs on the CPU. After
+and runs on the CPU. To check what a PC will use, run
+`.venv\Scripts\python -m bruv_app check-setup` in the code folder: it names the card,
+the PyTorch build, and whether processing will run on the card or the CPU. After
 that it processes the video and opens the review page in your browser. Keep the black
 window open while you review. Exports land in a `bruv_project\exports` folder inside your
 footage folder, and the original template is never changed.
@@ -121,21 +123,37 @@ the audio track.
 
 ## Review keys
 
-`1` `2` `3` pick a model guess · `/` search species, `Enter` records it · `U` unknown fish ·
-`N` not a fish · `E` equipment · `S` skip · `R` same answer as a look-alike · `L` answer
+`1` `2` `3` pick a model guess (a family, then its species) · `F` the family only ·
+`/` search species, `Enter` records it · `U` unknown fish · `N` not a fish · `E` equipment ·
+`S` skip · `Y` yes, same as the card beside it · `R` same answer as a look-alike · `L` answer
 look-alikes together · `←` `→` move between cards. Nothing is pre-selected.
 
+- **The family is required, the species optional.** If you can tell the family but not
+  the species, `F` records the family alone (the template's "grouper family" entry). A
+  family the template has no such entry for (moray eels) is recorded by its name and
+  exported as the template's "other" entry, with the name in the comment. `U` stays
+  "unknown fish", for a fish whose family you can't tell.
+- **The picture is the fish's best side-on view:** of each card's sightings, the page shows
+  the one that is sharp, big and long rather than tall (a fish lying across the frame, not
+  facing the camera), and not cut off by the frame's edge.
 - **The same fish over and over.** Short tracks keep each card to one fish, so a fish that
   circles the bait comes back as many cards. Two cards look alike when their pictures'
   embeddings are 0.85 alike or more (the bar for joining two pieces of one fish):
   - A card that looks like one you've answered says so ("Looks like #4202, which you
     answered unicornfish"), and `R` gives it the same answer. With no such card, `R`
     repeats your last answer.
+  - **Show → ⚡ quick confirm** lists the cards at least 0.90 alike to one you've
+    answered, most alike first (on the NP339 answers, 99.8% of answered cards that alike
+    had the same answer). Each shows the two pictures side by side: `Y` gives it that
+    answer, or answer as usual if it's a different fish. Every card is still your click,
+    and each answer records what was suggested and whether you took it.
   - After you answer a card, a button offers its unanswered look-alikes. `L` opens them
-    as a grid of pictures, most alike first: untick any that differ, and the rest get
-    your answer together. Cards at least 0.90 alike start ticked (on the NP339 answers,
-    99.8% of answered cards that alike had the same answer); the rest start unticked.
-    Cards with warnings are left to answer one by one, and the batch can be undone.
+    as a list you scroll down, in three bands: very alike (93% or more), alike (90–93%),
+    and maybe (85–90%, which start unticked). Your card's picture stays at the top; point
+    at a card to see it large beside it. A card made of several tracked pieces shows one
+    picture per piece. Untick any that differ, and the rest get your answer together.
+    Cards with warnings, or with a piece that isn't 0.85 alike to yours, are left to answer
+    one by one, and the batch can be undone. What you left ticked or unticked is logged.
   - After a rebuild, a card holding sightings you answered before says so ("Before the
     cards were rebuilt you answered unicornfish for 117 of this card's 126 sightings"),
     and `R` gives the whole card that answer.
@@ -207,13 +225,25 @@ look-alikes together · `←` `→` move between cards. Nothing is pre-selected.
   - **Show tiny fish:** tiny fish never reach 40 px across (in the 960 px wide frames the
     page shows; `tiny_fish_px` in the project's settings), so nobody can identify them.
     They get cards of their own, never joined to other fish, and stay hidden until you
-    tick this. Left unreviewed, they stay out of the counts, and the progress line shows
-    them apart ("tiny fish: 0 of 177"): hidden is not the same as reviewed. Each card
-    shows its fish's size at its largest.
+    tick this. They're outside the review's scope: left unanswered, they stay out of the
+    counts without making them provisional, and the export's `review_status` sheet says
+    how many there were. Each card shows its fish's size at its largest.
   - **Sort:** biggest fish first (the default), in time order, or look-alikes together.
     Big fish are the clearest and the ones the counts rest on, so if a review stops early,
     what's left is the small, doubtful tail. Time order helps to follow a fish that comes
     and goes.
+- **Only the time on the seabed.** If the video starts on deck or during the descent, set
+  the review window (times across the whole video, as the page shows them):
+
+  ```bat
+  .venv\Scripts\python -m bruv_app review-window --project my_project --start 1:30 --end 46:00
+  ```
+
+  Cards wholly outside it are hidden and not counted, and neither are sightings outside
+  it; the export's `review_status` sheet records the window. `--clear` removes it.
+- **Time per card.** Each answer records how long the card was open (up to 10 minutes), and
+  a look-alike batch shares its time between its cards. It's for planning reviews and for
+  measuring which steps save time.
 
 ## Teaching it your fish
 

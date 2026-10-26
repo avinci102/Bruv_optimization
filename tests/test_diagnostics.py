@@ -131,7 +131,9 @@ def test_a_flagged_card_needs_confirming(project, tmp_path):
     assert project.fish(card)["status"] == "pending"
     assert client.post(f"/api/fish/{card}/label", json={**answer, "confirm": True}).status_code == 200
     review = json.loads(project.last_review(card)["details"])
-    assert review == {"flags": ["pieces look different", "pieces disagree on species", "two boxes at once"], "confirmed": True}
+    assert {k: review[k] for k in ("flags", "confirmed")} == {
+        "flags": ["pieces look different", "pieces disagree on species", "two boxes at once"], "confirmed": True}
+    assert "suggestion" in review  # what was offered is kept with every answer
     # Skipping a flagged card needs no confirming.
     assert client.post(f"/api/fish/{card}/label", json={"status": "skipped"}).status_code == 200
 

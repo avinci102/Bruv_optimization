@@ -9,8 +9,14 @@ const state = {
   lastAnswer: null,  // your last answer here (R repeats it when no look-alike was answered)
   likeSource: null,  // the card you just answered and its unanswered look-alikes (L)
   likeBatch: null,  // the last look-alikes answered together, for undo
-  grid: null,  // the picture grid shown over the page (look-alikes, or hidden still objects)
+  grid: null,  // the picture list shown over the page (look-alikes, or hidden still objects)
+  shownAt: 0,  // when the card on screen was shown: time per card goes with each answer
 };
+
+// Seconds since the card on screen was shown, capped so a break doesn't count as work.
+function secondsOnCard() {
+  return Math.min(600, Math.max(0, (Date.now() - state.shownAt) / 1000));
+}
 
 function pct(p) {
   return `${Math.round(p * 100)}%`;
@@ -81,14 +87,18 @@ function statusGroup(status) {
 // cards in time order, which the sort keeps for equal sizes.
 function visibleCards(status = $("status").value, rule = $("filter").value, showTiny = $("show-tiny").checked) {
   const list = state.cards.filter((c) => {
+    if (c.outside) return false;  // outside the review window: not reviewed
     if (status !== "all" && statusGroup(c.status) !== status) return false;
     if (!showTiny && c.max_px < state.tinyPx) return false;
     if (rule === "all") return true;
     if (rule === "rig") return state.rig.has(c.id);
+    if (rule === "quick") return Boolean(c.like && c.like.sim >= SURE_ALIKE);
     const rank = templateRank(c.guesses);
     return rank > 0 && rank <= Number(rule);
   });
   const sort = $("sort").value;
+  // The quick-confirm queue goes most alike first, whatever Sort says.
+  if (rule === "quick") return list.sort((a, b) => b.like.sim - a.like.sim);
   if (sort === "size") return list.sort((a, b) => b.max_px - a.max_px);
   if (sort === "group") {
     // Look-alike groups (the server's), biggest fish's group first, each in time order; so
@@ -100,9 +110,12 @@ function visibleCards(status = $("status").value, rule = $("filter").value, show
   return list;
 }
 
-// How an answer reads: the species, or "not a fish" / "unknown fish".
+// How an answer reads: the species (or the family, when the species isn't known), or "not a
+// fish" / "unknown fish". A family with no family-level entry is recorded by its own name
+// ("moray_eel"), shown with spaces.
 function answerName(a) {
-  return a.status === "species" ? a.species : a.status === "not_fish" ? "not a fish" : "unknown fish";
+  if (a.status === "species") return String(a.species || a.family || "").replace(/_/g, " ");
+  return a.status === "not_fish" ? "not a fish" : "unknown fish";
 }
 
 // "Same fish as the card before it": the card just before it in the video, skipping hidden
@@ -166,11 +179,14 @@ function updateRigBar() {
 // untouched tiny card is still unreviewed: they're counted apart, never as done.
 function showProgress() {
   const answered = (c) => c.status !== "pending" && c.status !== "skipped";
-  const main = state.cards.filter((c) => c.max_px >= state.tinyPx);
-  const tiny = state.cards.filter((c) => c.max_px < state.tinyPx);
+  const inside = state.cards.filter((c) => !c.outside);
+  const main = inside.filter((c) => c.max_px >= state.tinyPx);
+  const tiny = inside.filter((c) => c.max_px < state.tinyPx);
   const done = main.filter(answered).length;
+  const outside = state.cards.length - inside.length;
   $("progress-text").textContent = `${done} of ${main.length} reviewed` +
-    (tiny.length ? ` · tiny fish: ${tiny.filter(answered).length} of ${tiny.length}` : "");
+    (tiny.length ? ` · tiny fish (not part of the review): ${tiny.filter(answered).length} of ${tiny.length}` : "") +
+    (outside ? ` · ${outside} outside the review window` : "");
   $("bar").style.width = main.length ? `${(100 * done) / main.length}%` : "0";
 }
 
@@ -185,8 +201,8 @@ async function init() {
   showProgress();
   $("tiny-toggle").title =
     `Tiny fish never reach ${state.tinyPx} px across, too small to identify. They're kept off ` +
-    "other cards and hidden; tick to review them. Untouched, they stay out of the counts, and " +
-    "the export marks its counts provisional.";
+    "other cards and aren't part of the review; tick to see them anyway. Unanswered, they stay " +
+    "out of the counts, and the export says how many there are.";
   // Open on the pending cards, or the skipped ones once nothing is pending.
   for (const status of ["pending", "skipped", "all"]) {
     $("status").value = status;
@@ -236,8 +252,10 @@ async function show(index) {
   d.answered_like ??= null;
   d.lookalikes ??= 0;
   d.earlier ??= null;
+  d.family ??= null;
   state.detail = d;
   state.selected = null;
+  state.shownAt = Date.now();
 
   $("card-pos").textContent = `Card ${state.index + 1} of ${list.length}  ·  #${d.id}`;
   $("best-crop").src = d.best ? `/crop/${d.best.det_id}` : "";
@@ -260,7 +278,7 @@ async function show(index) {
 
   // Status: only the user's own recorded answer is ever highlighted.
   const badge = $("status-badge");
-  badge.textContent = d.status === "species" ? `Recorded: ${d.species}`
+  badge.textContent = d.status === "species" ? `Recorded: ${answerName(d)}`
     : d.status === "not_fish" && d.equipment ? "Recorded: Not a fish (equipment)" : STATUS_TEXT[d.status];
   badge.className = "badge " + (d.status === "pending" ? "" : d.status === "skipped" ? "skipped" : "done");
   const rank = templateRank(d.guesses.map((g) => g[0]));
@@ -386,7 +404,7 @@ function renderGuesses(d) {
   }
   d.guesses.forEach(([label, p], i) => {
     const b = guessButton(i + 1, label, p, d.status === "species" && d.species === label);
-    b.onclick = () => record("species", label);
+    b.onclick = () => record("species", label);  // the family comes with the species
     box.append(b);
   });
 }
@@ -399,25 +417,28 @@ function familyNames(f) {
 }
 
 function pickFamily(f) {
-  if (f.members.length === 1) return record("species", f.members[0][0]);
+  // A family with one name (unicornfish) is its own answer.
+  if (f.members.length === 1) return record("species", f.members[0][0], { family: f.key });
   state.familyOpen = f;
   const step = $("family-step");
   step.replaceChildren();
   const head = document.createElement("p");
   head.className = "hint";
-  head.textContent = `${f.name}: pick the species${f.entry ? ", or F for just the family" : ""}. Esc goes back.`;
+  head.textContent = `${f.name}: pick the species if you can tell it, or F if not. Esc goes back.`;
   step.append(head);
   const d = state.detail;
   familyNames(f).forEach(([name, p], i) => {
     const b = guessButton(i + 1, name, p, d.status === "species" && d.species === name);
-    b.onclick = () => record("species", name);
+    b.onclick = () => record("species", name, { family: f.key });
     step.append(b);
   });
-  if (f.entry) {
-    const b = guessButton("F", f.entry, f.members.find(([n]) => n === f.entry)?.[1] ?? 0, d.status === "species" && d.species === f.entry, " · species not known");
-    b.onclick = () => record("species", f.entry);
-    step.append(b);
-  }
+  // The family is the answer that's always required; the species is optional. F records the
+  // family alone: as the template's "<family> family" entry, or by the family's name.
+  const entry = f.entry || f.key;
+  const p = f.members.find(([n]) => n === f.entry)?.[1] ?? f.best;
+  const b = guessButton("F", f.name, p, d.status === "species" && d.species === entry, " · species not known");
+  b.onclick = () => record("species", entry, { family: f.key });
+  step.append(b);
   step.hidden = false;
 }
 
@@ -492,6 +513,19 @@ function renderLike(d) {
     hint.innerHTML = `Before the cards were rebuilt you answered <strong></strong> for ${a.sightings} of this card's ` +
       `${a.of} sightings. <kbd>R</kbd> gives the whole card that answer.`;
     hint.querySelector("strong").textContent = answerName(a);
+  } else if (a && a.kind === "like" && a.similarity >= SURE_ALIKE && a.det) {
+    // Quick confirm: this card beside the answered card it looks like; Y takes that answer.
+    hint.innerHTML = `<div class="quick"><figure><img alt=""><figcaption>this card</figcaption></figure>` +
+      `<figure><img alt=""><figcaption></figcaption></figure></div>` +
+      `<p>Same as <a href="#"></a>, which you answered <strong></strong>? <span class="muted">(${pct(a.similarity)} alike)</span> ` +
+      `<kbd>Y</kbd> yes · or answer as usual if not</p>`;
+    const imgs = hint.querySelectorAll("img");
+    imgs[0].src = d.best ? `/crop/${d.best.det_id}` : "";
+    imgs[1].src = `/crop/${a.det}`;
+    hint.querySelectorAll("figcaption")[1].textContent = `#${a.card}: ${answerName(a)}`;
+    hint.querySelector("a").textContent = `#${a.card}`;
+    hint.querySelector("a").onclick = (e) => { e.preventDefault(); goToCard(a.card); };
+    hint.querySelector("strong").textContent = answerName(a);
   } else if (a && a.kind === "like") {
     hint.innerHTML = `Looks like <a href="#"></a>, which you answered <strong></strong> ` +
       `<span class="muted">(${pct(a.similarity)} alike)</span>. <kbd>R</kbd> gives it the same answer.`;
@@ -519,14 +553,25 @@ function repeatAnswer() {
     message("Nothing to repeat yet: answer a card first.", "error");
     return;
   }
-  record(a.status, a.status === "species" ? a.species : null);
+  record(a.status, a.status === "species" ? a.species : null, { family: a.family });
+}
+
+// Y: yes, the same answer as the answered card this one looks like (the quick confirm).
+function acceptLike() {
+  const d = state.detail;
+  const a = d && (d.status === "pending" || d.status === "skipped") ? d.answered_like : null;
+  if (!a) {
+    message("No answered card looks like this one: answer it as usual.", "error");
+    return;
+  }
+  record(a.status, a.status === "species" ? a.species : null, { family: a.family, queue: true });
 }
 
 // After an answer: the unanswered cards that look like that card, to answer together (L).
-async function loadLikeSource(id, status, species) {
+async function loadLikeSource(id, status, species, family) {
   try {
-    const cards = await api(`/api/fish/${id}/lookalikes`);
-    state.likeSource = cards.length ? { id, status, species, cards } : null;
+    const r = await api(`/api/fish/${id}/lookalikes`);
+    state.likeSource = r.cards && r.cards.length ? { id, status, species, family, source: r.source, cards: r.cards } : null;
   } catch (e) {
     state.likeSource = null;  // (an older server has no look-alikes)
   }
@@ -547,33 +592,60 @@ function updateLikeBar() {
   if (state.likeBatch) $("like-undo").textContent = `Undo: the ${state.likeBatch.answered.length} look-alikes just answered`;
 }
 
-// A grid of pictures over the page. Tickable: click to untick a card that differs.
-function openGrid({ title, hint, items, tickable = false, okText = null, onOk = null }) {
-  const start = tickable ? items.filter((i) => !i.flagged && i.ticked !== false) : [];
-  state.grid = { items, onOk, okText, ticked: new Set(start.map((i) => i.id)) };
+// A scrolling list of pictures over the page, in sections. Tickable: click a card to untick
+// it (or tick it). With a reference, the card you answered stays pinned at the top, beside
+// the card the pointer is on, so each one is a "same as this?" check.
+function openGrid({ title, hint, sections, held = "", reference = null, tickable = false, okText = null, onOk = null }) {
+  const items = sections.flatMap((sec) => sec.items);
+  state.grid = { items, onOk, okText, openedAt: Date.now(),
+    ticked: new Set(tickable ? items.filter((i) => i.ticked !== false).map((i) => i.id) : []) };
   $("grid-title").textContent = title;
   $("grid-hint").textContent = hint;
-  const grid = $("grid");
-  grid.replaceChildren();
-  for (const it of items) {
-    const fig = document.createElement("figure");
-    fig.innerHTML = `<img loading="lazy" src="/crop/${it.det}" alt=""><figcaption></figcaption>`;
-    fig.querySelector("figcaption").textContent = it.caption;
-    if (it.flagged) {
-      fig.classList.add("flagged");
-      fig.title = "This card has warnings: answer it on its own";
-    } else if (tickable) {
-      fig.classList.toggle("ticked", state.grid.ticked.has(it.id));
-      fig.onclick = () => {
-        const t = state.grid.ticked;
-        if (t.has(it.id)) t.delete(it.id);
-        else t.add(it.id);
-        fig.classList.toggle("ticked", t.has(it.id));
-        updateGridOk();
-      };
-    }
-    grid.append(fig);
+  $("grid-held").hidden = !held;
+  $("grid-held").textContent = held;
+  $("grid-compare").hidden = !reference;
+  const peek = (it) => {
+    $("grid-peek-img").src = `/crop/${it.pics[0]}`;
+    $("grid-peek-cap").textContent = it.caption;
+  };
+  if (reference) {
+    $("grid-ref-img").src = `/crop/${reference.det}`;
+    $("grid-ref-cap").textContent = reference.caption;
+    if (items.length) peek(items[0]);
   }
+  const scroll = $("grid-scroll");
+  scroll.replaceChildren();
+  for (const sec of sections) {
+    if (!sec.items.length) continue;
+    if (sec.title) {
+      const h = document.createElement("h3");
+      h.textContent = `${sec.title} · ${sec.items.length}`;
+      scroll.append(h);
+    }
+    const grid = document.createElement("div");
+    grid.className = "grid";
+    for (const it of sec.items) {
+      const fig = document.createElement("figure");
+      fig.innerHTML = `<div class="pics">${it.pics.map((det) => `<img loading="lazy" src="/crop/${det}" alt="">`).join("")}</div>` +
+        "<figcaption></figcaption>";
+      fig.querySelector("figcaption").textContent = it.caption;
+      if (it.pics.length > 1) fig.title = "One picture per tracked piece of this card";
+      if (reference) fig.onmouseenter = () => peek(it);
+      if (tickable) {
+        fig.classList.toggle("ticked", state.grid.ticked.has(it.id));
+        fig.onclick = () => {
+          const t = state.grid.ticked;
+          if (t.has(it.id)) t.delete(it.id);
+          else t.add(it.id);
+          fig.classList.toggle("ticked", t.has(it.id));
+          updateGridOk();
+        };
+      }
+      grid.append(fig);
+    }
+    scroll.append(grid);
+  }
+  scroll.scrollTop = 0;
   $("grid-ok").hidden = !onOk;
   updateGridOk();
   $("grid-panel").hidden = false;
@@ -598,17 +670,31 @@ function openLikeGrid() {
     return;
   }
   const name = answerName(s);
+  // Only cards whose every piece looks like the one you answered, with no warnings, can be
+  // answered together; the rest are counted here and left to answer one by one.
+  const ok = s.cards.filter((c) => !c.flagged && !c.mixed);
+  const flagged = s.cards.filter((c) => c.flagged).length;
+  const mixed = s.cards.filter((c) => c.mixed && !c.flagged).length;
+  const item = (c) => ({
+    // Ticked to start with when 0.90 alike or more: on Vinci's answers, 99.8% of answered
+    // cards that alike had the same answer, against 98.7% from 0.85. The rest start unticked.
+    id: c.id, pics: c.pieces.map((p) => p.det), ticked: c.similarity >= SURE_ALIKE,
+    caption: `#${c.id} · ${c.clip} ${fmtTime(c.local_t)} · ${pct(c.similarity)} alike` +
+      (c.n_pieces > 1 ? ` · ${c.n_pieces} pieces` : ""),
+  });
+  const band = (lo, hi) => ok.filter((c) => c.similarity >= lo && c.similarity < hi).map(item);
   openGrid({
     title: `Cards that look like #${s.id}, which you answered ${name}`,
-    hint: "Most alike first. Click a picture to untick a card that isn't the same kind of fish, or to tick one; " +
-      `cards less than ${pct(SURE_ALIKE)} alike start unticked. The ticked ones get the same answer, and you can undo it. ` +
-      "Cards with warnings (orange) are left to answer one by one.",
-    items: s.cards.map((c) => ({
-      // Ticked to start with when 0.90 alike or more: on Vinci's answers, 99.8% of answered
-      // cards that alike had the same answer, against 98.7% from 0.85. The rest start unticked.
-      id: c.id, det: c.best_det, flagged: c.flagged, ticked: c.similarity >= SURE_ALIKE,
-      caption: `#${c.id} · ${c.clip} ${fmtTime(c.local_t)} · ${pct(c.similarity)} alike`,
-    })),
+    hint: "Scroll down, most alike first. Point at a card to see it large beside yours; click to untick one that isn't " +
+      "the same kind of fish (or to tick one). The ticked cards get your answer together, and you can undo it.",
+    reference: s.source && s.source.det ? { det: s.source.det, caption: `#${s.id}, which you answered ${name}` } : null,
+    sections: [
+      { title: "Very alike (93% or more)", items: band(0.93, 2) },
+      { title: "Alike (90–93%)", items: band(SURE_ALIKE, 0.93) },
+      { title: "Maybe: check these (85–90%, start unticked)", items: band(0, SURE_ALIKE) },
+    ],
+    held: flagged || mixed ? `${flagged + mixed} more look alike but are left to answer one by one: ` +
+      [flagged ? `${flagged} with warnings` : "", mixed ? `${mixed} with a piece that looks different` : ""].filter(Boolean).join(", ") + "." : "",
     tickable: true,
     okText: (n) => `Answer the ${n} ticked as ${name}`,
     onOk: answerLikeGrid,
@@ -618,12 +704,16 @@ function openLikeGrid() {
 async function answerLikeGrid() {
   const s = state.likeSource;
   const ids = [...state.grid.ticked];
+  const seconds = (Date.now() - state.grid.openedAt) / 1000;
   try {
-    const res = await api("/api/lookalikes/answer", { source: s.id, ids, status: s.status, species: s.species });
+    const res = await api("/api/lookalikes/answer",
+      { source: s.id, ids, status: s.status, species: s.species, family: s.family, seconds,
+        shown: state.grid.items.map((i) => i.id) });
     for (const id of res.answered) Object.assign(state.cards.find((c) => c.id === id) || {}, { status: s.status, species: s.species });
     state.likeBatch = res;
     state.likeSource = null;
     closeGrid();
+    await loadCards();  // the quick-confirm queue changes with every answer
     updateFilterCounts();
     await loadSummary();
     await show(state.index);
@@ -659,7 +749,7 @@ async function openStill() {
       hint: "These matched the scene's background for the minute either side (the bait arm, canister, rope, rocks), " +
         "so they make no cards and aren't counted. A fish here would have stayed motionless for over a minute. " +
         "If you see one, note its time: the still filter can be switched off for a rebuild.",
-      items: r.sample.map((x) => ({ id: x.det_id, det: x.det_id, caption: `${x.clip} ${fmtTime(x.local_t)} · ${pct(x.change)} changed` })),
+      sections: [{ title: "", items: r.sample.map((x) => ({ id: x.det_id, pics: [x.det_id], caption: `${x.clip} ${fmtTime(x.local_t)} · ${pct(x.change)} changed` })) }],
     });
   } catch (e) {
     message(e.message, "error");
@@ -720,7 +810,9 @@ function optionalFields() {
   };
 }
 
-async function record(status, species = null) {
+// An answer. For a fish, `family` is the family (always known once a species is, so it may
+// be left to the server); `queue` marks an answer given from the quick-confirm queue.
+async function record(status, species = null, { family = null, queue = false } = {}) {
   const d = state.detail;
   if (!d) return;
   // The template's catch-all ("other …") is only useful with the fish's name in the comment.
@@ -733,7 +825,7 @@ async function record(status, species = null) {
   const answering = status === "species" || status === "unknown" || status === "not_fish";
   let confirmed = false;
   if (answering && d.flags.length) {
-    const what = species || STATUS_TEXT[status].replace("Recorded: ", "");
+    const what = species ? answerName({ status, species }) : STATUS_TEXT[status].replace("Recorded: ", "");
     confirmed = confirm(
       `This card may hold more than one fish:\n\n• ${d.flags.map((f) => f.text).join("\n• ")}\n\n` +
       `Are all ${d.pieces.length} pieces one fish? OK records “${what}” for all of them. ` +
@@ -742,7 +834,10 @@ async function record(status, species = null) {
     if (!confirmed) return;
   }
   try {
-    await api(`/api/fish/${d.id}/label`, { status, species, ...optionalFields(), confirm: confirmed });
+    await api(`/api/fish/${d.id}/label`, {
+      status, species, family, ...optionalFields(), confirm: confirmed, seconds: secondsOnCard(),
+      queue: queue || $("filter").value === "quick",
+    });
   } catch (e) {
     message(e.message, "error");
     return;
@@ -751,8 +846,11 @@ async function record(status, species = null) {
   card.status = status;
   card.species = species;
   if (answering) {
-    state.lastAnswer = { status, species };
-    loadLikeSource(d.id, status, species);  // not awaited: the next card shows meanwhile
+    state.lastAnswer = { status, species, family };
+    loadLikeSource(d.id, status, species, family);  // not awaited: the next card shows meanwhile
+    // The quick-confirm queue grows with every answer: refresh it (not awaited either).
+    if ($("filter").value === "quick") await loadCards();
+    else loadCards().then(updateFilterCounts);
   }
   updateFilterCounts();
   await loadSummary();
@@ -976,6 +1074,8 @@ document.addEventListener("keydown", (e) => {
     mergePrev();
   } else if (e.key === "r" || e.key === "R") {
     repeatAnswer();
+  } else if (e.key === "y" || e.key === "Y") {
+    acceptLike();
   } else if (e.key === "l" || e.key === "L") {
     openLikeGrid();
   } else if (e.key === "ArrowUp") {
