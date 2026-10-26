@@ -1117,3 +1117,25 @@ are out of the volunteers' scope.
   `review_status` sheet counts them.
 - `check-setup` says what processing will run on (graphics card, PyTorch build, device).
 - For static hosting, `lookalike.neighbours` precomputes each card's look-alikes at publish.
+
+**Built in wave 1: following a fish** (branch `claude/follow-fish`, `follow.py`)
+- "Follow this fish" on a card opens `/follow`. It starts from the card's best view, steps
+  forward frame by frame until the fish has been gone for `gone_s` (5 s by default, 10 s
+  offered), then backward from the start the same way. Every box in the frame can be
+  clicked, the faint ones (0.10–0.30) and those hidden as still too, so the follows also
+  measure the faint-box change. A click off the boxes, or `B`, records "here, no box"; `O`
+  records "gone". The next frame is worked out from the marks, so undo and resume are
+  exact.
+- Storage: new tables `follows` and `follow_marks`, one mark per frame per follow. A
+  follow is named `F<id>-<copy tag>`; the tag (meta `copy_tag`) keeps names apart across
+  volunteers' copies.
+- Scoring: sidecar rows of scope "individual" (a new column; old sheets read as "frame").
+  Frames with only such rows score identity (tracker, merge, cards) and a new following
+  stage: the share of each visit the run boxed, cards per followed fish, and card changes
+  by likely cause (near another fish, a gap in its boxes, the frame's edge, none of these),
+  in that order. They don't score detection. `evaluate` includes the project's follows
+  without a sheet; `follow-sheet` writes them out.
+- A swap shows with one fish followed: a card holding the followed fish that has another
+  box in a frame checked for it (the person clicked elsewhere, or said it was gone) holds
+  another fish, or a second box on this one. The follow's summary names such cards, and
+  `evaluate` counts them.

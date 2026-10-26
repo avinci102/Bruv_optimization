@@ -298,13 +298,31 @@ def cmd_evaluate(args) -> None:
     from .evaluate import evaluate_project, read_sidecar, threshold_curve  # noqa: PLC0415
 
     project = _open_project(args.project)
-    boxes = read_sidecar(Path(args.annotations))
-    print("\n".join(evaluate_project(project, boxes).lines()))
+    boxes = [b for path in args.annotations for b in read_sidecar(Path(path))]
+    report = evaluate_project(project, boxes, follows=not args.no_follows)
+    if not args.annotations and not report.follow_frames:
+        raise ValueError("Nothing to score: give --annotations, or follow some fish on the review page first")
+    print("\n".join(report.lines()))
     if args.thresholds:
         print("Detection at other score thresholds (the run's own boxes; tracks and cards not re-run):")
         for p in threshold_curve(project, boxes, args.thresholds):
             print(f"  {p.threshold:.2f}: {p.kept} boxes kept; annotated frames: {p.matched} fish found, "
                   f"{p.missed} missed, {p.false} false; precision {p.precision:.0%}, recall {p.recall:.0%}")
+
+
+def cmd_follow_sheet(args) -> None:
+    from .evaluate import write_sidecar  # noqa: PLC0415
+    from .follow import all_follows, sidecar_rows  # noqa: PLC0415
+
+    project = _open_project(args.project)
+    rows = sidecar_rows(project)
+    if not rows:
+        raise ValueError("No fish followed in this project yet")
+    path = write_sidecar(Path(args.out), rows)
+    follows = all_follows(project)
+    unfinished = sum(not f.done for f in follows)
+    print(f"Saved {path}: {len(follows)} fish followed, {len(rows)} rows"
+          + (f" ({unfinished} follows not finished)" if unfinished else ""))
 
 
 def cmd_annotation_sheet(args) -> None:
@@ -599,10 +617,17 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("evaluate", help="score a project (or a snapshot) against independent annotations")
     p.add_argument("--project", required=True, help="a project folder, or a snapshot .db")
-    p.add_argument("--annotations", required=True, help="the evaluation sidecar (.csv)")
+    p.add_argument("--annotations", nargs="*", default=[], metavar="CSV",
+                   help="evaluation sidecars (.csv); the fish followed in the project are scored too")
+    p.add_argument("--no-follows", action="store_true", help="leave out the fish followed in the project")
     p.add_argument("--thresholds", nargs="+", type=float, metavar="T",
                    help="also score detection at these score thresholds, e.g. 0.1 0.2 0.3 0.4 0.5")
     p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("follow-sheet", help="save the fish followed on the review page as an evaluation sidecar")
+    p.add_argument("--project", required=True)
+    p.add_argument("--out", required=True, help="the .csv to write")
+    p.set_defaults(func=cmd_follow_sheet)
 
     p = sub.add_parser("annotation-sheet", help="start an evaluation sidecar from a project's frames")
     p.add_argument("--project", required=True)

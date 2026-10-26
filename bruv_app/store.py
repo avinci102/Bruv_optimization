@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS det_change (det_id INTEGER PRIMARY KEY, change REAL);
 CREATE TABLE IF NOT EXISTS suggestion_log (
     id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, source INTEGER, similarity REAL,
     decision TEXT, batch TEXT);
+-- Fish followed frame by frame (follow.py): clicked ground truth for continuity. A mark per
+-- frame looked at: the fish's box, "nobox" (where it was, if clicked) or "gone".
+CREATE TABLE IF NOT EXISTS follows (
+    id INTEGER PRIMARY KEY, at TEXT, card INTEGER, start_det INTEGER, gone_s REAL, done_at TEXT);
+CREATE TABLE IF NOT EXISTS follow_marks (
+    follow_id INTEGER, frame_id INTEGER, state TEXT, det_id INTEGER, x REAL, y REAL, at TEXT,
+    PRIMARY KEY (follow_id, frame_id));
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);

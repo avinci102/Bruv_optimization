@@ -224,6 +224,13 @@ async function init() {
     $("empty").hidden = false;
     return;
   }
+  // Back from following a fish (/follow): open on that card.
+  const back = /^#card=(\d+)$/.exec(location.hash);
+  if (back) {
+    history.replaceState(null, "", location.pathname);
+    await goToCard(Number(back[1]));
+    if (state.detail && state.detail.id === Number(back[1])) return;
+  }
   await show(0);
 }
 
@@ -1121,6 +1128,7 @@ $("prev").onclick = () => show(state.index - 1);
 $("next").onclick = () => show(state.index + 1);
 $("split").onclick = split;
 $("merge-prev").onclick = mergePrev;
+$("follow").onclick = () => { if (state.detail) location.href = `/follow?card=${state.detail.id}`; };
 $("export").onclick = exportExcel;
 for (const id of ["status", "filter", "show-tiny", "sort"]) {
   $(id).onchange = (e) => {
