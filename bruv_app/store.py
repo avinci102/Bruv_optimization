@@ -556,11 +556,13 @@ class Project:
         )
         self.db.commit()
 
-    def log_suggestions(self, rows: list[tuple[int, int, float, str, str]]) -> None:
-        """(card, source card, similarity, decision, batch) for look-alikes a reviewer saw."""
+    def log_suggestions(self, rows: list[tuple[int, int, float, str, str]], at: str | None = None) -> None:
+        """(card, source card, similarity, decision, batch) for look-alikes a reviewer saw;
+        `at` is when they saw them, if not now (answers pulled from the hosted site)."""
+        at = at or _now()
         self.db.executemany(
             "INSERT INTO suggestion_log(at, fish_id, source, similarity, decision, batch) VALUES(?, ?, ?, ?, ?, ?)",
-            [(_now(), *row) for row in rows],
+            [(at, *row) for row in rows],
         )
         self.db.commit()
 

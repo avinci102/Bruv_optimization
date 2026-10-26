@@ -221,7 +221,8 @@ def test_pull_replays_a_volunteers_answers_and_fixes(project, tmp_path):
     assert json.loads(review["details"])["site"] == {"card": first, "at": "2026-11-01T10:00:00+00:00"}
     actions = [r["action"] for r in project.corrections()]
     assert actions[-2:] == ["split", "multiple_fish"]
-    assert project.db.execute("SELECT COUNT(*) FROM suggestion_log WHERE batch='like-1'").fetchone()[0] == 1
+    logged = project.db.execute("SELECT at FROM suggestion_log WHERE batch='like-1'").fetchall()
+    assert [r[0] for r in logged] == ["2026-11-01T10:00:06+00:00"]  # when it was seen on the site
     run = project.runs("pull")[-1]
     assert run is not None and report.scope_mismatch == []
 

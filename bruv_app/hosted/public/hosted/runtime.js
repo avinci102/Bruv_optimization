@@ -232,8 +232,13 @@
     }
   }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
 
-  // A small link back to the start page: switch video, or say how the session went.
+  // A small link back to the start page: switch video, or say how the session went. The
+  // PC-only controls are hidden: the Excel export (the coordinator's, after pulling) and
+  // following a fish frame by frame (a page of its own, not on the site).
   document.addEventListener("DOMContentLoaded", () => {
+    const style = document.createElement("style");
+    style.textContent = "#export, #follow { display: none !important; }";
+    document.head.appendChild(style);
     const a = document.createElement("a");
     a.href = "/start.html";
     a.textContent = `${video} · videos · feedback`;

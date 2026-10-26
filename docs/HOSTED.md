@@ -33,14 +33,14 @@ Nothing, on Cloudflare's free plan, for a pilot of this size:
 | Free-plan limit | What uses it | Pilot estimate |
 |---|---|---|
 | 20,000 files per site | One sheet per card, plus 4 files per video | About 1,150 per 44-minute video, so about 15 videos per site |
-| 25 MiB per file | The largest file is a long video's card data (`cards.json`) | Measured below |
+| 25 MiB per file | The largest file is a video's descriptions (`emb.bin`) | 17.8 MB for 44 minutes |
 | Static requests | Pictures and card data | Unlimited and free |
 | 100,000 function requests a day | Sign-in, each answer or fix, 2 per page load | 5 volunteers × ~1,000 a day = 5,000 |
 | 100,000 database rows written a day | About 3 per answer (the row and its 2 indexes) | About 15,000 |
 | 5 GB database | Answers are small text | Well under 1% |
 
-Measured on the 44-minute test video (`bruv_project_full_v2`, 1,145 published cards):
-see the table at the end of this page.
+The 44-minute test video came to 1,153 files and about 263 MB (details at the end of
+this page).
 
 When one site is full, make a second site (a second Pages project, same steps) for the
 other videos. Both can share the database.
@@ -228,4 +228,20 @@ The site's address is `https://bruv-review.pages.dev` (or the name you chose).
 
 ## Measured on the 44-minute test video
 
-(Filled in from `publish` on a copy of `bruv_project_full_v2`.)
+`publish` on a copy of `bruv_project_full_v2` (1,145 published cards), on the CPU-only
+laptop:
+
+| | Size |
+|---|---|
+| Time to publish | 8.5 minutes |
+| Files | 1,153 (1,149 sheets + manifest, card data, descriptions, still-object sheet): 6% of a site |
+| Pictures (`sheets/`) | 233 MB, about 0.2 MB a card |
+| `emb.bin` (descriptions) | 17.8 MB: the largest file, against the 25 MiB limit |
+| `cards.json` | 13.0 MB |
+| Whole video | about 263 MB |
+
+- A volunteer's browser downloads `cards.json` and `emb.bin` (31 MB) once when the video
+  opens, then each card's sheet as they reach it.
+- About 15 videos of this length fit in one site.
+- A video about 60% longer than this one would put `emb.bin` over 25 MiB. It would then
+  have to be split into parts; publish doesn't do that yet.

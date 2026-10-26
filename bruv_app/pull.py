@@ -98,7 +98,8 @@ def pull(project_root: Path, export_path: Path, who: str) -> PullReport:
             project.commit()
             report.fixes += 1
         elif kind == "suggestions":
-            project.log_suggestions([(real(f), real(s), sim, decision, batch) for f, s, sim, decision, batch in e["rows"]])
+            project.log_suggestions([(real(f), real(s), sim, decision, batch) for f, s, sim, decision, batch in e["rows"]],
+                                   at=e.get("at"))
     report.new_cards = {k: v for k, v in ids.items() if k != v}
     project.finish_run(run_id, answers=report.answers, fixes=report.fixes, undone=report.undone,
                        new_cards={str(k): v for k, v in report.new_cards.items()},

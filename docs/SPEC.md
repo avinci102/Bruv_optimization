@@ -1117,3 +1117,69 @@ are out of the volunteers' scope.
   `review_status` sheet counts them.
 - `check-setup` says what processing will run on (graphics card, PyTorch build, device).
 - For static hosting, `lookalike.neighbours` precomputes each card's look-alikes at publish.
+
+## 16. Hosted review for the pilot (26 Oct 2026)
+
+Agreed with Vinci in the architecture session. The program stays open-source and
+offline-first: each user processes and reviews on their own device, GPU optional, and
+Vinci is never a choke point. For the pilot, volunteers review on a website instead, as a
+way to collect data. The website is an optional kit that a school deploys on its own free
+Cloudflare account. Setup, limits and measurements: [HOSTED.md](HOSTED.md).
+
+**Decisions**
+- No tunnel and no server on the processing PC. The GPU PC only processes and publishes;
+  it can be off while volunteers review. (This replaces the tunnel plan in the shared
+  rules.)
+- Static Cloudflare Pages site on a new free account for the project: the pictures and
+  card data as files. A Pages Function with a D1 database handles sign-in and stores
+  answers, fixes and feedback.
+- Sign-in with an access pass or the invited email, with no password or verification:
+  the data isn't sensitive. The pictures are public files; sign-in protects the answers.
+- Each volunteer gets 2 videos per wave (about 10 videos a wave). Their copy of their own
+  video is the review of record (the answer key). Overlap is only targeted: calibration
+  assignments of chosen cards, each answered in the volunteer's own copy.
+- Wave 2's pictures replace wave 1's. Answers stay in the database.
+- Live fixes online: split, move ticked sightings, and "multiple fish". Joining two
+  cards waits. Tiny fish and cards outside the review window aren't published.
+- One page, one API. The review page is unchanged. The site's copy loads two scripts
+  that answer the same `/api` requests and picture addresses in the browser.
+- Corrections can be consolidated into the master project with traceability: `pull`
+  records the volunteer (`reviews.reviewer`, a new column, added by the add-only
+  migration), the time, the site's card number, the corrections log, and snapshots before
+  and after.
+- No fallback to a local server. Volunteers running the program locally is a later
+  option.
+- Each volunteer's answers to the look-alike suggestions are kept for training only if
+  they opt in (target state; the pilot logs them, `suggestion_log`).
+
+**How it works**
+- `publish` writes each video as static files, using the review server's own endpoint
+  code:
+  - one WebP sheet per card, with the close-ups the page shows and up to 8 whole scenes;
+  - the card data;
+  - the float16 BioCLIP descriptions, so the browser can redo the light work after a fix.
+- `hosted/core.js` mirrors the server's answers, including after a fix: guesses,
+  families, warnings, pieces, look-alikes and look-alike groups.
+- `hosted/runtime.js` connects it to the page. It isn't a service worker, because those
+  are blocked in some browsers and managed laptops.
+- What a volunteer does is an event log (D1 `events`). It is saved before it shows as
+  done, and replayed on top of the published cards each time the page opens.
+- `pull` replays one volunteer's log onto the project with the store's own methods. It
+  refuses a log for a different video than the project was published as
+  (`meta.published`).
+
+**Checked**
+- On the demo, a set of answers and fixes was made on the site and pulled into a copy of
+  the project. The browser's and the Python server's answers were then compared field by
+  field (card list, details, look-alikes, counts). They didn't differ.
+- `tests/test_hosted.py` covers publish, the volunteer list, the /sync API (through the
+  local copy of the site), pull and the commands.
+- The 44-minute test video publishes to 1,153 files and about 263 MB. Its largest file,
+  17.8 MB, is under the 25 MiB limit.
+
+**Open**
+- `core.js` has no automated tests of its own: the test PC has no Node.js.
+- Descriptions over 25 MiB (a video about 60% longer than the test video) would need
+  splitting.
+- A report of agreement between volunteers on the calibration cards.
+- Joining two cards online.

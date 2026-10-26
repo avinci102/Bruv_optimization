@@ -333,6 +333,22 @@ contested links were measured on the first 185 NP339 answers.
   `model_test\` for a second run. The project is only read, so its review page can stay
   open. On NP339 neither BioCLIP 2.5 nor Fishial beat BioCLIP 2 overall (SPEC §14).
 
+## Volunteers reviewing in a browser (optional)
+
+A school can let volunteers review in a web browser, with nothing to install, on its own
+free Cloudflare site. The processing PC publishes each video as files and can then be
+switched off. Volunteers sign in with an access pass or their email. Their answers and
+fixes (split, move ticked sightings, multiple fish) are saved on the site. The
+coordinator pulls each volunteer's answers back into the project and exports as usual.
+Setup and costs: [docs/HOSTED.md](docs/HOSTED.md).
+
+```
+python -m bruv_app publish --project D:\bruv\A1 --video A1 --site D:\bruv\site
+python -m bruv_app site volunteers --site D:\bruv\site --csv volunteers.csv
+python -m bruv_app site serve --site D:\bruv\site          (try it on this PC)
+python -m bruv_app pull --project D:\bruv\A1 --answers answers-A1.json --volunteer Ana
+```
+
 ## Development
 
 ```bash
