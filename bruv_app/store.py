@@ -148,8 +148,9 @@ class Project:
         added = {
             "detections": {"link_cost": "REAL", "link_margin": "REAL", "history_sim": "REAL"},
             # family: an answer's family (families.py), kept apart from the species, which
-            # is optional (docs/SPEC.md §15).
-            "reviews": {"details": "TEXT", "family": "TEXT"},
+            # is optional (docs/SPEC.md §15). reviewer: who gave it, for answers pulled from
+            # the hosted review site (docs/SPEC.md §16); NULL for answers given on this PC.
+            "reviews": {"details": "TEXT", "family": "TEXT", "reviewer": "TEXT"},
         }
         for table, columns in added.items():
             have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
@@ -524,12 +525,14 @@ class Project:
     def label_fish(self, fish_id: int, status: str, details: dict | None = None, **fields) -> None:
         """Record an answer. `details` goes with it into the review log (e.g. the card's
         warnings, and that the reviewer confirmed them); so does `family` (an answer's
-        family, which the fish table has no column for)."""
+        family, which the fish table has no column for), `reviewer` (who answered, when it
+        wasn't given on this PC) and `at` (when it was given, if not now)."""
         if status not in STATUSES:
             raise ValueError(f"Bad status: {status}")
         species = fields.get("species") if status == "species" else None
         if status == "species" and not species:
             raise ValueError("A species is required")
+        at = fields.get("at") or _now()
         self.db.execute(
             """UPDATE fish SET status=?, species=?, type=?, sex=?, behavior=?, comment=?,
                  reviewed_at=? WHERE id=?""",
@@ -540,15 +543,16 @@ class Project:
                 fields.get("sex") or None,
                 fields.get("behavior") or None,
                 fields.get("comment") or None,
-                _now() if status != "pending" else None,
+                at if status != "pending" else None,
                 fish_id,
             ),
         )
         scope = [d["id"] for d in self.fish_detections(fish_id)] if status != "pending" else []
         family = fields.get("family") if status == "species" else None
         self.db.execute(
-            "INSERT INTO reviews(at, fish_id, status, species, scope, details, family) VALUES(?, ?, ?, ?, ?, ?, ?)",
-            (_now(), fish_id, status, species, json.dumps(scope), json.dumps(details) if details else None, family),
+            "INSERT INTO reviews(at, fish_id, status, species, scope, details, family, reviewer) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            (at, fish_id, status, species, json.dumps(scope), json.dumps(details) if details else None, family,
+             fields.get("reviewer")),
         )
         self.db.commit()
 
