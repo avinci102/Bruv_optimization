@@ -46,6 +46,7 @@ def test_the_family_is_required_and_the_species_optional(tmp_path):
     assert resolve_answer(project, names, "giant grouper", "grouper") == ("giant grouper", "grouper")
     assert resolve_answer(project, names, None, "grouper") == ("grouper family", "grouper")  # species unknown
     assert resolve_answer(project, names, None, "moray_eel") == ("moray_eel", "moray_eel")  # no family entry
+    assert resolve_answer(project, names, "moray_eel", None) == ("moray_eel", "moray_eel")  # as repeated by R
     assert resolve_answer(project, names, "unicornfish", None) == ("unicornfish", "unicornfish")
     for species, family in (("giant grouper", "moray_eel"), ("nemo", None), (None, None), (None, "shark")):
         with pytest.raises(ValueError):

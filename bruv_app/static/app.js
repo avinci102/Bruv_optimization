@@ -1049,9 +1049,9 @@ document.addEventListener("keydown", (e) => {
   if (open && /^[1-9]$/.test(e.key)) {
     const pick = familyNames(open)[Number(e.key) - 1];
     if (!pick) return;
-    record("species", pick[0]);
-  } else if (open && (e.key === "f" || e.key === "F") && open.entry) {
-    record("species", open.entry);
+    record("species", pick[0], { family: open.key });
+  } else if (open && (e.key === "f" || e.key === "F")) {
+    record("species", open.entry || open.key, { family: open.key });  // as pickFamily's F button
   } else if (open && e.key === "Escape") {
     closeFamily();
   } else if (byFamily && ["1", "2", "3"].includes(e.key) && d.families[Number(e.key) - 1]) {

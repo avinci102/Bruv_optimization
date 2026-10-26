@@ -135,7 +135,9 @@ def resolve_answer(project: Project, names: list[str], species: str | None, fami
         if family and family != fam[species]:
             raise ValueError(f"{species} isn't in the family {family}")
         return species, fam[species]
-    if species and not (family and species == family):
+    if species and not family and species in set(fam.values()):
+        family = species  # a family-only answer given by its key (repeated with R, say)
+    if species and species != family:
         raise ValueError("Pick a species from the list")
     if not family or family not in set(fam.values()):
         raise ValueError("Pick a family from the list")
