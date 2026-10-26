@@ -1037,3 +1037,59 @@ arm, which never moves, answered card after card. Measured on those answers:
   BioCLIP 2 was right on 23 and Fishial on 2, so agreement isn't a confidence signal
   either. Having no "other" answer, it calls the canister a doctorfish (45 cards) or a
   whitetip reef shark (39). Not adopted.
+
+## 15. Pilot workflow decisions (26 Oct 2026)
+
+Agreed with Vinci in the workflow session, for the pilot (alpha on 30 Oct, two volunteer
+waves, handoff on 10 Nov) and the target state: an open-source program that anyone runs
+offline on their own device, GPU optional.
+
+**What the outputs rest on** (this replaces the earlier rule that continuity only
+deduplicates review cards):
+
+| Output | How it's counted | What it depends on |
+|---|---|---|
+| Individual sightings (record rows of type "individual") | One tracked chain is one sighting, while the fish stays on screen; time in and out and behaviour come from the card | Reliable cards: one fish per card, with no swaps even within a species |
+| Schools (type "school", school min/max) | Counted frame by frame across the school's frames | Correct boxes and labels in each frame |
+| MaxN per species | The most fish of that species in any one frame | Correct labels |
+
+- MaxN goes on the summary sheet only, with the frame it comes from so it can be
+  checked. It isn't used for other classifications, isn't summed across time, and isn't
+  a total of individuals.
+- Continuity is therefore a primary accuracy goal. Cards are measured against clicked
+  ground truth (below), not assumed.
+- Not built yet: the export still groups same-species fish within `sighting_gap_s` and
+  counts each row's busiest frame (`metrics.compute_sightings`). That changes in the
+  wave-1 window.
+
+**Answers have two levels.** The family is required and the species is an optional drill-down.
+A family-only answer is the "species unknown" case. `U` stays "Unknown fish". Tiny fish
+are out of the volunteers' scope.
+
+**Quick confirm now, auto-accept later.**
+- The pilot's quick-confirm queue offers cards at least 0.90 alike to a card a person
+  has answered (99.8% of answered pairs that alike had the same answer, §14).
+- A person accepts or rejects every card. Each decision is logged with the model's
+  confidence and the similarity.
+- Auto-accept comes only after the logs give at least directional evidence. The target
+  is 85% family-level accuracy for the suggestions shown, on deployments not used for
+  tuning. The model's own first-guess accuracy is tracked apart.
+
+**Continuity: how it will be improved**
+- A click-the-same-fish tool. It follows one fish frame by frame: a click moves to the
+  next frame, there are keys for "here but no box" and "not in this frame", and it keeps
+  stepping 5–10 s after the fish leaves in case it returns. It writes the evaluation
+  file's `individual` column. It also gives a pattern report of where the tracker
+  disagrees: crossings, turns, lighting, frame edge, missed detections. It is built in
+  wave 1, for Vinci first, and for volunteers in wave 2 if the flow holds.
+- Candidate changes, each measured on clicked tracks, volunteers' fixes and the answer
+  keys before it becomes a default:
+  - continue tracks through faint boxes (0.10–0.30), never starting a card from one;
+  - a smoother motion prediction;
+  - colour taken from the fish's own pixels, using the still-object background;
+  - BioCLIP appearance at every link on a GPU, with today's rules on CPU.
+- Not adopted: joining or splitting pieces on species guesses (they flip when a fish
+  turns).
+- 4 against 8 frames a second is tested offline on dataset A. `score` matches sightings
+  across frame rates. Datasets A and B are processed at 4 fps, to stay comparable with
+  NP339.
