@@ -235,3 +235,41 @@ details label[hidden] { display: none; }
   .badge.skipped { background: #3a2a10; }
   .flags { background: #3a2a10; }
 }
+
+/* Follow a fish (follow.html) */
+.follow-main { grid-template-columns: minmax(0, 1fr) 320px; }
+.back-link { margin-left: auto; color: var(--accent); }
+.phase { padding: 2px 10px; border-radius: 10px; background: var(--bg); border: 1px solid var(--border); }
+.phase.forward { border-color: var(--accent); color: var(--accent); }
+.phase.backward { border-color: var(--warn); color: var(--warn); }
+.phase.done { border-color: var(--ok); color: var(--ok); }
+.stage { position: relative; display: inline-block; max-width: 100%; overflow: hidden; border-radius: 6px; cursor: crosshair; line-height: 0; }
+.zoomer { position: relative; transition: transform .15s; }
+.zoomer img { display: block; max-width: 100%; max-height: calc(100vh - 170px); }
+.fbox {
+  position: absolute;
+  padding: 0;
+  border: 2px solid #4fd1ff;
+  border-radius: 2px;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55);
+  cursor: pointer;
+}
+.fbox::after { content: ""; position: absolute; inset: -6px; }  /* easier to hit a small box */
+.fbox:hover { border-color: var(--selected); background: rgba(255, 214, 10, .12); }
+.fbox.faint { border-style: dashed; border-width: 1px; }
+.fbox.taken { border-color: #b98cff; }
+.fbox.focus { border-color: var(--box); border-width: 3px; }
+.fbox span {
+  position: absolute; left: 0; top: -16px; font: 11px/14px system-ui, sans-serif;
+  background: #b98cff; color: #fff; padding: 0 3px; border-radius: 3px; white-space: nowrap;
+}
+.ring {
+  position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+  border: 2px dashed var(--selected); border-radius: 50%; pointer-events: none;
+}
+.key-list { padding-left: 18px; margin: 6px 0; }
+.key-list li { margin: 4px 0; }
+.warn { color: var(--warn); }
+#done .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 900px) { .follow-main { grid-template-columns: 1fr; } }

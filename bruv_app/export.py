@@ -22,6 +22,7 @@ from .metrics import (
     UNKNOWN,
     FishLabel,
     Observation,
+    card_sightings,
     compute_maxn,
     compute_sightings,
     double_count_checks,
@@ -40,8 +41,10 @@ MAXN_HEADER = [
     "time_first_seen",
     "first_arrival_s",
     "review",  # "complete", or "provisional" while cards are still unanswered
+    "evidence_frame",  # the MaxN frame with the fish it counted boxed, to check the number
 ]
-FAMILY_MAXN_HEADER = ["family", "maxn", "clip_maxn", "time_maxn", "clip_first_seen", "time_first_seen", "names", "review"]
+FAMILY_MAXN_HEADER = ["family", "maxn", "clip_maxn", "time_maxn", "clip_first_seen", "time_first_seen", "names", "review",
+                      "evidence_frame"]
 STATUS_HEADER = ["item", "value"]
 BY_MINUTE_HEADER = ["minute", "clip", "from", "detections", "counted", "not_fish", "unreviewed", "unreviewed_tiny"]
 CHECKS_HEADER = ["check", "label", "clip", "time", "detections", "cards", "on_maxn_frame"]
@@ -152,7 +155,10 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
     detections = [(d["t"], fid) for fid, dets in counted.items() for d in dets]
     counts = per_frame_counts(detections, labels)
     maxn = compute_maxn(counts)
-    sightings = compute_sightings(fish_labels, detections, settings.sighting_gap_s)
+    if settings.record_rows == "grouped":
+        sightings = compute_sightings(fish_labels, detections, settings.sighting_gap_s)
+    else:
+        sightings = card_sightings(fish_labels)
     status_rows, minute_rows, complete = review_status(project, settings, fish_rows, fish_dets, counted, scopes)
     observations = [
         Observation(d["t"], d["id"], fid, labels[fid], (d["x1"], d["y1"], d["x2"], d["y2"]))
@@ -167,6 +173,11 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
             ", ".join(map(str, c.det_ids)), ", ".join(map(str, sorted(set(c.fish_ids)))), (c.key, c.t) in peaks,
         ])
     status_rows.append(["double-count checks", f"{len(checks)} (see the checks sheet)"])
+    status_rows.append([
+        "record rows",
+        f"same species within {settings.sighting_gap_s:g} s share a row (grouped)" if settings.record_rows == "grouped"
+        else "one per answered card: a fish while it stays on screen",
+    ])
     start, end = project.review_window()
     if start is not None or end is not None:
         status_rows.append([
@@ -223,19 +234,31 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
             }
         )
 
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    if out_path is None:
+        out_path = project.root / "exports" / f"{Path(template).stem}_{project.root.name}_{stamp}.xlsx"
+    evidence_dir = Path(out_path).with_name(Path(out_path).stem + "_maxn")
+
+    def evidence(name: str, t: float, cards: set[int]) -> str | None:
+        """The MaxN frame with the counted fish boxed, saved beside the workbook."""
+        dets = [d for fid in cards for d in counted[fid] if abs(d["t"] - t) < 1e-6]
+        if not dets:
+            return None
+        image = imaging.load_rgb(str(project.root / dets[0]["path"]))
+        path = evidence_dir / f"{''.join(c if c.isalnum() else '_' for c in name)}.jpg"
+        imaging.save_jpeg(imaging.draw_boxes(image, [(d["x1"], d["y1"], d["x2"], d["y2"]) for d in dets]), path)
+        return str(path)
+
     maxn_rows = []
     for m in maxn:
         clip_m, t_m = timeline.locate(m.t_maxn)
         clip_f, t_f = timeline.locate(m.first_t)
         maxn_rows.append(
             [m.species, m.maxn, clip_m, seconds_to_time(t_m), clip_f, seconds_to_time(t_f),
-             round(m.first_t - settings.start_s, 1), "complete" if complete else "provisional"]
+             round(m.first_t - settings.start_s, 1), "complete" if complete else "provisional",
+             evidence(m.species, m.t_maxn, {fid for fid, key in labels.items() if key == m.species})]
         )
-    family_rows = family_maxn(project, labels, detections, timeline, complete)
-
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    if out_path is None:
-        out_path = project.root / "exports" / f"{Path(template).stem}_{project.root.name}_{stamp}.xlsx"
+    family_rows = family_maxn(project, labels, detections, timeline, complete, evidence)
     crops_dir = project.root / "crops"
     classifier = project.get_meta("classifier", "")
 
@@ -304,7 +327,8 @@ def export_project(project: Project, out_path: Path | None = None) -> Path:
     return out_path
 
 
-def family_maxn(project: Project, labels: dict[int, str], detections, timeline, complete: bool) -> list[list]:
+def family_maxn(project: Project, labels: dict[int, str], detections, timeline, complete: bool,
+                evidence=None) -> list[list]:
     """MaxN per family (families.py): each frame's fish counted by their family first, then
     the most at once. Answers at species and at family level ("grouper family") count
     together, and never by adding up the species' own MaxN, which can come from different
@@ -321,9 +345,11 @@ def family_maxn(project: Project, labels: dict[int, str], detections, timeline, 
     for m in compute_maxn(per_frame_counts(detections, by_card)):
         clip_m, t_m = timeline.locate(m.t_maxn)
         clip_f, t_f = timeline.locate(m.first_t)
+        shown = display_name(m.species, family_entry(members[m.species], m.species))
+        cards = {fid for fid, key in by_card.items() if key == m.species}
         rows.append([
-            display_name(m.species, family_entry(members[m.species], m.species)), m.maxn, clip_m, seconds_to_time(t_m),
-            clip_f, seconds_to_time(t_f), "; ".join(members[m.species]), "complete" if complete else "provisional",
+            shown, m.maxn, clip_m, seconds_to_time(t_m), clip_f, seconds_to_time(t_f), "; ".join(members[m.species]),
+            "complete" if complete else "provisional", evidence(f"family {shown}", m.t_maxn, cards) if evidence else None,
         ])
     return rows
 

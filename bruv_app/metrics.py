@@ -117,6 +117,12 @@ def double_count_checks(observations: list[Observation], min_iou: float = 0.5, i
     return out
 
 
+def card_sightings(fish: list[FishLabel]) -> list[Sighting]:
+    """One sighting per answered card: a card is one fish while it stays on screen (docs/SPEC.md
+    §15), so each is a row of one. Cards a reviewer joined are one card, so one row."""
+    return sorted((Sighting(f.key, f.start_t, f.end_t, 1, [f.fish_id]) for f in fish), key=lambda s: (s.t_in, s.species))
+
+
 def compute_sightings(
     fish: list[FishLabel],
     detections: list[tuple[float, int]],

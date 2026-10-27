@@ -152,7 +152,7 @@ def cmd_learn(args) -> None:
     print("refreshes its guesses; reviews stay.")
 
 
-def serve(root: Path, port: int, open_browser: bool) -> None:
+def serve(root: Path, port: int, open_browser: bool, db: str = "project.db") -> None:
     import uvicorn  # noqa: PLC0415
 
     from .server import create_app  # noqa: PLC0415
@@ -161,11 +161,51 @@ def serve(root: Path, port: int, open_browser: bool) -> None:
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     print(f"Review UI at {url}  (Ctrl+C to stop)")
-    uvicorn.run(create_app(root), host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(create_app(root, db), host="127.0.0.1", port=port, log_level="warning")
 
 
 def cmd_review(args) -> None:
-    serve(Path(args.project), args.port, not args.no_browser)
+    db = "project.db"
+    if args.trial:
+        from .store import Project  # noqa: PLC0415
+        from .trials import open_trial  # noqa: PLC0415
+
+        db = str(open_trial(Project(Path(args.project)), args.trial).db_path.relative_to(Path(args.project)))
+    serve(Path(args.project), args.port, not args.no_browser, db)
+
+
+def cmd_try_rules(args) -> None:
+    from .store import Project  # noqa: PLC0415
+    from .trials import BASELINE, cautions, compare, table, trial_names, try_rules  # noqa: PLC0415
+
+    project = Project(Path(args.project))
+    changes = {}
+    for item in args.set or []:
+        key, sep, value = item.partition("=")
+        if not sep:
+            raise ValueError(f"Give each change as name=value (got {item})")
+        changes[key.strip()] = value.strip()
+    for line in cautions(project, changes):
+        print(f"Note: {line}")
+    with keep_awake():
+        if BASELINE not in trial_names(project) or args.name == BASELINE:
+            print("Rebuilding the baseline: this project's cards as its rules make them now…")
+            try_rules(project, BASELINE, {}, progress=_progress())
+        if args.name != BASELINE:
+            print(f"Rebuilding trial {args.name} with {', '.join(f'{k}={v}' for k, v in changes.items()) or 'no changes'}…")
+            try_rules(project, args.name, changes, progress=_progress())
+    print("\n".join(table(compare(project))))
+
+
+def cmd_compare_rules(args) -> None:
+    from .store import Project  # noqa: PLC0415
+    from .trials import compare, table  # noqa: PLC0415
+
+    project = Project(Path(args.project))
+    scores = compare(project)
+    if not scores:
+        raise ValueError("No trials yet: make one with try-rules")
+    print("\n".join(table(scores)))
 
 
 def cmd_export(args) -> None:
@@ -278,8 +318,8 @@ def cmd_publish(args) -> None:
 
     site = Path(args.site)
     for project, key in zip(args.project, args.video or [Path(p).name for p in args.project]):
-        print(f"Publishing {project} as video {key}…")
-        report = publish(Path(project), site, key, _progress())
+        print(f"Publishing {project}{f' (trial {args.trial})' if args.trial else ''} as video {key}…")
+        report = publish(Path(project), site, key, _progress(), trial=args.trial)
         print(f"  {report['cards']} cards, {report['files']} files, {report['bytes'] / 1e6:.0f} MB")
     write_site(site)
     total = site_report(site)
@@ -323,7 +363,7 @@ def cmd_site_serve(args) -> None:
 def cmd_pull(args) -> None:
     from .pull import pull  # noqa: PLC0415
 
-    report = pull(Path(args.project), Path(args.answers), args.volunteer)
+    report = pull(Path(args.project), Path(args.answers), args.volunteer, trial=args.trial)
     print(f"{report.volunteer}: {report.events} events → {report.answers} answers, {report.fixes} fixes, "
           f"{report.undone} undone")
     if report.new_cards:
@@ -358,13 +398,31 @@ def cmd_evaluate(args) -> None:
     from .evaluate import evaluate_project, read_sidecar, threshold_curve  # noqa: PLC0415
 
     project = _open_project(args.project)
-    boxes = read_sidecar(Path(args.annotations))
-    print("\n".join(evaluate_project(project, boxes).lines()))
+    boxes = [b for path in args.annotations for b in read_sidecar(Path(path))]
+    report = evaluate_project(project, boxes, follows=not args.no_follows)
+    if not args.annotations and not report.follow_frames:
+        raise ValueError("Nothing to score: give --annotations, or follow some fish on the review page first")
+    print("\n".join(report.lines()))
     if args.thresholds:
         print("Detection at other score thresholds (the run's own boxes; tracks and cards not re-run):")
         for p in threshold_curve(project, boxes, args.thresholds):
             print(f"  {p.threshold:.2f}: {p.kept} boxes kept; annotated frames: {p.matched} fish found, "
                   f"{p.missed} missed, {p.false} false; precision {p.precision:.0%}, recall {p.recall:.0%}")
+
+
+def cmd_follow_sheet(args) -> None:
+    from .evaluate import write_sidecar  # noqa: PLC0415
+    from .follow import all_follows, sidecar_rows  # noqa: PLC0415
+
+    project = _open_project(args.project)
+    rows = sidecar_rows(project)
+    if not rows:
+        raise ValueError("No fish followed in this project yet")
+    path = write_sidecar(Path(args.out), rows)
+    follows = all_follows(project)
+    unfinished = sum(not f.done for f in follows)
+    print(f"Saved {path}: {len(follows)} fish followed, {len(rows)} rows"
+          + (f" ({unfinished} follows not finished)" if unfinished else ""))
 
 
 def cmd_annotation_sheet(args) -> None:
@@ -520,6 +578,22 @@ def parse_clock(text: str | None) -> float | None:
     return seconds
 
 
+def video_time(timeline, text: str | None) -> float | None:
+    """Whole-video seconds from "1:30" (time across the whole video) or "GX020042 1:30" (a
+    clip's name, as the review page shows it, and the time within that clip)."""
+    if text is None or text == "":
+        return None
+    parts = str(text).strip().rsplit(maxsplit=1)
+    if len(parts) == 1:
+        return parse_clock(parts[0])
+    clip, clock = parts
+    for ch in timeline.chapters:
+        if clip.lower() in (ch.name.lower(), Path(ch.name).stem.lower(), ch.path.stem.lower()):
+            return ch.start_s + parse_clock(clock)
+    names = ", ".join(ch.name for ch in timeline.chapters)
+    raise ValueError(f"No clip called {clip} in this project (its clips: {names})")
+
+
 def cmd_review_window(args) -> None:
     from .store import Project  # noqa: PLC0415
     from .template import seconds_to_time  # noqa: PLC0415
@@ -528,20 +602,29 @@ def cmd_review_window(args) -> None:
     if not (root / "project.db").exists():
         raise ValueError(f"No project in {root}")
     project = Project(root)
+    from .pipeline import load_timeline  # noqa: PLC0415
+
+    timeline = load_timeline(project)
     if args.clear:
         project.set_review_window(None, None)
     elif args.start is not None or args.end is not None:
         start, end = project.review_window()
         project.set_review_window(
-            parse_clock(args.start) if args.start is not None else start,
-            parse_clock(args.end) if args.end is not None else end,
+            video_time(timeline, args.start) if args.start is not None else start,
+            video_time(timeline, args.end) if args.end is not None else end,
         )
+    if len(timeline.chapters) > 1:
+        print("Clips: " + ", ".join(f"{ch.name} starts at {seconds_to_time(ch.start_s)}" for ch in timeline.chapters))
     start, end = project.review_window()
     if start is None and end is None:
         print("Review window: the whole video")
     else:
-        print(f"Review window: {seconds_to_time(start or 0)} to {seconds_to_time(end) if end is not None else 'the end'} "
-              "(time across the whole video)")
+        def both(t: float) -> str:
+            clip, local = timeline.locate(t)
+            return f"{seconds_to_time(t)} ({clip} {seconds_to_time(local)})"
+
+        print(f"Review window: {both(start or 0)} to {both(end) if end is not None else 'the end'} "
+              "(time across the whole video, then the clip and time within it)")
         print(f"{len(project.outside_window())} cards wholly outside it: not shown for review and not counted")
 
 
@@ -645,7 +728,19 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", required=True)
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--no-browser", action="store_true")
+    p.add_argument("--trial", help="open a rule trial's cards (try-rules) instead of the project's")
     p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser("try-rules", help="rebuild a copy of the project with other rules, and compare it")
+    p.add_argument("--project", required=True)
+    p.add_argument("--name", required=True, help="the trial's name, e.g. faint")
+    p.add_argument("--set", nargs="+", metavar="NAME=VALUE",
+                   help="settings to change, e.g. track_faint=true track_velocity_smoothing=0.5")
+    p.set_defaults(func=cmd_try_rules)
+
+    p = sub.add_parser("compare-rules", help="score every rule trial against this project's answers, fixes and follows")
+    p.add_argument("--project", required=True)
+    p.set_defaults(func=cmd_compare_rules)
 
     p = sub.add_parser("export", help="write the reviewed results into a copy of the template")
     p.add_argument("--project", required=True)
@@ -659,10 +754,17 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("evaluate", help="score a project (or a snapshot) against independent annotations")
     p.add_argument("--project", required=True, help="a project folder, or a snapshot .db")
-    p.add_argument("--annotations", required=True, help="the evaluation sidecar (.csv)")
+    p.add_argument("--annotations", nargs="*", default=[], metavar="CSV",
+                   help="evaluation sidecars (.csv); the fish followed in the project are scored too")
+    p.add_argument("--no-follows", action="store_true", help="leave out the fish followed in the project")
     p.add_argument("--thresholds", nargs="+", type=float, metavar="T",
                    help="also score detection at these score thresholds, e.g. 0.1 0.2 0.3 0.4 0.5")
     p.set_defaults(func=cmd_evaluate)
+
+    p = sub.add_parser("follow-sheet", help="save the fish followed on the review page as an evaluation sidecar")
+    p.add_argument("--project", required=True)
+    p.add_argument("--out", required=True, help="the .csv to write")
+    p.set_defaults(func=cmd_follow_sheet)
 
     p = sub.add_parser("annotation-sheet", help="start an evaluation sidecar from a project's frames")
     p.add_argument("--project", required=True)
@@ -705,6 +807,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", nargs="+", required=True, help="processed project folder(s), one per video")
     p.add_argument("--video", nargs="+", help="each video's short name on the site (default: the folder name)")
     p.add_argument("--site", required=True, help="the site folder to write (public/ is what gets uploaded)")
+    p.add_argument("--trial", help="publish this rule trial's cards (try-rules) instead, under its own --video name")
     p.set_defaults(func=cmd_publish)
 
     p = sub.add_parser("site", help="the hosted review site: volunteers, or try it on this PC")
@@ -724,6 +827,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", required=True, help="the project folder of that video (a copy per volunteer)")
     p.add_argument("--answers", required=True, help="the answers file downloaded from the site's start page")
     p.add_argument("--volunteer", required=True, help="their name, email or id on the site")
+    p.add_argument("--trial", help="the rule trial that was published (publish --trial), to pull into")
     p.set_defaults(func=cmd_pull)
 
     p = sub.add_parser("snapshot", help="freeze a read-only copy of a project's results (e.g. before review)")
@@ -739,8 +843,9 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("review-window", help="the part of the video to review and count (skip setup and retrieval)")
     p.add_argument("--project", required=True)
-    p.add_argument("--start", help="when the rig is settled and the divers have gone, e.g. 0:49")
-    p.add_argument("--end", help="when the rig starts being lifted, e.g. 43:10 (time across the whole video)")
+    p.add_argument("--start", help='when the rig is settled and the divers have gone: time across the whole video '
+                   '(e.g. 0:49), or a clip and the time in it, as the review page shows them (e.g. "GX020042 0:49")')
+    p.add_argument("--end", help='when the rig starts being lifted, e.g. 43:10 or "GX030042 2:10"')
     p.add_argument("--clear", action="store_true", help="review the whole video again")
     p.set_defaults(func=cmd_review_window)
 

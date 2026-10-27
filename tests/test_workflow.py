@@ -6,9 +6,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from bruv_app import demo
-from bruv_app.cli import main, parse_clock
+from bruv_app.cli import main, parse_clock, video_time
 from bruv_app.export import export_project
 from bruv_app.families import resolve_answer
+from bruv_app.pipeline import load_timeline
 from bruv_app.server import create_app
 from bruv_app.store import Project
 from bruv_app.views import best_view, view_score
@@ -108,7 +109,16 @@ def test_the_review_window_hides_and_uncounts_setup_time(project, tmp_path):
 def test_the_review_window_command(project, capsys):
     main(["review-window", "--project", str(project.root), "--start", "0:05", "--end", "0:20"])
     assert project.review_window() == (5.0, 20.0)
-    assert "Review window: 00:00:05 to 00:00:20" in capsys.readouterr().out
+    assert "Review window: 00:00:05 (" in capsys.readouterr().out
+    # A clip and the time in it, as the review page shows them.
+    chapters = load_timeline(project).chapters
+    assert len(chapters) > 1
+    second = chapters[1]
+    main(["review-window", "--project", str(project.root), "--start", f"{second.name} 0:02"])
+    assert project.review_window() == (pytest.approx(second.start_s + 2), 20.0)
+    assert f"{second.name} starts at" in capsys.readouterr().out
+    with pytest.raises(ValueError, match="No clip called"):
+        video_time(load_timeline(project), "GX999999 0:02")
     main(["review-window", "--project", str(project.root), "--clear"])
     assert project.review_window() == (None, None)
     assert parse_clock("49") == 49 and parse_clock("1:02:05") == 3725 and parse_clock(None) is None

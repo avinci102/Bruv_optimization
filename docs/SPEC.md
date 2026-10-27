@@ -1118,6 +1118,59 @@ are out of the volunteers' scope.
 - `check-setup` says what processing will run on (graphics card, PyTorch build, device).
 - For static hosting, `lookalike.neighbours` precomputes each card's look-alikes at publish.
 
+**Built in wave 1: following a fish** (branch `claude/follow-fish`, `follow.py`)
+- "Follow this fish" on a card opens `/follow`. It starts from the card's best view, steps
+  forward frame by frame until the fish has been gone for `gone_s` (5 s by default, 10 s
+  offered), then backward from the start the same way. Every box in the frame can be
+  clicked, the faint ones (0.10–0.30) and those hidden as still too, so the follows also
+  measure the faint-box change. A click off the boxes, or `B`, records "here, no box"; `O`
+  records "gone". The next frame is worked out from the marks, so undo and resume are
+  exact.
+- Storage: new tables `follows` and `follow_marks`, one mark per frame per follow. A
+  follow is named `F<id>-<copy tag>`; the tag (meta `copy_tag`) keeps names apart across
+  volunteers' copies.
+- Scoring: sidecar rows of scope "individual" (a new column; old sheets read as "frame").
+  Frames with only such rows score identity (tracker, merge, cards) and a new following
+  stage: the share of each visit the run boxed, cards per followed fish, and card changes
+  by likely cause (near another fish, a gap in its boxes, the frame's edge, none of these),
+  in that order. They don't score detection. `evaluate` includes the project's follows
+  without a sheet; `follow-sheet` writes them out.
+- A swap shows with one fish followed: a card holding the followed fish that has another
+  box in a frame checked for it (the person clicked elsewhere, or said it was gone) holds
+  another fish, or a second box on this one. The follow's summary names such cards, and
+  `evaluate` counts them.
+
+**Wave-1 build, after the 26 Oct review** (branch `claude/wave1-rules`). Decisions Vinci
+made that day:
+- One record row per answered card is the default (`record_rows: "card"`). Cards joined
+  with P are one row; cards answered together as look-alikes stay separate rows. The tiny
+  fish rule keeps the number of rows down. `"grouped"` keeps the earlier rows.
+- MaxN rows (species and family) carry an `evidence_frame`: the frame, with the fish it
+  counted boxed, saved beside the workbook.
+- Schools are deferred. 15+ boxes of a species in a frame is the threshold Vinci likes,
+  but species come after cards, so the workflow can't pick schools out yet.
+- The 4 against 8 fps test waits for more data, or a new dataset.
+- Following a fish: Vinci tests it first; volunteers likely in wave 2, earlier if ready.
+
+Built:
+- Rule trials (`trials.py`; `try-rules`, `compare-rules`, `review --trial`). A copy of
+  the database in `trials/`, sharing the frames, is rebuilt with changed settings. Each
+  is scored against the project's answers (cards that mix answers), fixes (pull-aparts
+  rejoined) and follows (share boxed, cards per fish, card changes, cards holding another
+  box). A `baseline` trial rebuilds with the project's own rules, so trials are compared
+  with machine-built cards.
+- Continuity candidates 1 and 2, off by default:
+  - `track_faint`: faint boxes in a second pass carry on a track that found no box, never
+    starting one or taking a box from a track;
+  - `track_velocity_smoothing`: the share of the earlier velocity kept at each link.
+- Hardware decoding that fails outright (ffmpeg out of memory) is retried in software
+  for that chapter, instead of stopping the run.
+- Not built yet:
+  - candidate 3, colour from the fish's own pixels: it needs the still-object background
+    per frame;
+  - candidate 4, BioCLIP appearance at every link: it needs every box embedded before
+    tracking, which only a GPU makes practical.
+
 ## 16. Hosted review for the pilot (26 Oct 2026)
 
 Agreed with Vinci in the architecture session. The program stays open-source and
@@ -1178,6 +1231,17 @@ Cloudflare account. Setup, limits and measurements: [HOSTED.md](HOSTED.md).
   local copy of the site), pull and the commands.
 - The 44-minute test video publishes to 1,153 files and about 263 MB. Its largest file,
   17.8 MB, is under the 25 MiB limit.
+
+**Deployed (27 Oct 2026)**
+- Vinci's free Cloudflare account serves the site at `bruv-review.pages.dev`. The trial
+  video (`trial`) is `bruv_project_full_v2`: 1,149 cards, 273 MB.
+- It stays on Cloudflare's free plans by decision: Pages, Workers Free for the functions,
+  D1 Free. On those plans, a limit that is reached stops that part until midnight UTC;
+  nothing is billed.
+- When an AI coding agent runs it, wrangler 4.15x makes new Pages sites as the newer kind
+  that runs on Workers, unless the folder has a `functions` folder or a `_routes.json`. The
+  site has both, so it stayed a classic Pages site, as designed and tested. Moving the kit to Workers static assets is
+  possible later; it would need its own testing.
 
 **Open**
 - Descriptions over 25 MiB (a video about 60% longer than the test video) would need

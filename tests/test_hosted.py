@@ -3,6 +3,7 @@ volunteer list, the site's /sync API (run here as the local copy of the site), a
 volunteer's answers and fixes back into a project."""
 
 import json
+import shutil
 import sqlite3
 
 import pytest
@@ -13,6 +14,7 @@ from bruv_app.publish import FRAMES_PER_CARD, publish, published_cards, site_rep
 from bruv_app.pull import pull
 from bruv_app.site import PASS_LETTERS, create_dev_app, export, read_volunteers, volunteers_sql, write_volunteers
 from bruv_app.store import Project
+from bruv_app.trials import open_trial
 
 
 @pytest.fixture
@@ -264,6 +266,26 @@ def test_pull_refuses_another_videos_answers(project, tmp_path):
     with pytest.raises(ValueError, match="published as V2"):
         pull(project.root, _export(tmp_path, [{"kind": "label", "card": card, "status": "unknown"}]), "Ana")
     assert Project(project.root).fish(card)["status"] == "pending"
+
+
+def test_a_rule_trial_is_published_and_pulled_on_its_own(project, tmp_path):
+    # A trial is another database beside the project's (trials.py): its cards go online under
+    # their own video name, and their answers come back into the trial, not the project.
+    project.commit()
+    (project.root / "trials").mkdir()
+    shutil.copy(project.root / "project.db", project.root / "trials" / "t1.db")
+    open_trial(project, "t1").set_meta("trial", {"name": "t1"})
+    publish(project.root, tmp_path / "site", "V1", trial="t1")
+    manifest = json.loads((tmp_path / "site" / "public" / "videos" / "V1" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["summary"]["project"].endswith("· trial: t1")
+    assert project.get_meta("published") is None and open_trial(project, "t1").get_meta("published")["video"] == "V1"
+
+    card = project.all_fish()[0]["id"]
+    pull(project.root, _export(tmp_path, [{"kind": "label", "card": card, "status": "unknown"}]), "Ana", trial="t1")
+    assert open_trial(project, "t1").fish(card)["status"] == "unknown"
+    assert Project(project.root).fish(card)["status"] == "pending"
+    with pytest.raises(ValueError, match="No trial called t2"):
+        publish(project.root, tmp_path / "site", "V2", trial="t2")
 
 
 def test_the_commands(project, tmp_path, capsys):

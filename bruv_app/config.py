@@ -19,7 +19,7 @@ class Settings:
     # Width of the JPEGs stored for the review UI (~150 MB per 30 min at 960 px).
     frame_width: int = 960
     jpeg_quality: int = 85
-    # Ask ffmpeg for hardware decode; it falls back to software on its own.
+    # Ask ffmpeg for hardware decode; a chapter it fails on is decoded again in software.
     hwaccel: bool = True
 
     # Analysis window on the combined timeline, in seconds (e.g. skip the descent).
@@ -65,11 +65,22 @@ class Settings:
     # one to the other. On the NP339 fixes this avoided 33 of 49 such jumps, against 14 for
     # the shorter gap alone; both pieces start again and are judged by the merge and you.
     track_refuse_contested: bool = True
+    # Options to measure on followed fish before they become defaults (docs/SPEC.md §15):
+    # boxes between det_floor and det_threshold may carry on a track that found no box in a
+    # frame (never start one), so a fish that fades for a moment keeps its card...
+    track_faint: bool = False
+    # ...and each link keeps this share of the track's earlier velocity (0: the last step
+    # alone), so one wobble doesn't turn the course the tracker expects.
+    track_velocity_smoothing: float = 0.0
 
     # Continuity merge (review dedupe only; never used for counts).
     gap_seconds: float = 10.0
-    # Record rows in the export: same-species fish within this gap share a row. Kept apart
-    # from gap_seconds, so tuning the merge never changes how rows are grouped.
+    # Record rows in the export. "card": each answered card is its own row, one fish while it
+    # stays on screen (docs/SPEC.md §15; Vinci, 26 Oct 2026). "grouped": same-species fish
+    # within sighting_gap_s share a row, counted at its busiest frame (the rows before then).
+    record_rows: str = "card"
+    # For "grouped" rows. Kept apart from gap_seconds, so tuning the merge never changes how
+    # rows are grouped.
     sighting_gap_s: float = 10.0
     # BioCLIP similarity of the two pieces. Most fish score 0.8 or more against each other,
     # so the bar is above that; with the colour check below it blocked 65% of joins between

@@ -224,6 +224,13 @@ async function init() {
     $("empty").hidden = false;
     return;
   }
+  // Back from following a fish (/follow): open on that card.
+  const back = /^#card=(\d+)$/.exec(location.hash);
+  if (back) {
+    history.replaceState(null, "", location.pathname);
+    await goToCard(Number(back[1]));
+    if (state.detail && state.detail.id === Number(back[1])) return;
+  }
   await show(0);
 }
 
@@ -556,7 +563,9 @@ function repeatAnswer() {
   record(a.status, a.status === "species" ? a.species : null, { family: a.family });
 }
 
-// Y: yes, the same answer as the answered card this one looks like (the quick confirm).
+// Y: yes, the same answer as the answered card this one looks like (the quick confirm), for
+// cards at least SURE_ALIKE alike, where the two pictures are shown side by side. Whether it
+// came from the quick-confirm queue is the Show filter's to say (record).
 function acceptLike() {
   const d = state.detail;
   const a = d && (d.status === "pending" || d.status === "skipped") ? d.answered_like : null;
@@ -564,7 +573,12 @@ function acceptLike() {
     message("No answered card looks like this one: answer it as usual.", "error");
     return;
   }
-  record(a.status, a.status === "species" ? a.species : null, { family: a.family, queue: true });
+  if (a.similarity < SURE_ALIKE) {
+    message(`Y is for cards ${pct(SURE_ALIKE)} alike or more; this one is ${pct(a.similarity)} like #${a.card}. ` +
+      "R gives it the same answer if you're sure.", "error");
+    return;
+  }
+  record(a.status, a.status === "species" ? a.species : null, { family: a.family });
 }
 
 // After an answer: the unanswered cards that look like that card, to answer together (L).
@@ -1121,6 +1135,7 @@ $("prev").onclick = () => show(state.index - 1);
 $("next").onclick = () => show(state.index + 1);
 $("split").onclick = split;
 $("merge-prev").onclick = mergePrev;
+$("follow").onclick = () => { if (state.detail) location.href = `/follow?card=${state.detail.id}`; };
 $("export").onclick = exportExcel;
 for (const id of ["status", "filter", "show-tiny", "sort"]) {
   $(id).onchange = (e) => {

@@ -54,7 +54,11 @@ the new Cloudflare account.
    Use a project or school address rather than a personal one, so it can be handed over.
 2. **Install Node.js** (the LTS version) from <https://nodejs.org>. It brings `npx`, which
    runs Cloudflare's `wrangler` tool. Nothing else needs installing.
-3. **Sign wrangler in** to that account (a browser window opens to approve it):
+   - Open a **new** terminal afterwards: one that was already open doesn't know about Node.
+   - In Windows PowerShell, type `npx.cmd` wherever this page says `npx`. Plain `npx` is
+     blocked there with "running scripts is disabled on this system".
+3. **Sign wrangler in** to that account. A browser page opens: click **Allow** within about
+   two minutes, or wrangler gives up and you run it again.
    ```
    npx wrangler login
    ```
@@ -64,22 +68,29 @@ the new Cloudflare account.
    ```
    npx wrangler d1 create bruv-review
    ```
-   Copy `wrangler.toml.example` to `wrangler.toml` in the site folder and paste the id in.
+   If it offers to add the database to a configuration file, answer **No**: it would make a
+   `wrangler.jsonc`, which wrangler reads instead of the `wrangler.toml` below. Copy
+   `wrangler.toml.example` to `wrangler.toml` in the site folder and paste the id in.
 6. **Make the database's tables:**
    ```
    npx wrangler d1 execute bruv-review --remote --file schema.sql
    ```
-7. **Make the site:**
+7. **Make the site**, from the site folder:
    ```
    npx wrangler pages project create bruv-review --production-branch main
    ```
+   When an AI assistant runs this for you, recent wrangler versions can create the newer
+   kind of Pages site, which runs on Workers. This kit is built for the classic kind.
+   Wrangler keeps to the classic kind when the folder holds a `functions` folder, which
+   publishing (step 4) puts there.
 8. **Give it a secret** for signing volunteers' sessions. Make a random one with
    `python -c "import secrets; print(secrets.token_urlsafe(32))"`, then paste it when asked:
    ```
    npx wrangler pages secret put SESSION_SECRET --project-name bruv-review
    ```
 
-The site's address is `https://bruv-review.pages.dev` (or the name you chose).
+The site's address is `https://bruv-review.pages.dev` (or the name you chose). If that
+name is taken, Cloudflare adds a few letters; the create command prints the address.
 
 ## Each wave
 
@@ -90,6 +101,10 @@ The site's address is `https://bruv-review.pages.dev` (or the name you chose).
    ```
    It reports the files against the 20,000 limit. Publishing a video again replaces that
    video's files; other videos in the site folder are kept.
+
+   To put a rule trial online (`try-rules`), add `--trial <name>` with a video name of its
+   own, such as `--video A1-faint`. Pull its answers with the same `--trial <name>`: they go
+   into the trial, not the project.
 3. **List the volunteers** in a CSV file (Excel can save one), with these columns:
 
    | name | email | pass | role | videos | calibration |
@@ -118,8 +133,10 @@ The site's address is `https://bruv-review.pages.dev` (or the name you chose).
    ```
 5. **Put it online**, from the site folder:
    ```
-   npx wrangler pages deploy
+   npx wrangler pages deploy --branch main
    ```
+   `--branch main` makes it the live site. Without it, a site folder inside a git checkout
+   would go to a preview address instead.
 6. **Send the invitations** (see the template below).
 7. **Watch progress**: sign in with an `admin` pass. The start page shows each volunteer's
    answers and fixes per video, and when they were last active.
@@ -155,7 +172,7 @@ The site's address is `https://bruv-review.pages.dev` (or the name you chose).
 > Thank you for helping identify fish in our baited underwater videos.
 >
 > 1. On a laptop or desktop (the page is built for the keyboard), open
->    https://bruv-review.pages.dev/start.html
+>    https://bruv-review.pages.dev/start
 > 2. Sign in with your access pass: **BRUV-H3Y7-F47A** (or with this email address).
 > 3. Click your video. Your answers save as you go, so you can stop and come back
 >    any time, on any computer.

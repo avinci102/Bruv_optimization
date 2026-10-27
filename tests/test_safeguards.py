@@ -91,9 +91,12 @@ def test_record_rows_follow_their_own_gap_not_the_merge_window(project, tmp_path
         ws = wb[[n for n in wb.sheetnames if n.startswith("record")][0]]
         return [row for row in ws.iter_rows(min_row=3, values_only=True) if any(row)]
 
-    default = record_rows()
+    default = record_rows(record_rows="grouped")  # the rows before 26 Oct 2026
     assert record_rows(gap_seconds=0.0) == default  # tuning the merge leaves the rows alone
     assert len(record_rows(gap_seconds=10.0, sighting_gap_s=0.0)) > len(default)
+    # One row per card (the default since): the gap doesn't come into it.
+    cards = record_rows(record_rows="card", sighting_gap_s=0.0)
+    assert record_rows(sighting_gap_s=30.0) == cards and len(cards) >= len(default)
 
 
 def test_double_count_checks():

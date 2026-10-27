@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS det_change (det_id INTEGER PRIMARY KEY, change REAL);
 CREATE TABLE IF NOT EXISTS suggestion_log (
     id INTEGER PRIMARY KEY, at TEXT, fish_id INTEGER, source INTEGER, similarity REAL,
     decision TEXT, batch TEXT);
+-- Fish followed frame by frame (follow.py): clicked ground truth for continuity. A mark per
+-- frame looked at: the fish's box, "nobox" (where it was, if clicked) or "gone".
+CREATE TABLE IF NOT EXISTS follows (
+    id INTEGER PRIMARY KEY, at TEXT, card INTEGER, start_det INTEGER, gone_s REAL, done_at TEXT);
+CREATE TABLE IF NOT EXISTS follow_marks (
+    follow_id INTEGER, frame_id INTEGER, state TEXT, det_id INTEGER, x REAL, y REAL, at TEXT,
+    PRIMARY KEY (follow_id, frame_id));
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
@@ -121,11 +128,13 @@ class FrameRow:
 
 
 class Project:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, db: str = "project.db"):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "frames").mkdir(exist_ok=True)
-        self.db = sqlite3.connect(self.root / "project.db", check_same_thread=False)
+        # A rule trial (trials.py) is another database in the folder, sharing its frames.
+        self.db_path = self.root / db
+        self.db = sqlite3.connect(self.db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         self._migrate()
@@ -138,6 +147,7 @@ class Project:
         db_path = Path(db_path)
         self = cls.__new__(cls)
         self.root = db_path.parent.parent if db_path.parent.name == "snapshots" else db_path.parent
+        self.db_path = None  # its settings are the project's
         self.db = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         return self
@@ -162,7 +172,11 @@ class Project:
 
     @property
     def settings_path(self) -> Path:
-        return self.root / "settings.json"
+        """settings.json; a rule trial's own are beside its database (trials/<name>.settings.json)."""
+        db_path = getattr(self, "db_path", None)
+        if db_path is None or db_path.name == "project.db":
+            return self.root / "settings.json"
+        return db_path.with_suffix(".settings.json")
 
     def load_settings(self) -> Settings:
         return Settings.load(self.settings_path) if self.settings_path.exists() else Settings()

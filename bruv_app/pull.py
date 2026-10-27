@@ -41,11 +41,17 @@ def find_volunteer(export: dict, who: str) -> dict:
     raise ValueError(f"No volunteer {who!r} in this export (it has: {names})")
 
 
-def pull(project_root: Path, export_path: Path, who: str) -> PullReport:
+def pull(project_root: Path, export_path: Path, who: str, trial: str | None = None) -> PullReport:
+    """One volunteer's answers and fixes onto the project, or onto its rule trial `trial` when
+    that's what was published (publish --trial)."""
+    from .trials import open_trial  # noqa: PLC0415
+
     export = json.loads(Path(export_path).read_text(encoding="utf-8"))
     volunteer = find_volunteer(export, who)
     events = [e["event"] for e in export["events"] if e["volunteer_id"] == volunteer["id"]]
     project = Project(Path(project_root))
+    if trial:
+        project = open_trial(project, trial)
     published = project.get_meta("published")
     if published and published["video"] != export["video"]:
         raise ValueError(f"These answers are for video {export['video']}, but this project was published as "

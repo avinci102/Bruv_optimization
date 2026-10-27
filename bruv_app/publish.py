@@ -154,20 +154,24 @@ def _crops_for(detail: dict) -> list[int]:
     return list(dict.fromkeys(d for d in dets if d is not None))
 
 
-def publish(project_root: Path, out: Path, key: str, progress=None) -> dict:
-    """Write one video's data under <site>/public/videos/<key>/ and return a short report."""
+def publish(project_root: Path, out: Path, key: str, progress=None, trial: str | None = None) -> dict:
+    """Write one video's data under <site>/public/videos/<key>/ and return a short report.
+    With `trial`, the cards of that rule trial (trials.py) instead of the project's own."""
     from .server import create_app  # noqa: PLC0415 - the server's own code makes the answers
+    from .trials import open_trial  # noqa: PLC0415
 
     if not key or not all(c.isalnum() or c in "-_" for c in key):
         raise ValueError("A video key is letters, digits, - and _ only (it becomes part of the address)")
     if not (Path(project_root) / "project.db").exists():
         raise ValueError(f"{project_root} is not a project folder (it has no project.db)")
     project = Project(Path(project_root))
+    if trial:
+        project = open_trial(project, trial)
     ids = published_cards(project)
     if not ids:
         raise ValueError(f"{project_root} has no cards to publish: process the video first")
     settings = project.load_settings()
-    app = create_app(project.root)
+    app = create_app(project.root, db=project.db_path.relative_to(project.root).as_posix())
     ep = _endpoints(app)
     folder = out / "public" / "videos" / key
     if folder.exists():
