@@ -478,6 +478,22 @@ def parse_clock(text: str | None) -> float | None:
     return seconds
 
 
+def video_time(timeline, text: str | None) -> float | None:
+    """Whole-video seconds from "1:30" (time across the whole video) or "GX020042 1:30" (a
+    clip's name, as the review page shows it, and the time within that clip)."""
+    if text is None or text == "":
+        return None
+    parts = str(text).strip().rsplit(maxsplit=1)
+    if len(parts) == 1:
+        return parse_clock(parts[0])
+    clip, clock = parts
+    for ch in timeline.chapters:
+        if clip.lower() in (ch.name.lower(), Path(ch.name).stem.lower(), ch.path.stem.lower()):
+            return ch.start_s + parse_clock(clock)
+    names = ", ".join(ch.name for ch in timeline.chapters)
+    raise ValueError(f"No clip called {clip} in this project (its clips: {names})")
+
+
 def cmd_review_window(args) -> None:
     from .store import Project  # noqa: PLC0415
     from .template import seconds_to_time  # noqa: PLC0415
@@ -486,20 +502,29 @@ def cmd_review_window(args) -> None:
     if not (root / "project.db").exists():
         raise ValueError(f"No project in {root}")
     project = Project(root)
+    from .pipeline import load_timeline  # noqa: PLC0415
+
+    timeline = load_timeline(project)
     if args.clear:
         project.set_review_window(None, None)
     elif args.start is not None or args.end is not None:
         start, end = project.review_window()
         project.set_review_window(
-            parse_clock(args.start) if args.start is not None else start,
-            parse_clock(args.end) if args.end is not None else end,
+            video_time(timeline, args.start) if args.start is not None else start,
+            video_time(timeline, args.end) if args.end is not None else end,
         )
+    if len(timeline.chapters) > 1:
+        print("Clips: " + ", ".join(f"{ch.name} starts at {seconds_to_time(ch.start_s)}" for ch in timeline.chapters))
     start, end = project.review_window()
     if start is None and end is None:
         print("Review window: the whole video")
     else:
-        print(f"Review window: {seconds_to_time(start or 0)} to {seconds_to_time(end) if end is not None else 'the end'} "
-              "(time across the whole video)")
+        def both(t: float) -> str:
+            clip, local = timeline.locate(t)
+            return f"{seconds_to_time(t)} ({clip} {seconds_to_time(local)})"
+
+        print(f"Review window: {both(start or 0)} to {both(end) if end is not None else 'the end'} "
+              "(time across the whole video, then the clip and time within it)")
         print(f"{len(project.outside_window())} cards wholly outside it: not shown for review and not counted")
 
 
@@ -679,8 +704,9 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("review-window", help="the part of the video to review and count (skip setup and retrieval)")
     p.add_argument("--project", required=True)
-    p.add_argument("--start", help="when the rig is settled and the divers have gone, e.g. 0:49")
-    p.add_argument("--end", help="when the rig starts being lifted, e.g. 43:10 (time across the whole video)")
+    p.add_argument("--start", help='when the rig is settled and the divers have gone: time across the whole video '
+                   '(e.g. 0:49), or a clip and the time in it, as the review page shows them (e.g. "GX020042 0:49")')
+    p.add_argument("--end", help='when the rig starts being lifted, e.g. 43:10 or "GX030042 2:10"')
     p.add_argument("--clear", action="store_true", help="review the whole video again")
     p.set_defaults(func=cmd_review_window)
 

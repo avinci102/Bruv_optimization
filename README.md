@@ -233,14 +233,16 @@ look-alikes together · `←` `→` move between cards. Nothing is pre-selected.
     what's left is the small, doubtful tail. Time order helps to follow a fish that comes
     and goes.
 - **Only the time on the seabed.** If the video starts on deck or during the descent, set
-  the review window (times across the whole video, as the page shows them):
+  the review window. Give each end as a clip and the time in it, as the review page shows
+  them, or as time across the whole video:
 
   ```bat
-  .venv\Scripts\python -m bruv_app review-window --project my_project --start 1:30 --end 46:00
+  .venv\Scripts\python -m bruv_app review-window --project my_project --start "GX010042 1:30" --end "GX030042 2:10"
   ```
 
-  Cards wholly outside it are hidden and not counted, and neither are sightings outside
-  it; the export's `review_status` sheet records the window. `--clear` removes it.
+  It prints where each clip starts, and the window both ways. Cards wholly outside it are
+  hidden and not counted, and neither are sightings outside it; the export's
+  `review_status` sheet records the window. `--clear` removes it.
 - **Time per card.** Each answer records how long the card was open (up to 10 minutes), and
   a look-alike batch shares its time between its cards. It's for planning reviews and for
   measuring which steps save time.
