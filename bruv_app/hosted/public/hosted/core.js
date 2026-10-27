@@ -147,7 +147,7 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
       for (const c of cardsJson.cards) {
         const dets = c.dets.map((r) => ({
           id: r[0], frame: r[1], t: r[2], x1: r[3], y1: r[4], x2: r[5], y2: r[6], score: r[7], quality: r[8],
-          tracklet: r[9], view: r[10], emb: r[11], margin: r[12], history: r[13],
+          tracklet: r[9], view: r[10], emb: r[11], margin: r[12], history: r[13], px: r.length > 14 ? r[14] : null,
         }));
         const tracklets = new Map();
         for (const [tid, row] of c.pieces) {
@@ -258,9 +258,10 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
       return [a, b];
     }
 
+    // store.fish_sizes: the fish at its largest, from each sighting's published size.
     maxPx(card) {
       let m = 0;
-      for (const d of card.dets) m = Math.max(m, (d.x2 - d.x1) * this.W, (d.y2 - d.y1) * this.H);
+      for (const d of card.dets) m = Math.max(m, d.px ?? Math.max((d.x2 - d.x1) * this.W, (d.y2 - d.y1) * this.H));
       return m;
     }
 
@@ -533,8 +534,8 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
       if (![...this.cards.values()].some((c) => c.changed)) return null;
       const key = `groups:${this.version}`;
       if (!(key in this.cache)) {
-        const size = (c) => (c.changed ? this.maxPx(c) : c.base.list.max_px);
-        const order = [...this.cards.values()].sort((a, b) => size(b) - size(a) || a.id - b.id);
+        const size = new Map([...this.cards.values()].map((c) => [c.id, this.maxPx(c)]));
+        const order = [...this.cards.values()].sort((a, b) => size.get(b.id) - size.get(a.id) || a.id - b.id);
         const leaders = [];
         const out = new Map();
         for (const card of order) {

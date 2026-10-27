@@ -211,6 +211,10 @@ def publish(project_root: Path, out: Path, key: str, progress=None) -> dict:
                 round(view_score(d), 6), row,
                 None if d["link_margin"] is None else round(d["link_margin"], 4),
                 None if d["history_sim"] is None else round(d["history_sim"], 4),
+                # Its size in pixels, exactly as store.fish_sizes works it out (not rounded):
+                # look-alike groups are led by the biggest fish, and the server's order rests
+                # on differences as small as 139.50000000000006 against 139.5.
+                max((d["x2"] - d["x1"]) * d["width"], (d["y2"] - d["y1"]) * d["height"]),
             ])
         pieces = []
         for t in project.db.execute("SELECT id, embedding FROM tracklets WHERE fish_id=? ORDER BY start_t, id", (fid,)):

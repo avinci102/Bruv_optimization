@@ -1169,17 +1169,24 @@ Cloudflare account. Setup, limits and measurements: [HOSTED.md](HOSTED.md).
   (`meta.published`).
 
 **Checked**
-- On the demo, a set of answers and fixes was made on the site and pulled into a copy of
-  the project. The browser's and the Python server's answers were then compared field by
-  field (card list, details, look-alikes, counts). They didn't differ.
+- `tests/test_hosted_js.py` (needs Node.js) drives `core.js` with the page's own
+  requests: answers, warnings, a look-alike batch and undo, and every online fix. It
+  checks that a reload replays to the same state. It then pulls the events into the
+  project and compares the Python server's answers with the browser's, field by field.
+  They match. The same was checked by hand in a browser on the demo.
 - `tests/test_hosted.py` covers publish, the volunteer list, the /sync API (through the
   local copy of the site), pull and the commands.
 - The 44-minute test video publishes to 1,153 files and about 263 MB. Its largest file,
   17.8 MB, is under the 25 MiB limit.
 
 **Open**
-- `core.js` has no automated tests of its own: the test PC has no Node.js.
 - Descriptions over 25 MiB (a video about 60% longer than the test video) would need
   splitting.
 - A report of agreement between volunteers on the calibration cards.
 - Joining two cards online.
+- Following a fish online (wave 2, once Vinci has tried it on the PC; not built yet). It
+  steps through every sampled frame, not just the card's frames: from the card's start
+  minus `gone_s` to its end plus `gone_s`, with every box in those frames (faint and
+  still-hidden ones too, from `det_floor` up) and their card numbers. That's much more to
+  publish than a card's sheet. Its state (`follows`, `follow_marks`) and next step
+  (`follow.next_step`) could run in the browser as the review does.

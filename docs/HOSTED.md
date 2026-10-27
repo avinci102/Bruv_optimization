@@ -192,8 +192,8 @@ The site's address is `https://bruv-review.pages.dev` (or the name you chose).
   - `manifest.json`: the summary, settings, species names and families, chapter
     timeline, and the still-object sample;
   - `cards.json`: every card's list entry and detail, its sightings (box, time, quality,
-    piece, description row), its pieces, look, published look-alike neighbours (≥0.85),
-    and where its pictures are on its sheet;
+    piece, description row, size in pixels), its pieces, look, published look-alike
+    neighbours (≥0.85), and where its pictures are on its sheet;
   - `emb.bin`: float16 descriptions (BioCLIP embeddings) in this order: species names,
     crops, pieces, card looks;
   - `sheets/<card>.webp`: the card's close-ups and up to 8 whole scenes (640 px wide).
@@ -217,14 +217,25 @@ The site's address is `https://bruv-review.pages.dev` (or the name you chose).
   tests. `_routes.json` keeps every other request a free static one.
 - **`bruv_app/pull.py`** replays one volunteer's log onto a project with the store's own
   methods.
-- **Checking that the browser matches the server.** On the demo project, a set of answers
-  and fixes was made on the site:
-  - answers, a look-alike batch and its undo;
-  - a split, a move, "multiple fish", and a split of a split card.
-  They were then pulled into a copy of the project. The Python server's answers were
-  compared with the browser's, field by field: the card list, every card's detail, the
-  look-alikes and the counts. They didn't differ. `core.js` has no automated test of its
-  own yet, because the test PC has no Node.js.
+- **Checking that the browser matches the server** (`tests/test_hosted_js.py`, needs
+  Node.js; skipped without it). It publishes the synthetic test project, with one card
+  made of two different fish. `tests/hosted_parity.js` then runs `core.js` in Node and
+  makes, through the same requests the page sends:
+  - an answer on that card (turned down for its warnings, then confirmed), a look-alike
+    batch and its undo;
+  - "multiple fish", a split, a split of the split-off card, and a move;
+  - other answers and an equipment answer;
+  - requests the site turns down.
+
+  The test then checks three things:
+  - opening the page again replays to exactly the same state;
+  - after the events are pulled into the project, the Python server gives the same card
+    list, card details, look-alikes and counts, field by field;
+  - the published size of each sighting keeps look-alike groups in the server's order
+    when two fish are the same size.
+
+  The same comparison was made by hand in a browser on the demo project, with the same
+  result.
 
 ## Measured on the 44-minute test video
 
@@ -237,10 +248,10 @@ laptop:
 | Files | 1,153 (1,149 sheets + manifest, card data, descriptions, still-object sheet): 6% of a site |
 | Pictures (`sheets/`) | 233 MB, about 0.2 MB a card |
 | `emb.bin` (descriptions) | 17.8 MB: the largest file, against the 25 MiB limit |
-| `cards.json` | 13.0 MB |
+| `cards.json` | 13.5 MB (26,278 sightings) |
 | Whole video | about 263 MB |
 
-- A volunteer's browser downloads `cards.json` and `emb.bin` (31 MB) once when the video
+- A volunteer's browser downloads `cards.json` and `emb.bin` (about 31 MB) once when the video
   opens, then each card's sheet as they reach it.
 - About 15 videos of this length fit in one site.
 - A video about 60% longer than this one would put `emb.bin` over 25 MiB. It would then

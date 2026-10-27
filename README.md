@@ -356,9 +356,12 @@ pip install -r requirements-dev.txt -e .
 pytest
 ```
 
-The tests use synthetic data only (fake detector, synthetic video, mock template).
+The tests use synthetic data only (fake detector, synthetic video, mock template). With
+[Node.js](https://nodejs.org) installed, they also check the hosted site's browser code
+against the review server (`tests/test_hosted_js.py`); without it, that test is skipped.
 
 Layout: `bruv_app/` holds the package (video → detect → still → track → continuity →
 classify → store → metrics → template/export, plus server and static UI with lookalike;
-provenance, evaluate, diagnostics, equipment, crops and modeltest for measuring accuracy). `tests/` holds the tests, and
+provenance, evaluate, diagnostics, equipment, crops and modeltest for measuring accuracy;
+publish, site, pull and `hosted/` for the volunteers' review site). `tests/` holds the tests, and
 `scripts/` the Windows helpers.
