@@ -297,6 +297,45 @@ answer; the rest wait for you, and the command says how many. The cards before a
 are frozen in `snapshots\`. A rebuild that is stopped part way loses no answers: run it
 again. Projects made before these rules keep their old behaviour until rebuilt this way.
 
+### Trying rules side by side
+
+To see what a rule does to your own project before adopting it, try it on a copy:
+
+```bat
+scripts\run_windows.bat try-rules --project projects\site1 --name faint --set track_faint=true
+scripts\run_windows.bat try-rules --project projects\site1 --name smooth --set track_velocity_smoothing=0.5
+scripts\run_windows.bat compare-rules --project projects\site1
+```
+
+Each trial is a copy of the project's database in `trials\`, sharing its frames, rebuilt
+with the changed settings; the project itself isn't touched. The first one also builds a
+`baseline`: the project rebuilt with its own rules, so every trial is compared with cards
+the machine built, not ones you've since fixed. `compare-rules` scores each against what
+you did in the project:
+
+| Column | What it counts | Better |
+|---|---|---|
+| cards, to review | all cards, and those not tiny and inside the review window | fewer |
+| mix answers | cards holding sightings you answered differently (two fish on one card) | fewer |
+| fixes undone | groups of sightings you pulled apart that are on one card again | fewer |
+| followed boxed | the share of your followed fish's visits that have a box | higher |
+| cards/fish | cards each followed fish ends up on | closer to 1 |
+| card changes | times a followed fish's card changes | fewer |
+| cards w/ another | cards holding a followed fish that also hold a box where it wasn't | fewer |
+
+The follow columns need fish followed in the project ("Follow this fish"); a few followed
+through crossings and busy moments say the most. `review --project … --trial faint` opens a
+trial's cards on the review page to look at them; answers given there stay in the trial.
+
+Options to try, all off until measured (docs/SPEC.md §15):
+- `track_faint=true`: boxes scoring 0.10–0.30 may carry on a track that found no box in a
+  frame (they never start one), so a fish that fades for a moment keeps its card. Only
+  projects processed since faint boxes were kept have any; `try-rules` says when a
+  project has none.
+- `track_velocity_smoothing=0.5`: each link keeps half the track's earlier course, so one
+  wobble doesn't turn the direction the tracker expects (0 is today's).
+- Any other setting works the same way, e.g. `track_max_missed_s=0.5` or `gap_seconds=5`.
+
 ## Measuring accuracy
 
 These tools follow the independent accuracy review (docs/SPEC.md §13). Defaults change
@@ -308,6 +347,13 @@ contested links were measured on the first 185 NP339 answers.
   read-only snapshot of the project's results is saved in `snapshots\` after processing.
   `snapshot --project … --label before-review` saves one by hand. The export's
   `provenance` sheet lists all of it.
+- **One record row per answered card.** A card is one fish while it stays on screen, so
+  each is a row with a count of 1; cards you joined (`P`) are one row, cards answered
+  together as look-alikes stay separate. The most at once is MaxN's, on the `MaxN` sheet,
+  never a sum of rows. Each MaxN row (by species and by family) has an `evidence_frame`:
+  the frame it comes from, with the fish it counted boxed, saved beside the workbook in
+  a `…_maxn` folder, to check the number. `record_rows: "grouped"` in a project's
+  settings gives the rows from before (same species within `sighting_gap_s` share one).
 - **The export says how complete the review is.** `review_status` and
   `review_by_minute` count cards and sightings by status, tiny fish apart. Until every
   card is answered, the `MaxN` rows say "provisional". `checks` lists what could count

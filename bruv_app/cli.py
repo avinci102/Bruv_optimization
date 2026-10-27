@@ -152,7 +152,7 @@ def cmd_learn(args) -> None:
     print("refreshes its guesses; reviews stay.")
 
 
-def serve(root: Path, port: int, open_browser: bool) -> None:
+def serve(root: Path, port: int, open_browser: bool, db: str = "project.db") -> None:
     import uvicorn  # noqa: PLC0415
 
     from .server import create_app  # noqa: PLC0415
@@ -161,11 +161,51 @@ def serve(root: Path, port: int, open_browser: bool) -> None:
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     print(f"Review UI at {url}  (Ctrl+C to stop)")
-    uvicorn.run(create_app(root), host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(create_app(root, db), host="127.0.0.1", port=port, log_level="warning")
 
 
 def cmd_review(args) -> None:
-    serve(Path(args.project), args.port, not args.no_browser)
+    db = "project.db"
+    if args.trial:
+        from .store import Project  # noqa: PLC0415
+        from .trials import open_trial  # noqa: PLC0415
+
+        db = str(open_trial(Project(Path(args.project)), args.trial).db_path.relative_to(Path(args.project)))
+    serve(Path(args.project), args.port, not args.no_browser, db)
+
+
+def cmd_try_rules(args) -> None:
+    from .store import Project  # noqa: PLC0415
+    from .trials import BASELINE, cautions, compare, table, trial_names, try_rules  # noqa: PLC0415
+
+    project = Project(Path(args.project))
+    changes = {}
+    for item in args.set or []:
+        key, sep, value = item.partition("=")
+        if not sep:
+            raise ValueError(f"Give each change as name=value (got {item})")
+        changes[key.strip()] = value.strip()
+    for line in cautions(project, changes):
+        print(f"Note: {line}")
+    with keep_awake():
+        if BASELINE not in trial_names(project) or args.name == BASELINE:
+            print("Rebuilding the baseline: this project's cards as its rules make them now…")
+            try_rules(project, BASELINE, {}, progress=_progress())
+        if args.name != BASELINE:
+            print(f"Rebuilding trial {args.name} with {', '.join(f'{k}={v}' for k, v in changes.items()) or 'no changes'}…")
+            try_rules(project, args.name, changes, progress=_progress())
+    print("\n".join(table(compare(project))))
+
+
+def cmd_compare_rules(args) -> None:
+    from .store import Project  # noqa: PLC0415
+    from .trials import compare, table  # noqa: PLC0415
+
+    project = Project(Path(args.project))
+    scores = compare(project)
+    if not scores:
+        raise ValueError("No trials yet: make one with try-rules")
+    print("\n".join(table(scores)))
 
 
 def cmd_export(args) -> None:
@@ -628,7 +668,19 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--project", required=True)
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--no-browser", action="store_true")
+    p.add_argument("--trial", help="open a rule trial's cards (try-rules) instead of the project's")
     p.set_defaults(func=cmd_review)
+
+    p = sub.add_parser("try-rules", help="rebuild a copy of the project with other rules, and compare it")
+    p.add_argument("--project", required=True)
+    p.add_argument("--name", required=True, help="the trial's name, e.g. faint")
+    p.add_argument("--set", nargs="+", metavar="NAME=VALUE",
+                   help="settings to change, e.g. track_faint=true track_velocity_smoothing=0.5")
+    p.set_defaults(func=cmd_try_rules)
+
+    p = sub.add_parser("compare-rules", help="score every rule trial against this project's answers, fixes and follows")
+    p.add_argument("--project", required=True)
+    p.set_defaults(func=cmd_compare_rules)
 
     p = sub.add_parser("export", help="write the reviewed results into a copy of the template")
     p.add_argument("--project", required=True)

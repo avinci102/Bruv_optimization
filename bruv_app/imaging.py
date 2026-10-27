@@ -28,6 +28,19 @@ def load_rgb(path: str) -> np.ndarray:
         return np.asarray(im.convert("RGB"))
 
 
+def draw_boxes(image: np.ndarray, boxes: list[tuple[float, float, float, float]], colour=(255, 59, 48)) -> np.ndarray:
+    """A copy of the image with normalised (0-1) boxes drawn on it."""
+    from PIL import ImageDraw  # noqa: PLC0415
+
+    out = Image.fromarray(image).convert("RGB")
+    draw = ImageDraw.Draw(out)
+    w, h = out.size
+    width = max(2, round(w / 320))
+    for x1, y1, x2, y2 in boxes:
+        draw.rectangle([x1 * w, y1 * h, x2 * w, y2 * h], outline=colour, width=width)
+    return np.asarray(out)
+
+
 def crop_box(image: np.ndarray, x1: float, y1: float, x2: float, y2: float, pad: float = 0.1) -> np.ndarray:
     """Crop a normalised (0-1) box, padded by `pad` of its size, clamped to the image."""
     h, w = image.shape[:2]
