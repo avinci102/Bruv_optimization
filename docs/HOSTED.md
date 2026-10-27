@@ -287,9 +287,12 @@ laptop:
 | `emb.bin` (descriptions) | 17.8 MB: the largest file, against the 25 MiB limit |
 | `cards.json` | 13.5 MB (26,278 sightings) |
 | Whole video | about 263 MB |
+| With `--follow` (27 Oct, 1,149 cards) | 21.5 minutes; 1,681 files (8% of a site), 679 MB. The follow part: 526 strips, 389 MB; `boxes.json` 3.2 MB, `frames.json` 0.1 MB |
 
 - A volunteer's browser downloads `cards.json` and `emb.bin` (about 31 MB) once when the video
   opens, then each card's sheet as they reach it.
-- About 15 videos of this length fit in one site.
+- About 15 videos of this length fit in one site, or 11 published with `--follow`.
+- Following a fish downloads a strip of 20 frames (about 0.75 MB) every 5 seconds of
+  video it steps through, and the boxes file once.
 - A video about 60% longer than this one would put `emb.bin` over 25 MiB. It would then
   have to be split into parts; publish doesn't do that yet.
