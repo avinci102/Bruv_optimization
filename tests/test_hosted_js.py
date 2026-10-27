@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import bruv_app
+from bruv_app.detect import Detection
 from bruv_app.pipeline import refresh_fish_guesses
 from bruv_app.publish import publish, published_cards
 from bruv_app.pull import pull
@@ -67,6 +68,13 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
     keep, other = [f["id"] for f in project.all_fish()][:2]
     project.merge_fish(keep, other)
     refresh_fish_guesses(project, keep, settings)
+    # A faint box (under det_threshold, so on no card) beside a fish in every frame, as
+    # footage processed since faint boxes were kept has: a follow clicks one.
+    for frame_id, x1, y1, x2, y2 in project.db.execute(
+        "SELECT frame_id, x1, y1, x2, y2 FROM detections WHERE tracklet_id IS NOT NULL GROUP BY frame_id"
+    ).fetchall():
+        dx = 0.12 if x2 + 0.12 <= 1 else -0.12
+        project.add_detections(frame_id, [Detection(x1 + dx, y1, x2 + dx, y2, settings.det_threshold / 1.5, None)], [0.0])
     project.commit()
     site = tmp_path / "site"
     publish(project.root, site, "V1", follow=True)
@@ -79,7 +87,8 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
     js = json.loads(result.read_text(encoding="utf-8"))
     steps = js["steps"]
     assert {"label", "label confirmed", "lookalikes", "multiple fish", "split", "split again", "move"} <= set(steps)
-    assert {"follow done", "follow undo", "follow again", "follow taken", "follow delete", "follow short"} <= set(steps)
+    assert {"follow done", "follow undo", "follow faint", "follow again", "follow taken", "follow delete",
+            "follow short"} <= set(steps)
     assert steps["label"]["status"] == 409  # the joined card's warnings, then confirmed
     turned_down = {"label": 409, "undo without a batch": 422, "join": 400, "unknown card": 404,
                    "follow bad state": 400, "follow box elsewhere": 400, "follow no frame": 422, "follow unknown": 404,
@@ -117,3 +126,6 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
     diffs = _differences({"list": follows, "views": py_views}, {"list": live["follows"], "views": live["followViews"]})
     assert diffs == [], "\n".join(diffs)
     assert [f["done"] for f in follows] == [True, False, False]
+    # The faint box clicked in the first follow: on no card, counted apart, on both sides.
+    assert py_views["F1-v1"]["follow"]["faint"] == 1
+    assert any(b["faint"] and b["card"] is None for b in py_views["F2-v1"]["boxes"])

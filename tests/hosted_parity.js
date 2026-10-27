@@ -58,7 +58,8 @@ async function snapshot(video) {
 }
 
 // Following a fish, as the follow page does: its box where the card has one, now and then
-// another card's box, a spot without a box, an undo; "gone" where nothing is left.
+// another card's box, a spot without a box, a faint box (on no card), an undo; "gone" where
+// nothing is left.
 async function follow(v, step, card, gone, upTo) {
   const started = await step(`follow ${card}`, "POST", "/api/follows", { card, gone_s: gone });
   if (started.status !== 200) throw new Error(`starting a follow: ${JSON.stringify(started)}`);
@@ -68,14 +69,17 @@ async function follow(v, step, card, gone, upTo) {
     if (!view.frame) throw new Error("no frame: " + JSON.stringify(view).slice(0, 400));
     const frame = view.frame.id;
     const mine = view.boxes.find((b) => b.card === card);
-    const other = view.boxes.find((b) => b.card !== card);
+    const other = view.boxes.find((b) => b.card !== card && !b.faint);
+    const faint = view.boxes.find((b) => b.faint);
     let body;
+    let name = null;
     if (k === 2 && other) body = { frame_id: frame, state: "box", det_id: other.det };
+    else if (k === 6 && faint) [body, name] = [{ frame_id: frame, state: "box", det_id: faint.det }, "follow faint"];
     else if (k === 4) body = { frame_id: frame, state: "nobox", x: 0.4, y: 0.6 };
     else if (k === 5) body = { frame_id: frame, state: "nobox" };
     else if (mine) body = { frame_id: frame, state: "box", det_id: mine.det };
     else body = { frame_id: frame, state: "gone" };
-    const res = await call(v, "POST", `/api/follows/${id}/mark`, body);
+    const res = name ? await step(name, "POST", `/api/follows/${id}/mark`, body) : await call(v, "POST", `/api/follows/${id}/mark`, body);
     if (res.status !== 200) throw new Error(`marking ${JSON.stringify(body)}: ${JSON.stringify(res)}`);
     view = res.data;
     if (k === 3) view = (await step("follow undo", "POST", `/api/follows/${id}/undo`, {})).data;
