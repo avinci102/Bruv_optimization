@@ -267,39 +267,44 @@ def sample_frames(
         local_len = min(ch_end, end_s) - (ch.start_s + local_start)
         if local_len <= 0:
             continue
-        seek = max(0.0, local_start - SEEK_EARLY_S)
-        # round=up: a source frame counts for the first output moment at or after it, so
-        # each output moment gets the latest frame at or before it (round=near would hand
-        # back the frame up to half a step later).
-        vf = f"fps=fps={fps}:start_time={local_start - seek:.6f}:round=up,scale={width}:-2"
-        # -t counts from the seek point and may cut a frame early; the loop below stops exactly.
-        output_params = ["-vf", vf, "-t", f"{local_start - seek + local_len + step:.6f}"]
-        # Hardware decoding can fail outright rather than fall back (out of graphics memory,
-        # say): a chapter that fails before its first frame is decoded again in software.
+        # Hardware decoding can fail rather than fall back (out of graphics memory, say),
+        # before the first frame (OSError) or part way (RuntimeError): the rest of the
+        # chapter is then decoded in software, from the next frame. A run that starts at a
+        # frame numbers its frames as one that started earlier would, so nothing changes.
+        done = 0  # frames of this chapter already yielded
         for hardware in (True, False) if hwaccel else (False,):
+            begin = local_start + done * step
+            seek = max(0.0, begin - SEEK_EARLY_S)
+            # round=up: a source frame counts for the first output moment at or after it, so
+            # each output moment gets the latest frame at or before it (round=near would hand
+            # back the frame up to half a step later).
+            vf = f"fps=fps={fps}:start_time={begin - seek:.6f}:round=up,scale={width}:-2"
+            # -t counts from the seek point and may cut a frame early; the loop below stops exactly.
+            output_params = ["-vf", vf, "-t", f"{begin - seek + local_len - done * step + step:.6f}"]
             input_params = ["-ss", f"{seek:.6f}"]
             if hardware:
                 input_params = ["-hwaccel", "auto", *input_params]
             gen = imageio_ffmpeg.read_frames(
                 str(ch.path), input_params=input_params, output_params=output_params
             )
-            started = False
+            first = done
             try:
                 meta = next(gen)
                 w, h = meta["size"]
                 for k, raw in enumerate(gen):
-                    local_t = local_start + k * step
+                    local_t = local_start + (first + k) * step
                     if local_t >= local_start + local_len - 1e-6:
                         break
                     image = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
-                    started = True
+                    done += 1
                     yield SampledFrame(
                         ch.start_s + local_t, ch.index, local_t, image, source_index(local_t, ch.fps)
                     )
                 break
-            except OSError:
-                if started or not hardware:
+            except (OSError, RuntimeError) as exc:
+                if not hardware:
                     raise
-                log.warning("Hardware decoding failed on %s; decoding it in software", ch.path.name)
+                log.warning("Hardware decoding failed on %s after %d frames (%s); decoding the rest in software",
+                            ch.path.name, done, str(exc).splitlines()[0])
             finally:
                 gen.close()
