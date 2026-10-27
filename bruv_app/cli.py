@@ -176,7 +176,7 @@ def cmd_review(args) -> None:
 
 def cmd_try_rules(args) -> None:
     from .store import Project  # noqa: PLC0415
-    from .trials import BASELINE, compare, table, trial_names, try_rules  # noqa: PLC0415
+    from .trials import BASELINE, cautions, compare, table, trial_names, try_rules  # noqa: PLC0415
 
     project = Project(Path(args.project))
     changes = {}
@@ -185,6 +185,8 @@ def cmd_try_rules(args) -> None:
         if not sep:
             raise ValueError(f"Give each change as name=value (got {item})")
         changes[key.strip()] = value.strip()
+    for line in cautions(project, changes):
+        print(f"Note: {line}")
     with keep_awake():
         if BASELINE not in trial_names(project) or args.name == BASELINE:
             print("Rebuilding the baseline: this project's cards as its rules make them now…")

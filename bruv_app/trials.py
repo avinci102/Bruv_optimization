@@ -69,6 +69,19 @@ def apply_changes(settings: Settings, changes: dict[str, str]) -> Settings:
     return settings
 
 
+def cautions(project: Project, changes: dict[str, str]) -> list[str]:
+    """Changes that can't make a difference to this project, and why."""
+    settings = apply_changes(project.load_settings(), changes)
+    out = []
+    if settings.track_faint:
+        n = project.db.execute("SELECT COUNT(*) FROM detections WHERE score < ?", (settings.det_threshold,)).fetchone()[0]
+        if not n:
+            out.append(f"track_faint can't change anything here: this project kept no boxes scoring under "
+                       f"{settings.det_threshold:g} (it was processed before they were kept). Process the "
+                       "footage again with this version to try it.")
+    return out
+
+
 def try_rules(project: Project, name: str, changes: dict[str, str], classifier=None, progress=None) -> Project:
     """A trial called `name`: the project's database copied to trials/, its settings with
     `changes`, and its cards rebuilt with them. A trial of the same name is replaced."""

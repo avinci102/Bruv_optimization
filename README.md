@@ -329,7 +329,9 @@ trial's cards on the review page to look at them; answers given there stay in th
 
 Options to try, all off until measured (docs/SPEC.md §15):
 - `track_faint=true`: boxes scoring 0.10–0.30 may carry on a track that found no box in a
-  frame (they never start one), so a fish that fades for a moment keeps its card.
+  frame (they never start one), so a fish that fades for a moment keeps its card. Only
+  projects processed since faint boxes were kept have any; `try-rules` says when a
+  project has none.
 - `track_velocity_smoothing=0.5`: each link keeps half the track's earlier course, so one
   wobble doesn't turn the direction the tracker expects (0 is today's).
 - Any other setting works the same way, e.g. `track_max_missed_s=0.5` or `gap_seconds=5`.

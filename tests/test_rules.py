@@ -13,7 +13,7 @@ from bruv_app.export import export_project
 from bruv_app.follow import mark, start
 from bruv_app.metrics import FishLabel, card_sightings
 from bruv_app.track import track_all
-from bruv_app.trials import BASELINE, apply_changes, compare, open_trial, table, trial_names, try_rules
+from bruv_app.trials import BASELINE, apply_changes, cautions, compare, open_trial, table, trial_names, try_rules
 
 from .conftest import label_like_perfect_human
 
@@ -91,6 +91,15 @@ def test_settings_are_read_as_their_types():
         apply_changes(demo_settings_like(), {"nonsense": "1"})
     with pytest.raises(ValueError):
         apply_changes(demo_settings_like(), {"track_faint": "maybe"})
+
+
+def test_a_trial_says_when_faint_boxes_were_never_kept(project):
+    threshold = project.load_settings().det_threshold
+    faint = project.db.execute("SELECT COUNT(*) FROM detections WHERE score < ?", (threshold,)).fetchone()[0]
+    assert bool(cautions(project, {"track_faint": "true"})) == (faint == 0)
+    project.db.execute("DELETE FROM detections WHERE score < ? AND tracklet_id IS NULL", (threshold,))
+    assert "processed before" in cautions(project, {"track_faint": "true"})[0]
+    assert cautions(project, {"track_velocity_smoothing": "0.5"}) == []
 
 
 def demo_settings_like():
