@@ -19,10 +19,19 @@ from . import imaging
 from .diagnostics import card_flags, closest_calls, pieces
 from .equipment import best_match, mark_equipment, rig_candidates
 from .export import export_project
-from .families import family_of, rank_families
-from .lookalike import answered_like, card_looks, groups, unanswered_like
+from .families import family_of, rank_families, resolve_answer
+from .lookalike import (
+    answered_like,
+    best_answered,
+    card_looks,
+    card_pieces,
+    every_piece_alike,
+    groups,
+    unanswered_like,
+)
 from .pipeline import EARLIER_KEY, card_scores, extra_species, load_timeline, refresh_fish_guesses, species_labels
 from .store import REVIEWED, STATUSES, Project
+from .views import best_view
 
 STATIC_DIR = Path(__file__).parent / "static"
 FILMSTRIP_MAX = 60
@@ -37,6 +46,10 @@ class LabelIn(BaseModel):
     comment: str | None = None
     # The reviewer has checked the card's warnings (diagnostics.py) and it is one fish.
     confirm: bool = False
+    # Two-level answers (docs/SPEC.md §15): the family; the species is optional.
+    family: str | None = None
+    seconds: float | None = None  # time spent on the card before answering
+    queue: bool = False  # answered from the quick-confirm queue
 
 
 class EquipmentIn(BaseModel):
@@ -68,6 +81,9 @@ class LookalikeIn(BaseModel):
     ids: list[int]
     status: str
     species: str | None = None
+    family: str | None = None
+    seconds: float | None = None  # time spent on the whole list
+    shown: list[int] = []  # every card the list let the reviewer tick: the unticked ones are logged too
 
 
 def _box(d) -> dict:
@@ -105,9 +121,57 @@ def create_app(project_root: Path) -> FastAPI:
         if cache.get("stamp") != stamp:
             cache.update(stamp=stamp, looks=card_looks(project, settings.crops_per_fish), groups=None)
         current = cache["looks"]
+        outside = project.outside_window()
         for f in project.db.execute("SELECT id, status, species FROM fish"):
-            current.status[f["id"]], current.answer[f["id"]] = f["status"], f["species"]
+            # Cards outside the review window are neither offered nor used as look-alikes.
+            status = "outside" if f["id"] in outside else f["status"]
+            current.status[f["id"]], current.answer[f["id"]] = status, f["species"]
         return current
+
+    def answer_family(card: int, status: str, species: str | None) -> str | None:
+        """A card's answered family: as recorded, or from its species for older answers."""
+        if status != "species":
+            return None
+        return project.answer_family(card) or (family_of(project, [species]).get(species) if species else None)
+
+    def like_view(like: dict | None) -> dict | None:
+        """The answered look-alike, with its family and the sighting to show for it."""
+        if like is None:
+            return None
+        view = best_view(project.fish_detections(like["card"]))
+        return {**like, "similarity": round(like["similarity"], 3),
+                "family": answer_family(like["card"], like["status"], like["species"]),
+                "det": view["id"] if view else None}
+
+    def suggestion_for(fish_id: int) -> dict:
+        """What the page offered for a card when it was answered: the answered look-alike
+        (R, quick confirm) and the model's first guess. Kept with every answer, so the
+        auto-accept threshold can be set from how often suggestions were taken."""
+        guesses = json.loads(project.fish(fish_id)["guesses"] or "[]")
+        like = like_view(answered_like(looks(), fish_id))
+        return {"like": None if like is None else {k: like[k] for k in ("card", "status", "species", "family", "similarity")},
+                "model": guesses[0] if guesses else None}
+
+    def matched(suggested: dict | None, status: str, species: str | None, family: str | None) -> str | None:
+        if suggested is None:
+            return None
+        if suggested["status"] != status:
+            return "different"
+        if status != "species" or suggested["species"] == species:
+            return "same"
+        return "same family" if suggested.get("family") and suggested["family"] == family else "different"
+
+    def resolve(status: str, species: str | None, family: str | None) -> tuple[str | None, str | None]:
+        """(recorded name, family) of an answer; raises HTTPException for an unknown name."""
+        if status != "species":
+            return None, None
+        names = species_labels(project)  # the template's list plus the extra names
+        if not names:  # no template list: take the name as given
+            return species, family or species
+        try:
+            return resolve_answer(project, names, species, family)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     def earlier_answer(dets) -> dict | None:
         """What a card's sightings were answered before the cards were last rebuilt, when
@@ -178,6 +242,9 @@ def create_app(project_root: Path) -> FastAPI:
                 "frames": project.frame_count(),
                 # Boxes hidden as still objects (still.py) that would otherwise be tracked.
                 "still_hidden": len(project.still_detections(settings, settings.det_threshold)),
+                # The part of the video reviewed and counted, and the cards wholly outside it.
+                "review_window": dict(zip(("start_s", "end_s"), project.review_window())),
+                "outside_window": len(project.outside_window()),
             }
 
     @app.get("/api/fish")
@@ -186,6 +253,8 @@ def create_app(project_root: Path) -> FastAPI:
             timeline = load_timeline(project)
             sizes = project.fish_sizes()
             group = look_groups()
+            like = best_answered(looks())
+            outside = project.outside_window()
             out = []
             for f in project.all_fish():
                 clip, local = timeline.locate(f["start_t"])
@@ -203,6 +272,10 @@ def create_app(project_root: Path) -> FastAPI:
                         "guesses": [g[0] for g in guesses[:3]],
                         "max_px": round(sizes.get(f["id"], 0.0), 1),
                         "group": group.get(f["id"]),  # its look-alike group (lookalike.py)
+                        # Unanswered cards: the answered card it looks most like, and how alike
+                        # (the quick-confirm queue takes those at 0.90 or more).
+                        "like": None if f["id"] not in like else {"card": like[f["id"]][0], "sim": round(like[f["id"]][1], 3)},
+                        "outside": f["id"] in outside,  # outside the review window: not reviewed
                     }
                 )
             return out
@@ -213,7 +286,9 @@ def create_app(project_root: Path) -> FastAPI:
             f = get_fish(fish_id)
             timeline = load_timeline(project)
             dets = project.fish_detections(fish_id)
-            best = next((d for d in dets if d["id"] == f["best_det"]), dets[0] if dets else None)
+            # The picture shown is chosen for a person (views.py: side-on, whole, sharp); the
+            # guesses keep using the crops the species model scored.
+            best = best_view(dets)
             step = max(1, -(-len(dets) // FILMSTRIP_MAX))
             strip = []
             for i in range(0, len(dets), step):
@@ -244,9 +319,10 @@ def create_app(project_root: Path) -> FastAPI:
             piece_view = []
             for p in parts:
                 clip, local = timeline.locate(p.start_t)
+                shown = best_view([d for d in dets if d["tracklet_id"] == p.tracklet])
                 piece_view.append({
                     "tracklet": p.tracklet, "clip": clip, "local_t": local, "seconds": p.end_t - p.start_t,
-                    "detections": p.detections, "best_det": p.best_det, "guesses": p.guesses,
+                    "detections": p.detections, "best_det": shown["id"] if shown else p.best_det, "guesses": p.guesses,
                 })
             calls = []
             for c in closest_calls(project, fish_id):
@@ -255,10 +331,10 @@ def create_app(project_root: Path) -> FastAPI:
                               "local_t": local, "box": _box(c), "margin": round(c["link_margin"], 3),
                               "history": None if c["history_sim"] is None else round(c["history_sim"], 3)})
             current = looks()
-            best_view = None
+            shown = None
             if best is not None:
                 best_clip, best_local = timeline.locate(best["t"])
-                best_view = {
+                shown = {
                     "det_id": best["id"],
                     "frame_id": best["frame_id"],
                     "t": best["t"],
@@ -281,16 +357,18 @@ def create_app(project_root: Path) -> FastAPI:
                 "time_out": t_out,
                 "n_detections": len(dets),
                 "tracklets": project.fish_tracklets(fish_id),
-                "best": best_view,
+                "best": shown,
                 "filmstrip": strip,
                 "pieces": piece_view,
                 "flags": [{"kind": x.kind, "text": x.text} for x in card_flags(project, fish_id, settings.merge_min_similarity, parts)],
                 "closest_calls": calls,
                 "families": family_view(fish_id),
                 "equipment": bool(review and review["details"] and json.loads(review["details"]).get("equipment")),
+                "family": answer_family(fish_id, f["status"], f["species"]),  # the answer's family
+                "outside": fish_id in project.outside_window(),
                 # Your answer on the card that looks most like this one, and how many unanswered
                 # cards look like it (lookalike.py).
-                "answered_like": answered_like(current, fish_id),
+                "answered_like": like_view(answered_like(current, fish_id)),
                 "lookalikes": len(unanswered_like(current, fish_id)),
                 # Some of its sightings were answered before the cards were rebuilt.
                 "earlier": earlier_answer(dets) if f["status"] in ("pending", "skipped") else None,
@@ -305,9 +383,7 @@ def create_app(project_root: Path) -> FastAPI:
     def label(fish_id: int, body: LabelIn):
         with lock:
             get_fish(fish_id)
-            species_list = species_labels(project)  # the template's list plus the extra names
-            if body.status == "species" and species_list and body.species not in species_list:
-                raise HTTPException(400, "Pick a species from the list")
+            species, family = resolve(body.status, body.species, body.family)
             # One answer for every piece of a flagged card only once the reviewer confirms
             # they're one fish; the confirmation is kept with the answer.
             flags = card_flags(project, fish_id, settings.merge_min_similarity) if body.status in REVIEWED else []
@@ -316,9 +392,19 @@ def create_app(project_root: Path) -> FastAPI:
                     409, "Check this card first: " + " ".join(x.text for x in flags)
                     + " Answer again to confirm it's one fish, or use Multiple fish.",
                 )
-            details = {"flags": [x.kind for x in flags], "confirmed": True} if flags else None
+            details: dict = {"flags": [x.kind for x in flags], "confirmed": True} if flags else {}
+            if body.status in REVIEWED:
+                offered = suggestion_for(fish_id)
+                details["suggestion"] = offered
+                details["matched"] = matched(offered["like"], body.status, species, family)
+                if body.queue:
+                    details["queue"] = "quick"
+            if body.seconds is not None:
+                details["seconds"] = round(max(0.0, body.seconds), 1)
+            fields = body.model_dump(exclude={"status", "confirm", "seconds", "queue"})
+            fields.update(species=species, family=family)
             try:
-                project.label_fish(fish_id, body.status, details, **body.model_dump(exclude={"status", "confirm"}))
+                project.label_fish(fish_id, body.status, details or None, **fields)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             return {"ok": True}
@@ -382,18 +468,38 @@ def create_app(project_root: Path) -> FastAPI:
     # --- look-alikes (lookalike.py): answered together only from their pictures, with undo
 
     @app.get("/api/fish/{fish_id}/lookalikes")
-    def lookalikes(fish_id: int, limit: int = 120):
+    def lookalikes(fish_id: int, limit: int = 400):
+        """The card you answered (the reference, shown pinned) and the unanswered cards that
+        look like it, most alike first, each with one picture per piece. A card can be
+        answered with the others only when every piece looks like the reference ("mixed"
+        otherwise) and it has no warnings ("flagged")."""
         with lock:
-            get_fish(fish_id)
+            source = get_fish(fish_id)
             timeline = load_timeline(project)
-            out = []
-            for fid, sim in unanswered_like(looks(), fish_id)[:limit]:
+            current = looks()
+            row = current.row(fish_id)
+            ref = current.emb[row] if row is not None else None
+            cards = []
+            for fid, sim in unanswered_like(current, fish_id)[:limit]:
                 f = project.fish(fid)
                 clip, local = timeline.locate(f["start_t"])
-                out.append({"id": fid, "similarity": round(sim, 3), "best_det": f["best_det"], "clip": clip,
-                            "local_t": local, "seconds": f["end_t"] - f["start_t"],
-                            "flagged": bool(card_flags(project, fid, settings.merge_min_similarity))})
-            return out
+                parts = card_pieces(project, fid, ref)
+                cards.append({
+                    "id": fid, "similarity": round(sim, 3), "clip": clip, "local_t": local,
+                    "seconds": f["end_t"] - f["start_t"], "n_pieces": len(parts),
+                    "pieces": [{"det": p["det"], "similarity": None if p["similarity"] is None else round(p["similarity"], 3)}
+                               for p in parts[:3]],
+                    "mixed": not every_piece_alike(parts),
+                    "flagged": bool(card_flags(project, fid, settings.merge_min_similarity)),
+                })
+            view = best_view(project.fish_detections(fish_id))
+            clip, local = timeline.locate(source["start_t"])
+            return {
+                "source": {"id": fish_id, "status": source["status"], "species": source["species"],
+                           "family": answer_family(fish_id, source["status"], source["species"]),
+                           "det": view["id"] if view else None, "clip": clip, "local_t": local},
+                "cards": cards,
+            }
 
     @app.post("/api/lookalikes/answer")
     def lookalikes_answer(body: LookalikeIn):
@@ -403,22 +509,34 @@ def create_app(project_root: Path) -> FastAPI:
             get_fish(body.source)
             if body.status not in REVIEWED:
                 raise HTTPException(400, "Pick an answer for them")
-            species_list = species_labels(project)
-            if body.status == "species" and species_list and body.species not in species_list:
-                raise HTTPException(400, "Pick a species from the list")
-            alike = dict(unanswered_like(looks(), body.source))
+            species, family = resolve(body.status, body.species, body.family)
+            current = looks()
+            alike = dict(unanswered_like(current, body.source))
+            row = current.row(body.source)
+            ref = current.emb[row] if row is not None else None
             batch = datetime.now(timezone.utc).strftime("like-%Y%m%dT%H%M%S%f")
             equipment = body.status == "not_fish" and bool(project.answer_details(body.source).get("equipment"))
+            share = round(body.seconds / max(len(body.ids), 1), 1) if body.seconds is not None else None
             answered, left = [], []
             for fid in body.ids:
-                if fid not in alike or card_flags(project, fid, settings.merge_min_similarity):
+                # Every piece must look like the reference, and warnings are checked one by one.
+                if (fid not in alike or not every_piece_alike(card_pieces(project, fid, ref))
+                        or card_flags(project, fid, settings.merge_min_similarity)):
                     left.append(fid)
                     continue
                 details = {"batch": batch, "like": body.source, "similarity": round(alike[fid], 3)}
+                if share is not None:
+                    details["seconds"] = share  # the list's time, shared out
                 if equipment:
                     details["equipment"] = True
-                project.label_fish(fid, body.status, details, species=body.species)
+                project.label_fish(fid, body.status, details, species=species, family=family)
                 answered.append(fid)
+            ticked, done = set(body.ids), set(answered)
+            decision = lambda fid: "answered" if fid in done else ("left" if fid in ticked else "unticked")  # noqa: E731
+            project.log_suggestions([
+                (fid, body.source, round(alike[fid], 3), decision(fid), batch)
+                for fid in dict.fromkeys([*body.shown, *body.ids]) if fid in alike
+            ])
             return {"batch": batch, "answered": answered, "left": left}
 
     @app.post("/api/batch/undo")

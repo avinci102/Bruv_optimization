@@ -449,6 +449,109 @@ def cmd_quickstart(args) -> None:
         serve(root, args.port, not args.no_browser)
 
 
+def parse_clock(text: str | None) -> float | None:
+    """Seconds from "49", "0:49", "43:10" or "1:02:05"."""
+    if text is None or text == "":
+        return None
+    parts = [float(p) for p in str(text).split(":")]
+    seconds = 0.0
+    for p in parts:
+        seconds = seconds * 60 + p
+    return seconds
+
+
+def video_time(timeline, text: str | None) -> float | None:
+    """Whole-video seconds from "1:30" (time across the whole video) or "GX020042 1:30" (a
+    clip's name, as the review page shows it, and the time within that clip)."""
+    if text is None or text == "":
+        return None
+    parts = str(text).strip().rsplit(maxsplit=1)
+    if len(parts) == 1:
+        return parse_clock(parts[0])
+    clip, clock = parts
+    for ch in timeline.chapters:
+        if clip.lower() in (ch.name.lower(), Path(ch.name).stem.lower(), ch.path.stem.lower()):
+            return ch.start_s + parse_clock(clock)
+    names = ", ".join(ch.name for ch in timeline.chapters)
+    raise ValueError(f"No clip called {clip} in this project (its clips: {names})")
+
+
+def cmd_review_window(args) -> None:
+    from .store import Project  # noqa: PLC0415
+    from .template import seconds_to_time  # noqa: PLC0415
+
+    root = Path(args.project)
+    if not (root / "project.db").exists():
+        raise ValueError(f"No project in {root}")
+    project = Project(root)
+    from .pipeline import load_timeline  # noqa: PLC0415
+
+    timeline = load_timeline(project)
+    if args.clear:
+        project.set_review_window(None, None)
+    elif args.start is not None or args.end is not None:
+        start, end = project.review_window()
+        project.set_review_window(
+            video_time(timeline, args.start) if args.start is not None else start,
+            video_time(timeline, args.end) if args.end is not None else end,
+        )
+    if len(timeline.chapters) > 1:
+        print("Clips: " + ", ".join(f"{ch.name} starts at {seconds_to_time(ch.start_s)}" for ch in timeline.chapters))
+    start, end = project.review_window()
+    if start is None and end is None:
+        print("Review window: the whole video")
+    else:
+        def both(t: float) -> str:
+            clip, local = timeline.locate(t)
+            return f"{seconds_to_time(t)} ({clip} {seconds_to_time(local)})"
+
+        print(f"Review window: {both(start or 0)} to {both(end) if end is not None else 'the end'} "
+              "(time across the whole video, then the clip and time within it)")
+        print(f"{len(project.outside_window())} cards wholly outside it: not shown for review and not counted")
+
+
+def cmd_check_setup(args) -> None:
+    """What this PC will process on: Python, PyTorch and the graphics card, ffmpeg, models."""
+    import platform  # noqa: PLC0415
+
+    from .gpu import _query, pick_build  # noqa: PLC0415
+
+    print(f"Python {platform.python_version()} on {platform.system()} {platform.release()}")
+    fields = _query("name,driver_version,compute_cap") or []
+    card = fields[0] if fields else None
+    build, advice = pick_build(fields[1] if len(fields) > 1 else None, fields[2] if len(fields) > 2 else None)
+    print(f"NVIDIA graphics card: {card or 'none found'}" + (f" (PyTorch build for it: {build})" if card else ""))
+    try:
+        import torch  # noqa: PLC0415
+    except ImportError:
+        print("PyTorch: not installed. Run scripts\\setup_windows.bat --ml (or quickstart.bat).")
+    else:
+        uses = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "the CPU"
+        print(f"PyTorch {torch.__version__} ({'CUDA ' + torch.version.cuda if torch.version.cuda else 'CPU-only build'}): "
+              f"runs on {uses}")
+        if card and build != "cpu" and not torch.cuda.is_available():
+            print("  The card isn't used: this PyTorch is the CPU build. Delete the .venv folder and run "
+                  "setup again to get the graphics-card build.")
+    if advice:
+        print(f"  {advice}")
+    print(f"Processing will run on: {Settings().resolved_device()}")
+    try:
+        import imageio_ffmpeg  # noqa: PLC0415
+
+        print(f"ffmpeg {imageio_ffmpeg.get_ffmpeg_version()}")
+    except Exception as exc:  # noqa: BLE001 — report, don't fail the check
+        print(f"ffmpeg: not available ({exc})")
+    detector = model_cache() / CFD_NANO_URL.rsplit("/", 1)[1]
+    print(f"Fish detector: {'downloaded' if detector.exists() else 'not downloaded yet (quickstart fetches it)'}")
+    try:
+        from huggingface_hub import try_to_load_from_cache  # noqa: PLC0415
+
+        cached = try_to_load_from_cache("imageomics/bioclip-2", "open_clip_model.safetensors")
+        print(f"Species model (BioCLIP 2): {'downloaded' if isinstance(cached, str) else 'downloads on first use'}")
+    except ImportError:
+        print("Species model (BioCLIP 2): needs the ML packages")
+
+
 def cmd_shrink(args) -> None:
     from .video import shrink_video  # noqa: PLC0415
 
@@ -573,6 +676,17 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--add-photos", metavar="FOLDER", help="add photos sorted into one folder per species")
     p.add_argument("--remove", metavar="SOURCE", help="take a project or photo folder back out")
     p.set_defaults(func=cmd_learn)
+
+    p = sub.add_parser("review-window", help="the part of the video to review and count (skip setup and retrieval)")
+    p.add_argument("--project", required=True)
+    p.add_argument("--start", help='when the rig is settled and the divers have gone: time across the whole video '
+                   '(e.g. 0:49), or a clip and the time in it, as the review page shows them (e.g. "GX020042 0:49")')
+    p.add_argument("--end", help='when the rig starts being lifted, e.g. 43:10 or "GX030042 2:10"')
+    p.add_argument("--clear", action="store_true", help="review the whole video again")
+    p.set_defaults(func=cmd_review_window)
+
+    p = sub.add_parser("check-setup", help="what this PC will process on: graphics card, PyTorch, ffmpeg, models")
+    p.set_defaults(func=cmd_check_setup)
 
     p = sub.add_parser("quickstart", help="one step: a folder with your video(s) + template → review page")
     p.add_argument("folder", help="folder holding the GoPro .MP4 file(s) and the Excel template")

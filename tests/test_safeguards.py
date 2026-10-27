@@ -46,18 +46,28 @@ def test_a_label_never_spreads_to_detections_added_after_it(project, tmp_path):
     assert all(r[7] == "provisional" for r in _sheet(wb, "MaxN")[1:])
 
 
-def test_review_status_counts_tiny_fish_as_unreviewed(project, tmp_path):
+def test_unanswered_cards_keep_the_counts_provisional(project, tmp_path):
+    n = len(project.all_fish())
+    status = _status(openpyxl.load_workbook(export_project(project, tmp_path / "a.xlsx")))
+    assert status["review"] == f"provisional: {n} cards not answered"
+
+
+def test_tiny_fish_are_out_of_scope_and_reported(project, tmp_path):
+    """Tiny fish aren't part of the review (docs/SPEC.md §15): unanswered, they don't keep
+    the counts provisional, but the review status says how many there are."""
     settings = project.load_settings()
     settings.tiny_fish_px = 1e9  # every card is tiny
     project.save_settings(settings)
     status = _status(openpyxl.load_workbook(export_project(project, tmp_path / "a.xlsx")))
     n = len(project.all_fish())
-    assert status["review"] == f"provisional: {n} cards not answered ({n} of them tiny)"
+    assert status["review"] == "complete"
+    assert status["tiny fish (out of the review's scope, not counted unless answered)"] == f"{n} cards not answered"
     assert status[f"  tiny (< {1e9:g} px, hidden until asked for)"].startswith(f"{n} / 0 / 0 / {n} /")
 
     label_like_perfect_human(project)
     wb = openpyxl.load_workbook(export_project(project, tmp_path / "b.xlsx"))
     assert _status(wb)["review"] == "complete"
+    assert _status(wb)["tiny fish (out of the review's scope, not counted unless answered)"] == "0 cards not answered"
     assert all(r[7] == "complete" for r in _sheet(wb, "MaxN")[1:])
     minutes = _sheet(wb, "review_by_minute")
     assert minutes[0] == ("minute", "clip", "from", "detections", "counted", "not_fish", "unreviewed", "unreviewed_tiny")

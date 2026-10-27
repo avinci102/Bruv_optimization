@@ -15,8 +15,16 @@ proposed architecture, the build phases, and the open questions.
   - avoid dependencies that are hard to bundle;
   - keep model inference behind interfaces so torch can later be swapped for ONNX/OpenVINO.
 - **The human decides species.** Show the model's top-3 guesses, but never pre-select one.
-- **Abundance is MaxN, computed from per-frame detections.** The ~10 s continuity rule is
-  only for deduplicating review cards, never for counts.
+- **Outputs and what they rest on** (decided 26 Oct 2026, docs/SPEC.md §15):
+  - **Individual sightings** (record rows of type "individual") come from cards: one
+    tracked chain is one sighting while the fish stays on screen. So cards must be
+    reliable: one fish per card, with no swaps, even between fish of the same species.
+    Continuity is a primary accuracy goal, not just review convenience.
+  - **Schools** are counted frame by frame (the school's minimum and maximum).
+  - **MaxN** (the most fish of a species in one frame, from per-frame detections) goes
+    on the summary sheet only, with the frame it comes from so it can be checked. Never
+    use it for other classifications, never sum it across time, and never treat it as a
+    total of individuals.
 - **Excel template rules:**
   - write by header name, never by column letter;
   - always write to a copy;

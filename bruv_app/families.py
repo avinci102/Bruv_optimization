@@ -123,6 +123,28 @@ def display_name(key: str, entry: str | None) -> str:
     return key.strip().replace("_", " ")
 
 
+def resolve_answer(project: Project, names: list[str], species: str | None, family: str | None) -> tuple[str, str]:
+    """A fish answer as (recorded name, family). The family is required; the species is
+    optional (docs/SPEC.md §15). The recorded name is the species when one was picked, or
+    else the template's entry for "this family, species unknown" ("grouper family"); a
+    family with no such entry is recorded by its own name, which the export writes as the
+    template's "other" entry with the name in the comment. Raises ValueError for a name or
+    family that isn't in the list."""
+    fam = family_of(project, names)
+    if species and species in fam:
+        if family and family != fam[species]:
+            raise ValueError(f"{species} isn't in the family {family}")
+        return species, fam[species]
+    if species and not family and species in set(fam.values()):
+        family = species  # a family-only answer given by its key (repeated with R, say)
+    if species and species != family:
+        raise ValueError("Pick a species from the list")
+    if not family or family not in set(fam.values()):
+        raise ValueError("Pick a family from the list")
+    members = [n for n, f in fam.items() if f == family]
+    return family_entry(members, family) or family, family
+
+
 def rank_families(labels: list[str], probs: np.ndarray, family: dict[str, str]) -> list[Family]:
     """Families by their best name's score (see the module docstring), each with its names
     best first."""

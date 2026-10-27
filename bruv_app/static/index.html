@@ -29,6 +29,7 @@
         <option value="2">★ template species in top 2</option>
         <option value="3">★ template species in top 3</option>
         <option value="rig">⚙ likely equipment</option>
+        <option value="quick">⚡ quick confirm (90%+ like a card you answered)</option>
       </select>
     </label>
     <label class="toggle" id="tiny-toggle"><input type="checkbox" id="show-tiny"> <span id="tiny-label">Show tiny fish</span></label>
@@ -131,16 +132,25 @@
         <kbd>U</kbd> unknown · <kbd>N</kbd> not a fish · <kbd>E</kbd> equipment · <kbd>M</kbd> multiple fish · <kbd>S</kbd> skip ·
         <kbd>↑</kbd><kbd>↓</kbd> pick a sighting, <kbd>X</kbd> split there · <kbd>Space</kbd> tick sightings, <kbd>X</kbd> moves them to a new card ·
         <kbd>P</kbd> same fish as the card before it ·
-        <kbd>R</kbd> same answer as the look-alike you answered (or your last answer) · <kbd>L</kbd> answer look-alikes together ·
+        <kbd>R</kbd> same answer as the look-alike you answered (or your last answer) · <kbd>Y</kbd> yes, same as the card shown beside it (quick confirm) · <kbd>L</kbd> answer look-alikes together ·
         <kbd>←</kbd><kbd>→</kbd> cards</p>
     </aside>
   </main>
 
   <div id="grid-panel" class="grid-panel" hidden>
     <div class="grid-box">
-      <h2 id="grid-title"></h2>
-      <p id="grid-hint" class="hint"></p>
-      <div id="grid" class="grid"></div>
+      <div class="grid-top">
+        <div>
+          <h2 id="grid-title"></h2>
+          <p id="grid-hint" class="hint"></p>
+        </div>
+        <div id="grid-compare" class="grid-compare" hidden>
+          <figure><img id="grid-ref-img" alt="The card you answered"><figcaption id="grid-ref-cap"></figcaption></figure>
+          <figure><img id="grid-peek-img" alt="The card the pointer is on"><figcaption id="grid-peek-cap"></figcaption></figure>
+        </div>
+      </div>
+      <div id="grid-scroll" class="grid-scroll"></div>
+      <p id="grid-held" class="hint" hidden></p>
       <div class="grid-actions">
         <button id="grid-ok" class="primary"></button>
         <button id="grid-cancel">Close <kbd>Esc</kbd></button>

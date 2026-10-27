@@ -38,29 +38,48 @@ def _species(project, fish_id):
 def test_look_alikes_are_answered_together_and_can_be_undone(project):
     client = TestClient(create_app(project.root))
     cards = client.get("/api/fish").json()
-    assert all("group" in c for c in cards)
+    assert all("group" in c and c["like"] is None for c in cards)  # nothing answered yet
     assert client.get("/api/summary").json()["still_hidden"] == 0  # every synthetic fish moves
-    source = next(c["id"] for c in cards if client.get(f"/api/fish/{c['id']}/lookalikes").json())
+    source = next(c["id"] for c in cards if client.get(f"/api/fish/{c['id']}/lookalikes").json()["cards"])
     species = _species(project, source)
-    alike = client.get(f"/api/fish/{source}/lookalikes").json()
+    alike = client.get(f"/api/fish/{source}/lookalikes").json()["cards"]
     assert alike and all(_species(project, c["id"]) == species for c in alike)  # same colour, same fish kind
-    assert client.post(f"/api/fish/{source}/label", json={"status": "species", "species": species}).status_code == 200
+    # One picture per piece, and whether every piece looks like the source.
+    assert all(1 <= len(c["pieces"]) <= 3 and c["n_pieces"] >= len(c["pieces"]) and "mixed" in c for c in alike)
+    answered = client.post(f"/api/fish/{source}/label", json={"status": "species", "species": species, "seconds": 7.5})
+    assert answered.status_code == 200
+    details = project.answer_details(source)
+    assert details["seconds"] == 7.5 and details["suggestion"]["like"] is None and details["matched"] is None
 
-    # Each look-alike now shows that answer, for R.
+    # Each look-alike now shows that answer, for R, and joins the quick-confirm queue.
+    reference = client.get(f"/api/fish/{source}/lookalikes").json()["source"]
+    assert reference["id"] == source and reference["species"] == species and reference["det"]
     other = alike[0]["id"]
     like = client.get(f"/api/fish/{other}").json()["answered_like"]
-    assert like["card"] == source and like["species"] == species and like["similarity"] >= 0.85
+    assert like["card"] == source and like["species"] == species and like["similarity"] >= 0.85 and like["det"]
+    listed = {c["id"]: c for c in client.get("/api/fish").json()}
+    assert listed[other]["like"]["card"] == source and listed[other]["like"]["sim"] >= 0.85
+
+    # Answering a look-alike from the queue keeps what was offered and that it was taken.
+    assert client.post(f"/api/fish/{other}/label",
+                       json={"status": "species", "species": species, "queue": True, "seconds": 1.2}).status_code == 200
+    kept = project.answer_details(other)
+    assert kept["queue"] == "quick" and kept["matched"] == "same" and kept["suggestion"]["like"]["card"] == source
+    client.post(f"/api/fish/{other}/label", json={"status": "pending"})
 
     # L: the ticked ones get the same answer together; a card answered meanwhile is left alone.
-    ids = [c["id"] for c in alike]
+    ids = [c["id"] for c in alike if not c["mixed"]]
+    assert ids
     client.post(f"/api/fish/{ids[-1]}/label", json={"status": "skipped"})
     client.post(f"/api/fish/{ids[-1]}/label", json={"status": "unknown"})
-    res = client.post("/api/lookalikes/answer", json={"source": source, "ids": ids, "status": "species", "species": species}).json()
+    res = client.post("/api/lookalikes/answer", json={"source": source, "ids": ids, "status": "species",
+                                                      "species": species, "seconds": 10.0}).json()
     assert set(res["answered"]) | set(res["left"]) == set(ids) and ids[-1] in res["left"]
     for fid in res["answered"]:
         f = project.fish(fid)
         assert (f["status"], f["species"]) == ("species", species)
         assert project.answer_details(fid)["like"] == source
+        assert project.answer_family(fid) == species  # the demo's template has no groups: a name is its family
     # Undo puts the batch back to pending; the card answered on its own keeps its answer.
     undone = client.post("/api/batch/undo", json={"batch": res["batch"]}).json()["undone"]
     assert set(undone) == set(res["answered"])
