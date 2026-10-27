@@ -65,6 +65,7 @@ async function follow(v, step, card, gone, upTo) {
   if (started.status !== 200) throw new Error(`starting a follow: ${JSON.stringify(started)}`);
   let view = started.data;
   const id = view.follow.id;
+  let clickedFaint = false; // the first faint box from step 6 on (the fish may be gone at 6 itself)
   for (let k = 0; view.phase !== "done" && k < upTo; k++) {
     if (!view.frame) throw new Error("no frame: " + JSON.stringify(view).slice(0, 400));
     const frame = view.frame.id;
@@ -74,7 +75,10 @@ async function follow(v, step, card, gone, upTo) {
     let body;
     let name = null;
     if (k === 2 && other) body = { frame_id: frame, state: "box", det_id: other.det };
-    else if (k === 6 && faint) [body, name] = [{ frame_id: frame, state: "box", det_id: faint.det }, "follow faint"];
+    else if (k >= 6 && faint && !clickedFaint) {
+      [body, name] = [{ frame_id: frame, state: "box", det_id: faint.det }, "follow faint"];
+      clickedFaint = true;
+    }
     else if (k === 4) body = { frame_id: frame, state: "nobox", x: 0.4, y: 0.6 };
     else if (k === 5) body = { frame_id: frame, state: "nobox" };
     else if (mine) body = { frame_id: frame, state: "box", det_id: mine.det };
