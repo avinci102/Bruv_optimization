@@ -297,7 +297,7 @@ class Pipeline:
         self.project.set_meta(CARRY_KEY, None)
         return report
 
-    def rebuild(self) -> dict:
+    def rebuild(self, snapshots: bool = True) -> dict:
         """Remake a reviewed project's cards with the current settings (e.g. still objects
         hidden, shorter tracks) and carry the answers over (Project.carry_answers): a new card
         gets an answer only when all its detections had it. The project is frozen before and
@@ -305,14 +305,16 @@ class Pipeline:
         answers are set aside in the project first, so a rebuild that is stopped part way
         loses none of them: running it again finishes the job."""
         if self.project.get_meta(CARRY_KEY) is None:
-            self.project.snapshot("before-rebuild")
+            if snapshots:
+                self.project.snapshot("before-rebuild")
             answers = self.project.answers_by_detection()
             self.project.set_meta(CARRY_KEY, {str(k): v for k, v in answers.items()})
         answered = len(self.project.get_meta(CARRY_KEY))
         run_id = self.project.start_run("rebuild", self.settings, answered_detections=answered)
         report = self._build_cards() or {}
         self.project.finish_run(run_id, **report)
-        self.project.snapshot("rebuilt")
+        if snapshots:  # a rule trial (trials.py) is a copy already: no snapshots of it
+            self.project.snapshot("rebuilt")
         return report
 
     # --- stages ------------------------------------------------------------------------
@@ -450,10 +452,13 @@ class Pipeline:
             s.track_min_appearance,
             s.track_direction,
             s.track_refuse_contested,
+            velocity_smoothing=s.track_velocity_smoothing,
         )
         n = self.project.frame_count()
-        for i, (frame, dets) in enumerate(self.project.frames_with_detections(s.det_threshold, hidden)):
-            tracker.update(frame.seq, dets)
+        floor = min(s.det_floor, s.det_threshold) if s.track_faint else s.det_threshold
+        for i, (frame, dets) in enumerate(self.project.frames_with_detections(floor, hidden)):
+            strong = [(k, d) for k, d in dets if d.score >= s.det_threshold]
+            tracker.update(frame.seq, strong, [(k, d) for k, d in dets if d.score < s.det_threshold])
             if i % 200 == 0:
                 self.progress("track", i, n)
         tracklets = tracker.finish()

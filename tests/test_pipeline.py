@@ -74,8 +74,10 @@ def test_end_to_end_maxn_matches_ground_truth(project, tmp_path):
     assert {r["species"] for r in records} == {demo.RED, demo.YELLOW, demo.GREEN}
     assert all(r["clip_in"] in ("GX010042", "GX020042") for r in records)
     assert all(r["length_ind"] is None for r in records)
-    # The yellow school: one sighting row, counted 3 at its peak.
-    assert max(r["count"] for r in records if r["species"] == demo.YELLOW) == 3
+    # Each answered card is a row of one (docs/SPEC.md §15); the three yellows at once are
+    # MaxN's, on its own sheet.
+    assert {r["count"] for r in records} == {1}
+    assert sum(r["species"] == demo.YELLOW for r in records) >= 3
 
     details = list(wb["app_details"].iter_rows(min_row=2, values_only=True))
     assert len(details) == len(project.all_fish())

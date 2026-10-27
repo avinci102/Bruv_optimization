@@ -128,11 +128,13 @@ class FrameRow:
 
 
 class Project:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, db: str = "project.db"):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "frames").mkdir(exist_ok=True)
-        self.db = sqlite3.connect(self.root / "project.db", check_same_thread=False)
+        # A rule trial (trials.py) is another database in the folder, sharing its frames.
+        self.db_path = self.root / db
+        self.db = sqlite3.connect(self.db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         self._migrate()
@@ -145,6 +147,7 @@ class Project:
         db_path = Path(db_path)
         self = cls.__new__(cls)
         self.root = db_path.parent.parent if db_path.parent.name == "snapshots" else db_path.parent
+        self.db_path = None  # its settings are the project's
         self.db = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         return self
@@ -168,7 +171,11 @@ class Project:
 
     @property
     def settings_path(self) -> Path:
-        return self.root / "settings.json"
+        """settings.json; a rule trial's own are beside its database (trials/<name>.settings.json)."""
+        db_path = getattr(self, "db_path", None)
+        if db_path is None or db_path.name == "project.db":
+            return self.root / "settings.json"
+        return db_path.with_suffix(".settings.json")
 
     def load_settings(self) -> Settings:
         return Settings.load(self.settings_path) if self.settings_path.exists() else Settings()

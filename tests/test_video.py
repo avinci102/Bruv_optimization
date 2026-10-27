@@ -222,3 +222,27 @@ def test_download_rejects_web_pages(tmp_path):
     with pytest.raises(RuntimeError):
         download(page.as_uri(), tmp_path / "out" / "bad.pth")
     assert not (tmp_path / "out" / "bad.pth").exists()
+
+
+def test_a_chapter_falls_back_to_software_decoding(synthetic_videos, monkeypatch):
+    """Hardware decoding that fails outright (as ffmpeg does when out of graphics memory)
+    is retried in software, and the frames are the same."""
+    import imageio_ffmpeg
+
+    real = imageio_ffmpeg.read_frames
+    tried = []
+
+    def flaky(path, input_params=(), output_params=(), **kw):
+        tried.append("-hwaccel" in input_params)
+        if "-hwaccel" in input_params:
+            def broken():
+                raise OSError("Cannot allocate memory")
+                yield  # noqa: unreachable: a generator, as read_frames is
+            return broken()
+        return real(path, input_params=input_params, output_params=output_params, **kw)
+
+    timeline = build_timeline(synthetic_videos)
+    monkeypatch.setattr(imageio_ffmpeg, "read_frames", flaky)
+    frames = list(sample_frames(timeline, fps=1.0, width=320))
+    assert len(frames) == 24 and tried == [True, False, True, False]
+    assert len(list(sample_frames(timeline, fps=1.0, width=320, hwaccel=False))) == 24

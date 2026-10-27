@@ -103,8 +103,9 @@ def _box(d) -> dict:
     return {"x1": d["x1"], "y1": d["y1"], "x2": d["x2"], "y2": d["y2"], "score": round(d["score"], 3)}
 
 
-def create_app(project_root: Path) -> FastAPI:
-    project = Project(Path(project_root))
+def create_app(project_root: Path, db: str = "project.db") -> FastAPI:
+    project = Project(Path(project_root), db=db)
+    trial = (project.get_meta("trial") or {}).get("name")  # a rule trial's cards (trials.py)
     settings = project.load_settings()
     lock = threading.Lock()  # one SQLite connection, so serialise access
     app = FastAPI(title="BRUV Fish ID")
@@ -248,7 +249,7 @@ def create_app(project_root: Path) -> FastAPI:
             for f in fish:
                 counts[f["status"]] += 1
             return {
-                "project": project.root.name,
+                "project": project.root.name + (f" · trial: {trial}" if trial else ""),
                 "total": len(fish),
                 "reviewed": sum(counts[s] for s in REVIEWED),
                 "counts": counts,

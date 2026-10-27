@@ -1139,3 +1139,34 @@ are out of the volunteers' scope.
   box in a frame checked for it (the person clicked elsewhere, or said it was gone) holds
   another fish, or a second box on this one. The follow's summary names such cards, and
   `evaluate` counts them.
+
+**Wave-1 build, after the 26 Oct review** (branch `claude/wave1-rules`). Decisions Vinci
+made that day:
+- One record row per answered card is the default (`record_rows: "card"`). Cards joined
+  with P are one row; cards answered together as look-alikes stay separate rows. The tiny
+  fish rule keeps the number of rows down. `"grouped"` keeps the earlier rows.
+- MaxN rows (species and family) carry an `evidence_frame`: the frame, with the fish it
+  counted boxed, saved beside the workbook.
+- Schools are deferred. 15+ boxes of a species in a frame is the threshold Vinci likes,
+  but species come after cards, so the workflow can't pick schools out yet.
+- The 4 against 8 fps test waits for more data, or a new dataset.
+- Following a fish: Vinci tests it first; volunteers likely in wave 2, earlier if ready.
+
+Built:
+- Rule trials (`trials.py`; `try-rules`, `compare-rules`, `review --trial`). A copy of
+  the database in `trials/`, sharing the frames, is rebuilt with changed settings. Each
+  is scored against the project's answers (cards that mix answers), fixes (pull-aparts
+  rejoined) and follows (share boxed, cards per fish, card changes, cards holding another
+  box). A `baseline` trial rebuilds with the project's own rules, so trials are compared
+  with machine-built cards.
+- Continuity candidates 1 and 2, off by default:
+  - `track_faint`: faint boxes in a second pass carry on a track that found no box, never
+    starting one or taking a box from a track;
+  - `track_velocity_smoothing`: the share of the earlier velocity kept at each link.
+- Hardware decoding that fails outright (ffmpeg out of memory) is retried in software
+  for that chapter, instead of stopping the run.
+- Not built yet:
+  - candidate 3, colour from the fish's own pixels: it needs the still-object background
+    per frame;
+  - candidate 4, BioCLIP appearance at every link: it needs every box embedded before
+    tracking, which only a GPU makes practical.

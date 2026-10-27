@@ -11,6 +11,13 @@ this box, or another box for this track; small or negative means a close call); 
 alike the box's colours are to everything the track held before it (a drop there can mark
 the point where a track jumped to another fish). With refuse_contested, a link whose margin
 is below 0 isn't made at all: the box starts a new track (Settings.track_refuse_contested).
+
+Two options, off by default until measured on followed fish (docs/SPEC.md §15):
+- faint boxes (below the operating threshold, Settings.track_faint) get a second pass after
+  the others: they may carry on a track that found no box in the frame, never start one or
+  take a box from a track;
+- velocity smoothing (Settings.track_velocity_smoothing): each link keeps that share of the
+  track's earlier velocity, so one wobble doesn't turn the predicted course.
 """
 
 from __future__ import annotations
@@ -106,6 +113,7 @@ class Tracker:
         min_appearance: float = 0.5,
         direction: bool = True,
         refuse_contested: bool = False,
+        velocity_smoothing: float = 0.0,
     ):
         self.min_iou = min_iou
         self.max_dist = max_dist
@@ -116,6 +124,7 @@ class Tracker:
         # Settings.track_refuse_contested: no link where another option was better (margin
         # below 0); the box starts a new track and the track waits for its fish.
         self.refuse_contested = refuse_contested
+        self.velocity_smoothing = velocity_smoothing
         self.active: list[Tracklet] = []
         self.finished: list[Tracklet] = []
         self._next_id = 1
@@ -141,34 +150,49 @@ class Tracker:
             cost += 0.5 * (1.0 - sim)
         return cost
 
-    def update(self, frame: int, detections: list[tuple[int, Detection]]) -> None:
-        """Feed one sampled frame: a list of (detection key, Detection)."""
+    def _link(self, track: Tracklet, frame: int, key: int, det: Detection, cost: float, margin: float | None) -> None:
+        track.links[key] = (cost, margin, track.history_likeness(det.app))
+        moved = len(track.members) > 1  # it has a velocity of its own to blend with
+        track.members.append((frame, key))
+        track.add_colour(det.app)
+        (x0, y0), (x1, y1) = _centre(track.last_box), _centre(det)
+        dt = frame - track.last_frame
+        step = ((x1 - x0) / dt, (y1 - y0) / dt)
+        keep = self.velocity_smoothing if moved else 0.0
+        track.velocity = tuple(keep * v + (1 - keep) * s for v, s in zip(track.velocity, step))
+        track.last_box, track.last_frame = det, frame
+
+    def _assign(self, tracks: list[Tracklet], detections: list[tuple[int, Detection]], frame: int) -> set[int]:
+        """Link boxes to tracks, one each, cheapest overall. Returns the boxes linked."""
+        linked: set[int] = set()
+        if not tracks or not detections:
+            return linked
+        cost = np.array([[self._cost(t, d, frame) for _, d in detections] for t in tracks])
+        rows, cols = linear_sum_assignment(cost)
+        for r, c in zip(rows, cols):
+            if cost[r, c] >= _INF:
+                continue
+            margin = _margin(cost, r, c)
+            if self.refuse_contested and margin is not None and margin < 0:
+                continue
+            key, det = detections[c]
+            self._link(tracks[r], frame, key, det, float(cost[r, c]), margin)
+            linked.add(c)
+        return linked
+
+    def update(self, frame: int, detections: list[tuple[int, Detection]],
+               faint: list[tuple[int, Detection]] | None = None) -> None:
+        """Feed one sampled frame: a list of (detection key, Detection). `faint`: boxes below
+        the operating threshold, which may only carry on a track that found no box here."""
         # Retire tracks that have been missing too long.
         still = []
         for t in self.active:
             (still if frame - t.last_frame <= self.max_missed + 1 else self.finished).append(t)
         self.active = still
 
-        matched_dets: set[int] = set()
-        if self.active and detections:
-            cost = np.array([[self._cost(t, d, frame) for _, d in detections] for t in self.active])
-            rows, cols = linear_sum_assignment(cost)
-            for r, c in zip(rows, cols):
-                if cost[r, c] >= _INF:
-                    continue
-                margin = _margin(cost, r, c)
-                if self.refuse_contested and margin is not None and margin < 0:
-                    continue
-                key, det = detections[c]
-                track = self.active[r]
-                track.links[key] = (float(cost[r, c]), margin, track.history_likeness(det.app))
-                track.members.append((frame, key))
-                track.add_colour(det.app)
-                (x0, y0), (x1, y1) = _centre(track.last_box), _centre(det)
-                dt = frame - track.last_frame
-                track.velocity = ((x1 - x0) / dt, (y1 - y0) / dt)
-                track.last_box, track.last_frame = det, frame
-                matched_dets.add(c)
+        matched_dets = self._assign(self.active, detections, frame)
+        if faint:
+            self._assign([t for t in self.active if t.last_frame < frame], faint, frame)
 
         for c, (key, det) in enumerate(detections):
             if c in matched_dets:
