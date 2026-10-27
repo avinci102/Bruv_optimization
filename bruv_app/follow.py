@@ -44,27 +44,40 @@ def copy_tag(project: Project) -> str:
 
 
 def name(project: Project, follow_id: int) -> str:
+    """F<id>-<this copy's tag>, or the name a follow pulled from the hosted site had there."""
+    row = project.db.execute("SELECT name FROM follows WHERE id=?", (follow_id,)).fetchone()
+    if row is not None and row["name"]:
+        return row["name"]
     return f"F{follow_id}-{copy_tag(project)}"
 
 
-def start(project: Project, card: int, gone_s: float = GONE_S) -> int:
-    """A new follow of the fish on `card`, from its best view."""
-    det = best_view(project.fish_detections(card))
-    if det is None:
-        raise ValueError(f"Card #{card} has no sightings")
+def start(project: Project, card: int, gone_s: float = GONE_S, det_id: int | None = None,
+          name: str | None = None, at: str | None = None) -> int:
+    """A new follow of the fish on `card`, from its best view. A follow pulled from the hosted
+    site (pull.py) brings the sighting it started from (`det_id`), its name and its time: the
+    card may hold other sightings by then, so its best view isn't worked out again."""
+    if det_id is None:
+        det = best_view(project.fish_detections(card))
+        if det is None:
+            raise ValueError(f"Card #{card} has no sightings")
+    else:
+        det = project.db.execute("SELECT id, frame_id FROM detections WHERE id=?", (det_id,)).fetchone()
+        if det is None:
+            raise ValueError(f"No sighting {det_id} to start from")
     copy_tag(project)  # named now, so a read-only copy can name its follows later
     cur = project.db.execute(
-        "INSERT INTO follows(at, card, start_det, gone_s) VALUES(?, ?, ?, ?)", (_now(), card, det["id"], gone_s)
+        "INSERT INTO follows(at, card, start_det, gone_s, name) VALUES(?, ?, ?, ?, ?)",
+        (at or _now(), card, det["id"], gone_s, name),
     )
     follow_id = cur.lastrowid
-    mark(project, follow_id, det["frame_id"], "box", det_id=det["id"])
+    mark(project, follow_id, det["frame_id"], "box", det_id=det["id"], at=at)
     return follow_id
 
 
 def mark(project: Project, follow_id: int, frame_id: int, state: str, det_id: int | None = None,
-         x: float | None = None, y: float | None = None) -> None:
+         x: float | None = None, y: float | None = None, at: str | None = None) -> None:
     """What the person said about one frame: the fish's box (`det_id`), no box (where the
-    fish was, `x` `y`, if they clicked it), or gone."""
+    fish was, `x` `y`, if they clicked it), or gone. `at`: when, for marks pulled from the site."""
     if state not in STATES:
         raise ValueError(f"A mark is one of {', '.join(STATES)}")
     if state == "box":
@@ -79,7 +92,7 @@ def mark(project: Project, follow_id: int, frame_id: int, state: str, det_id: in
     # INSERT OR REPLACE gives the row a new rowid, so the latest mark is always the last.
     project.db.execute(
         "INSERT OR REPLACE INTO follow_marks(follow_id, frame_id, state, det_id, x, y, at) VALUES(?, ?, ?, ?, ?, ?, ?)",
-        (follow_id, frame_id, state, det_id, x, y, _now()),
+        (follow_id, frame_id, state, det_id, x, y, at or _now()),
     )
     project.db.execute("UPDATE follows SET done_at=NULL WHERE id=?", (follow_id,))
     project.commit()

@@ -7,7 +7,7 @@
  *   GET  /sync/events?video=K                this volunteer's events for K, in order
  *   POST /sync/events       {video, events, app}
  *   POST /sync/feedback     {video, rating, text}
- *   GET  /sync/admin/progress                (coordinator) answers and fixes per volunteer
+ *   GET  /sync/admin/progress                (coordinator) answers, fixes and follows per volunteer
  *   GET  /sync/admin/export?video=K          (coordinator) every volunteer's events for K
  *
  * Sign-in needs no password: the data isn't sensitive (docs/SPEC.md §16). A session is a
@@ -119,6 +119,7 @@ export async function onRequest({ request, env, params }) {
         `SELECT v.name, a.video, a.role,
                 SUM(CASE WHEN e.kind = 'label' THEN 1 ELSE 0 END) AS answers,
                 SUM(CASE WHEN e.kind IN ('split', 'move', 'unmerge') THEN 1 ELSE 0 END) AS fixes,
+                SUM(CASE WHEN e.kind = 'follow_start' THEN 1 ELSE 0 END) AS follows,
                 MAX(e.at) AS last
            FROM assignments a JOIN volunteers v ON v.id = a.volunteer_id
            LEFT JOIN events e ON e.volunteer_id = a.volunteer_id AND e.video = a.video

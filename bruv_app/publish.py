@@ -19,6 +19,11 @@ PC can be switched off (docs/SPEC.md §16):
   would make them.
 
 Tiny fish (never `tiny_fish_px` across) and cards outside the review window are left out.
+
+With `follow`, it also writes what following a fish needs (follow.py): every sampled frame,
+FOLLOW_STRIP to a picture file, and every box in them. A follow can step anywhere in the
+video, because the fish wanders from card to card. It costs about 350 MB for a 44-minute
+video, so it's for the videos people will follow fish in.
 """
 
 from __future__ import annotations
@@ -45,6 +50,8 @@ CROP_MAX = 400  # px; a close-up's longer side is capped at this (the page shows
 FRAME_WIDTH = 640  # px; full scenes are shrunk to this width (the page shows them at about 46% of the screen height)
 FRAMES_PER_CARD = 8  # full scenes per card: best view, pieces, closest calls, then moments along the strip
 QUALITY = 80  # WebP quality of the sheets
+FOLLOW_STRIP = 20  # frames per picture file for following a fish (5 s at 4 fps)
+FOLLOW_COLS = 4  # those frames in rows of 4: 2,560 px wide, well inside WebP's 16,383
 
 STATIC_DIR = Path(__file__).parent / "static"
 HOSTED_DIR = Path(__file__).parent / "hosted"
@@ -154,9 +161,50 @@ def _crops_for(detail: dict) -> list[int]:
     return list(dict.fromkeys(d for d in dets if d is not None))
 
 
-def publish(project_root: Path, out: Path, key: str, progress=None, trial: str | None = None) -> dict:
+def _publish_follow(project: Project, folder: Path, progress=None) -> dict:
+    """Every sampled frame, packed FOLLOW_STRIP to a WebP strip, and every box in each frame
+    as follow.frame_boxes lists it (highest score first): what the hosted follow page steps
+    through (hosted/core.js). Returns the manifest's "follow" entry."""
+    from .follow import frame_boxes  # noqa: PLC0415
+
+    out = folder / "follow"
+    out.mkdir()
+    frames = project.db.execute("SELECT id, t, path, width, height FROM frames ORDER BY seq").fetchall()
+    if not frames:
+        raise ValueError("No frames to publish for following a fish")
+    w = FRAME_WIDTH
+    h = round(frames[0]["height"] * FRAME_WIDTH / frames[0]["width"])
+    strips = 0
+    for k in range(0, len(frames), FOLLOW_STRIP):
+        chunk = frames[k:k + FOLLOW_STRIP]
+        strip = Image.new("RGB", (FOLLOW_COLS * w, -(-len(chunk) // FOLLOW_COLS) * h), (0, 0, 0))
+        for i, fr in enumerate(chunk):
+            im = Image.fromarray(imaging.load_rgb(str(project.root / fr["path"]))).resize((w, h), Image.LANCZOS)
+            strip.paste(im, ((i % FOLLOW_COLS) * w, (i // FOLLOW_COLS) * h))
+        strip.save(out / f"{strips}.webp", "WEBP", quality=QUALITY, method=4)
+        strips += 1
+        if progress and strips % 25 == 0:
+            progress("frames", k, len(frames))
+    # Times exactly as stored: next_step compares them with gone_s to the microsecond.
+    (out / "frames.json").write_text(json.dumps({"ids": [f["id"] for f in frames], "t": [f["t"] for f in frames]},
+                                                separators=(",", ":")), encoding="utf-8")
+    # Each frame's boxes: [sighting, x1, y1, x2, y2, score, card, faint]. The card is the one
+    # it's on now (none for faint ones); the browser keeps it up to date after fixes.
+    boxes = [
+        [[b["det"], round(b["x1"], 6), round(b["y1"], 6), round(b["x2"], 6), round(b["y2"], 6), b["score"], b["card"],
+          int(b["faint"])] for b in frame_boxes(project, f["id"], 0)]
+        for f in frames
+    ]
+    (out / "boxes.json").write_text(json.dumps({"boxes": boxes}, separators=(",", ":")), encoding="utf-8")
+    return {"frames": "follow/frames.json", "boxes": "follow/boxes.json", "strip": FOLLOW_STRIP, "cols": FOLLOW_COLS,
+            "w": w, "h": h, "files": strips}
+
+
+def publish(project_root: Path, out: Path, key: str, progress=None, trial: str | None = None,
+            follow: bool = False) -> dict:
     """Write one video's data under <site>/public/videos/<key>/ and return a short report.
-    With `trial`, the cards of that rule trial (trials.py) instead of the project's own."""
+    With `trial`, the cards of that rule trial (trials.py) instead of the project's own; with
+    `follow`, what following a fish needs too (_publish_follow)."""
     from .server import create_app  # noqa: PLC0415 - the server's own code makes the answers
     from .trials import open_trial  # noqa: PLC0415
 
@@ -275,6 +323,7 @@ def publish(project_root: Path, out: Path, key: str, progress=None, trial: str |
         looks.emb.reshape(len(looks.ids), dim) if looks.emb.size else np.zeros((0, dim)),
     ]
     np.concatenate(blocks).astype(np.float16).tofile(folder / "emb.bin")
+    followable = _publish_follow(project, folder, progress) if follow else None
 
     names = species_labels(project)
     name_family = family_of(project, names)
@@ -316,6 +365,7 @@ def publish(project_root: Path, out: Path, key: str, progress=None, trial: str |
                 "crops": len(blocks[1]), "pieces": len(blocks[2]), "looks": len(blocks[3])},
         "look_ids": [int(x) for x in looks.ids],
         "cards": "cards.json",
+        "follow": followable,
     }
     (folder / "cards.json").write_text(json.dumps({"cards": cards}, separators=(",", ":")), encoding="utf-8")
     (folder / "manifest.json").write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
@@ -329,20 +379,26 @@ def publish(project_root: Path, out: Path, key: str, progress=None, trial: str |
     return {"video": key, "cards": len(ids), "files": files, "bytes": size}
 
 
-def write_site(out: Path) -> None:
-    """The site's own files: the review page (unchanged, with the same cache-busting stamps
-    the local server adds), the hosted runtime, and the Cloudflare functions and schema."""
-    public = out / "public"
-    public.mkdir(parents=True, exist_ok=True)
-    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    for name in ("app.js", "styles.css"):
-        page = page.replace(f"/static/{name}", f"/static/{name}?v={(STATIC_DIR / name).stat().st_mtime_ns}")
-    # The in-page server loads first and answers the page's requests (hosted/runtime.js).
-    stamp = {name: (HOSTED_DIR / "public" / "hosted" / name).stat().st_mtime_ns for name in ("core.js", "runtime.js")}
-    page = page.replace("<head>", '<head>\n'
+def _hosted_page(name: str, assets: tuple[str, ...]) -> str:
+    """A page of the review app as the site serves it: unchanged, with the same cache-busting
+    stamps the local server adds, and the in-page server loaded first (hosted/runtime.js)."""
+    page = (STATIC_DIR / name).read_text(encoding="utf-8")
+    for asset in assets:
+        page = page.replace(f"/static/{asset}", f"/static/{asset}?v={(STATIC_DIR / asset).stat().st_mtime_ns}")
+    stamp = {js: (HOSTED_DIR / "public" / "hosted" / js).stat().st_mtime_ns for js in ("core.js", "runtime.js")}
+    return page.replace("<head>", '<head>\n'
                         f'  <script src="/hosted/core.js?v={stamp["core.js"]}"></script>\n'
                         f'  <script src="/hosted/runtime.js?v={stamp["runtime.js"]}"></script>', 1)
-    (public / "index.html").write_text(page, encoding="utf-8")
+
+
+def write_site(out: Path) -> None:
+    """The site's own files: the review page and the follow page (Pages serves follow.html at
+    /follow, as the local server does), the hosted runtime, and the Cloudflare functions and
+    schema."""
+    public = out / "public"
+    public.mkdir(parents=True, exist_ok=True)
+    (public / "index.html").write_text(_hosted_page("index.html", ("app.js", "styles.css")), encoding="utf-8")
+    (public / "follow.html").write_text(_hosted_page("follow.html", ("follow.js", "styles.css")), encoding="utf-8")
     shutil.copytree(STATIC_DIR, public / "static", dirs_exist_ok=True)
     for stale in ("sw.js", "hosted/guard.js"):  # an earlier design's files
         (public / stale).unlink(missing_ok=True)

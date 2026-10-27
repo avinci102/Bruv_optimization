@@ -319,7 +319,7 @@ def cmd_publish(args) -> None:
     site = Path(args.site)
     for project, key in zip(args.project, args.video or [Path(p).name for p in args.project]):
         print(f"Publishing {project}{f' (trial {args.trial})' if args.trial else ''} as video {key}…")
-        report = publish(Path(project), site, key, _progress(), trial=args.trial)
+        report = publish(Path(project), site, key, _progress(), trial=args.trial, follow=args.follow)
         print(f"  {report['cards']} cards, {report['files']} files, {report['bytes'] / 1e6:.0f} MB")
     write_site(site)
     total = site_report(site)
@@ -365,7 +365,7 @@ def cmd_pull(args) -> None:
 
     report = pull(Path(args.project), Path(args.answers), args.volunteer, trial=args.trial)
     print(f"{report.volunteer}: {report.events} events → {report.answers} answers, {report.fixes} fixes, "
-          f"{report.undone} undone")
+          f"{report.undone} undone" + (f", {report.follows} follows" if report.follows else ""))
     if report.new_cards:
         print("  New cards: " + ", ".join(f"site #{k} → #{v}" for k, v in report.new_cards.items()))
     if report.scope_mismatch:
@@ -808,6 +808,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--video", nargs="+", help="each video's short name on the site (default: the folder name)")
     p.add_argument("--site", required=True, help="the site folder to write (public/ is what gets uploaded)")
     p.add_argument("--trial", help="publish this rule trial's cards (try-rules) instead, under its own --video name")
+    p.add_argument("--follow", action="store_true",
+                   help="also publish every frame and box, so fish can be followed on the site (about 350 MB a 44-minute video)")
     p.set_defaults(func=cmd_publish)
 
     p = sub.add_parser("site", help="the hosted review site: volunteers, or try it on this PC")

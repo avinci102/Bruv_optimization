@@ -1,12 +1,13 @@
 /* The hosted review page's server, running in the page itself (docs/SPEC.md §16).
  *
- * Loaded before the review page's own script (publish adds it to the hosted copy of
- * index.html only). It answers the page's requests without changing the page:
+ * Loaded before the page's own script (publish adds it to the hosted copies of index.html
+ * and follow.html). It answers the page's requests without changing the page:
  *   - fetch() to /api/... is answered by hosted/core.js from the published files and the
  *     volunteer's saved answers and fixes; new answers and fixes go to the site's database
  *     (/sync) first, so nothing shows as done that wasn't saved;
  *   - pictures at /crop/<sighting> and /frame/<frame> are cut from the card's published
- *     sheet and shown as blob: images.
+ *     sheet, or for a video published with --follow from its strips of every frame, and
+ *     shown as blob: images.
  * A service worker would do this more quietly, but some browsers block those (private
  * windows, managed school laptops); this works in any recent browser.
  */
@@ -43,6 +44,13 @@
       getJson("/sync/me"),
     ]);
     const state = new BRUV.Video(video, manifest, cards, emb);
+    state.volunteer = me.id;
+    if (manifest.follow) {
+      // Every frame in order: following a fish steps through them, and any moment's scene
+      // can be shown whole. The boxes in them are loaded when a follow is opened.
+      state.setFollowFrames(await getJson(base + manifest.follow.frames));
+      state.boxLoader = () => getJson(base + manifest.follow.boxes);
+    }
     const assignment = (me.videos || []).find((v) => v.video === video);
     if (assignment && assignment.cards) state.restrict(assignment.cards);
     for (const e of mine.events) state.apply(e);
@@ -82,23 +90,24 @@
 
   // --- pictures ----------------------------------------------------------------------------
 
-  const sheets = new Map(); // sheet url -> Promise<ImageBitmap>, the last 40 used
+  const sheets = new Map(); // card sheet url -> Promise<ImageBitmap>, the last 40 used
+  const strips = new Map(); // strip of frames -> Promise<ImageBitmap>, the last 4 (each is large)
   const made = new Map(); // "/crop/12" -> Promise<blob url>
 
-  function sheet(url) {
-    if (sheets.has(url)) {
-      const hit = sheets.get(url);
-      sheets.delete(url);
-      sheets.set(url, hit);
+  function sheet(url, cache = sheets, keep = 40) {
+    if (cache.has(url)) {
+      const hit = cache.get(url);
+      cache.delete(url);
+      cache.set(url, hit);
       return hit;
     }
     const p = realFetch("/" + url).then((r) => {
       if (!r.ok) throw new Error(`missing ${url}`);
       return r.blob();
     }).then((b) => createImageBitmap(b));
-    p.catch(() => sheets.delete(url));
-    sheets.set(url, p);
-    while (sheets.size > 40) sheets.delete(sheets.keys().next().value);
+    p.catch(() => cache.delete(url));
+    cache.set(url, p);
+    while (cache.size > keep) cache.delete(cache.keys().next().value);
     return p;
   }
 
@@ -111,7 +120,7 @@
 
   async function cut(entry) {
     const [x, y, w, h] = entry.rect;
-    const img = await sheet(entry.sheet);
+    const img = await (entry.strip ? sheet(entry.sheet, strips, 4) : sheet(entry.sheet));
     const c = canvas(w, h);
     c.getContext("2d").drawImage(img, x, y, w, h, 0, 0, w, h);
     return c;
@@ -131,10 +140,21 @@
     return toUrl(await cut(entry));
   }
 
-  // A scene that wasn't published whole: the nearest published scene of the same card,
-  // dimmed, with this moment's close-ups where the fish were, and a note saying so.
+  // Where a frame is in the strips of every frame (videos published with --follow).
+  function stripOf(state, frameId) {
+    const f = state.m.follow;
+    const i = state.frameIndex.get(frameId);
+    if (!f || i === undefined) return null;
+    const k = Math.floor(i / f.strip), cell = i % f.strip;
+    return { sheet: `videos/${state.key}/follow/${k}.webp`, strip: true,
+      rect: [(cell % f.cols) * f.w, Math.floor(cell / f.cols) * f.h, f.w, f.h] };
+  }
+
+  // A scene: from the card's sheet, or the strips of every frame. Otherwise, the nearest
+  // published scene of the same card, dimmed, with this moment's close-ups where the fish
+  // were, and a note saying so.
   async function frame(state, frameId) {
-    const entry = state.frameSheets.get(frameId);
+    const entry = state.frameSheets.get(frameId) || stripOf(state, frameId);
     if (entry) return toUrl(await cut(entry));
     const near = state.nearestFrame(frameId);
     const W = 640, H = Math.round(640 * state.H / state.W);
@@ -233,12 +253,18 @@
   }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
 
   // A small link back to the start page: switch video, or say how the session went. The
-  // PC-only controls are hidden: the Excel export (the coordinator's, after pulling) and
-  // following a fish frame by frame (a page of its own, not on the site).
+  // Excel export is the coordinator's, after pulling, so it's hidden; so is "Follow this
+  // fish" unless the video was published with --follow.
   document.addEventListener("DOMContentLoaded", () => {
     const style = document.createElement("style");
-    style.textContent = "#export, #follow { display: none !important; }";
+    style.textContent = "#export { display: none !important; }";
     document.head.appendChild(style);
+    const noFollow = document.createElement("style");
+    noFollow.textContent = "#follow { display: none !important; }";
+    document.head.appendChild(noFollow);
+    ready.then((state) => {
+      if (state.followable) noFollow.remove();
+    }).catch(() => {});
     const a = document.createElement("a");
     a.href = "/start.html";
     a.textContent = `${video} · videos · feedback`;

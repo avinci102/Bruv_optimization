@@ -10,6 +10,9 @@ after.
 
 New cards made on the site carry the site's numbers; here they get this project's next
 numbers (card numbers are never reused), and the mapping is kept in the run record.
+
+Follows made on the site (following a fish, follow.py) are replayed in order through
+follow.py: each keeps the sighting it started from, its name on the site and its times.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import follow
 from .pipeline import refresh_fish_guesses
 from .store import Project
 
@@ -29,6 +33,7 @@ class PullReport:
     answers: int = 0
     fixes: int = 0
     undone: int = 0
+    follows: int = 0  # follows kept (made on the site and not discarded)
     scope_mismatch: list[int] = field(default_factory=list)  # cards whose sightings differ from the site's
     new_cards: dict[int, int] = field(default_factory=dict)  # site card number -> this project's
 
@@ -63,6 +68,7 @@ def pull(project_root: Path, export_path: Path, who: str, trial: str | None = No
                                events=len(events), reviewed_before=reviewed_before)
     project.snapshot(f"before-pull-{volunteer['name']}")
     ids: dict[int, int] = {}
+    follows: dict[int, int] = {}  # site follow -> this project's
 
     def real(card: int) -> int:
         return ids.get(card, card)
@@ -106,8 +112,23 @@ def pull(project_root: Path, export_path: Path, who: str, trial: str | None = No
         elif kind == "suggestions":
             project.log_suggestions([(real(f), real(s), sim, decision, batch) for f, s, sim, decision, batch in e["rows"]],
                                    at=e.get("at"))
+        elif kind == "follow_start":
+            follows[e["follow"]] = follow.start(project, real(e["card"]), e["gone_s"], det_id=e["det"], name=e["name"],
+                                                at=e.get("at"))
+        elif kind in ("follow_mark", "follow_undo", "follow_delete") and e["follow"] in follows:
+            fid = follows[e["follow"]]
+            if kind == "follow_mark":
+                follow.mark(project, fid, e["frame"], e["state"], e.get("det"), e.get("x"), e.get("y"), at=e.get("at"))
+            elif kind == "follow_undo":
+                follow.undo(project, fid)
+            else:
+                follow.discard(project, fid)
+                del follows[e["follow"]]
+    for fid in follows.values():
+        follow.next_step(project, fid)  # done or not, as on the site
+    report.follows = len(follows)
     report.new_cards = {k: v for k, v in ids.items() if k != v}
-    project.finish_run(run_id, answers=report.answers, fixes=report.fixes, undone=report.undone,
+    project.finish_run(run_id, answers=report.answers, fixes=report.fixes, undone=report.undone, follows=report.follows,
                        new_cards={str(k): v for k, v in report.new_cards.items()},
                        scope_mismatch=report.scope_mismatch)
     project.snapshot(f"pulled-{volunteer['name']}")

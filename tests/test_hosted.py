@@ -10,7 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from bruv_app.publish import FRAMES_PER_CARD, publish, published_cards, site_report, write_site
+from bruv_app import follow
+from bruv_app.publish import FOLLOW_COLS, FOLLOW_STRIP, FRAMES_PER_CARD, publish, published_cards, site_report, write_site
 from bruv_app.pull import pull
 from bruv_app.site import PASS_LETTERS, create_dev_app, export, read_volunteers, volunteers_sql, write_volunteers
 from bruv_app.store import Project
@@ -83,8 +84,77 @@ def test_the_site_page_is_the_review_page_plus_the_runtime(site):
     assert json.loads((public / "_routes.json").read_text())["include"] == ["/sync/*", "/api/*"]
     assert (out / "functions" / "sync" / "[[path]].js").exists() and (out / "schema.sql").exists()
     assert (public / "videos" / "V1" / "manifest.json").exists()
+    # The follow page too, served at /follow as the local server serves it.
+    follow_page = (public / "follow.html").read_text(encoding="utf-8")
+    assert "/hosted/runtime.js?v=" in follow_page[: follow_page.index("<meta")] and "/static/follow.js?v=" in follow_page
     report = site_report(out)
     assert report["files"] < report["limit"]
+
+
+def test_publish_follow_writes_every_frame_and_box(project, tmp_path, site):
+    out, _ = site
+    plain = json.loads((out / "public" / "videos" / "V1" / "manifest.json").read_text(encoding="utf-8"))
+    assert plain["follow"] is None and not (out / "public" / "videos" / "V1" / "follow").exists()
+
+    publish(project.root, out, "V2", follow=True)
+    folder = out / "public" / "videos" / "V2"
+    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    f = manifest["follow"]
+    frames = json.loads((folder / f["frames"]).read_text(encoding="utf-8"))
+    ids = [r["id"] for r in project.db.execute("SELECT id FROM frames ORDER BY seq")]
+    assert frames["ids"] == ids and len(frames["t"]) == len(ids)
+    strips = -(-len(ids) // FOLLOW_STRIP)
+    assert f["files"] == strips and len(list((folder / "follow").glob("*.webp"))) == strips
+    with Image.open(folder / "follow" / "0.webp") as im:
+        assert im.width == FOLLOW_COLS * f["w"] and im.height % f["h"] == 0
+    boxes = json.loads((folder / f["boxes"]).read_text(encoding="utf-8"))["boxes"]
+    assert len(boxes) == len(ids)
+    assert sum(len(b) for b in boxes) == project.db.execute("SELECT COUNT(*) FROM detections").fetchone()[0]
+    first = next(b for b in boxes if b)
+    assert len(first[0]) == 8 and [r[5] for r in first] == sorted((r[5] for r in first), reverse=True)
+
+
+def test_pull_replays_follows_made_on_the_site(project, tmp_path):
+    """The site's follow events, replayed: each follow keeps its name and start, its marks and
+    their times, and ends "done" exactly when it did on the site."""
+    project.commit()
+    copy = Project(shutil.copytree(project.root, tmp_path / "site-side"))  # the site's side
+    card = next(c["id"] for c in copy.all_fish() if len(copy.fish_detections(c["id"])) >= 3)
+    dets = {d["frame_id"]: d["id"] for d in copy.fish_detections(card)}
+
+    def started(site_id, gone):
+        fid = follow.start(copy, card, gone)
+        det = copy.db.execute("SELECT start_det FROM follows WHERE id=?", (fid,)).fetchone()[0]
+        frame = copy.db.execute("SELECT frame_id FROM detections WHERE id=?", (det,)).fetchone()[0]
+        return fid, {"kind": "follow_start", "follow": site_id, "card": card, "det": det, "frame": frame, "gone_s": gone,
+                     "name": f"F{site_id}-v2"}
+
+    def marked(fid, site_id, step):
+        state, det = ("box", dets[step.frame_id]) if step.frame_id in dets else ("gone", None)
+        follow.mark(copy, fid, step.frame_id, state, det_id=det)
+        return {"kind": "follow_mark", "follow": site_id, "frame": step.frame_id, "state": state, "det": det, "x": None, "y": None}
+
+    first, e = started(1, 1.0)
+    events = [e]
+    while (step := follow.next_step(copy, first)).phase != "done":
+        events.append(marked(first, 1, step))
+    second, e = started(2, 5.0)
+    events += [e, marked(second, 2, follow.next_step(copy, second)), {"kind": "follow_undo", "follow": 2}]
+    events.append(marked(second, 2, follow.next_step(copy, second)))
+    third, e = started(3, 5.0)
+    events += [e, {"kind": "follow_delete", "follow": 3}]
+
+    report = pull(project.root, _export(tmp_path, events), "Ana")
+    assert report.follows == 2
+    master = Project(project.root)
+    rows = {r["name"]: r for r in master.db.execute("SELECT * FROM follows")}
+    assert set(rows) == {"F1-v2", "F2-v2"}
+    done = {name: follow.summary(master, r["id"]) for name, r in rows.items()}
+    assert done["F1-v2"].done and not done["F2-v2"].done
+    assert done["F1-v2"].boxes == follow.summary(copy, first).boxes and done["F1-v2"].gone == follow.summary(copy, first).gone
+    assert done["F2-v2"].boxes + done["F2-v2"].gone == 2  # the start, and the mark made again after the undo
+    assert rows["F1-v2"]["at"] == "2026-11-01T10:00:00+00:00" and rows["F1-v2"]["start_det"] == events[0]["det"]
+    assert master.runs("pull")[-1] is not None
 
 
 def _volunteer_csv(tmp_path):
@@ -292,8 +362,9 @@ def test_the_commands(project, tmp_path, capsys):
     from bruv_app.cli import main
 
     site = tmp_path / "site"
-    main(["publish", "--project", str(project.root), "--video", "V1", "--site", str(site)])
+    main(["publish", "--project", str(project.root), "--video", "V1", "--site", str(site), "--follow"])
     assert "of the free plan's 20,000" in capsys.readouterr().out
+    assert (site / "public" / "videos" / "V1" / "follow" / "frames.json").exists()
     main(["site", "volunteers", "--site", str(site), "--csv", str(_volunteer_csv(tmp_path))])
     assert "BRUV-ADMN-TEST" in (site / "volunteers.sql").read_text(encoding="utf-8")
     assert len(read_volunteers(tmp_path / "volunteers-with-passes.csv")) == 3

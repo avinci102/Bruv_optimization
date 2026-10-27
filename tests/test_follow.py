@@ -8,8 +8,9 @@ from fastapi.testclient import TestClient
 from bruv_app.cli import main
 from bruv_app.detect import Detection
 from bruv_app.evaluate import COLUMNS, Box, Found, RunView, evaluate, evaluate_project, read_sidecar, write_sidecar
-from bruv_app.follow import sidecar_rows
+from bruv_app.follow import frame_boxes, mark, sidecar_rows, start, summary
 from bruv_app.server import create_app
+from bruv_app.views import best_view
 
 DEP = "dep-test"
 WHERE = {
@@ -162,3 +163,30 @@ def test_how_long_to_keep_looking_is_kept_sensible(project, gone):
     client = TestClient(create_app(project.root))
     view = client.post("/api/follows", json={"card": _contiguous_card(project), "gone_s": gone}).json()
     assert 1.0 <= view["gone_s"] <= 30.0
+
+
+def test_a_follow_from_the_site_keeps_its_name_start_and_time(project):
+    """pull.py brings a follow made on the hosted site: the sighting it started from (even if
+    another is the card's best view now), the name it had there, and when it was made."""
+    card = _contiguous_card(project)
+    dets = project.fish_detections(card)
+    best = best_view(dets)
+    other = next(d for d in dets if d["id"] != best["id"])
+    at = "2026-11-01T10:00:00+00:00"
+    site = start(project, card, 2.0, det_id=other["id"], name="F7-v3", at=at)
+    client = TestClient(create_app(project.root))
+    view = client.get(f"/api/follows/{site}").json()
+    assert view["start"]["det"] == other["id"] and view["follow"]["name"] == "F7-v3"
+    assert project.db.execute("SELECT at FROM follows WHERE id=?", (site,)).fetchone()["at"] == at
+    assert project.db.execute("SELECT at FROM follow_marks WHERE follow_id=?", (site,)).fetchone()["at"] == at
+
+    # A follow made here sees the site's by its name: the box it took, and the card it shares.
+    here = start(project, card)
+    assert {b["det"]: b["taken"] for b in frame_boxes(project, other["frame_id"], here)}[other["id"]] == "F7-v3"
+    mark(project, here, other["frame_id"], "box", det_id=other["id"])
+    assert summary(project, here).shared == {card: ["F7-v3"]}
+    assert summary(project, site).shared[card][0].startswith(f"F{here}-")
+    assert "F7-v3" in {r.individual for r in sidecar_rows(project)}
+
+    with pytest.raises(ValueError, match="No sighting"):
+        start(project, card, det_id=10**9)

@@ -161,6 +161,9 @@ class Project:
             # is optional (docs/SPEC.md §15). reviewer: who gave it, for answers pulled from
             # the hosted review site (docs/SPEC.md §16); NULL for answers given on this PC.
             "reviews": {"details": "TEXT", "family": "TEXT", "reviewer": "TEXT"},
+            # name: a follow pulled from the hosted review site keeps the name it had there
+            # (F<site id>-v<volunteer>); NULL for follows made on this PC (follow.name).
+            "follows": {"name": "TEXT"},
         }
         for table, columns in added.items():
             have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}

@@ -67,10 +67,10 @@ async function showAdmin() {
   try {
     const p = await call("/sync/admin/progress");
     const table = document.createElement("table");
-    table.innerHTML = "<tr><th>Volunteer</th><th>Video</th><th>Role</th><th>Answers</th><th>Fixes</th><th>Last active</th></tr>";
+    table.innerHTML = "<tr><th>Volunteer</th><th>Video</th><th>Role</th><th>Answers</th><th>Fixes</th><th>Follows</th><th>Last active</th></tr>";
     for (const r of p.rows) {
       const tr = document.createElement("tr");
-      for (const v of [r.name, r.video, r.role, r.answers, r.fixes, r.last || "—"]) {
+      for (const v of [r.name, r.video, r.role, r.answers, r.fixes, r.follows ?? 0, r.last || "—"]) {
         const td = document.createElement("td");
         td.textContent = v;
         tr.append(td);

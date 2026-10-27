@@ -7,7 +7,8 @@
  * replayed here on top of the published cards. A split or move makes new cards; their
  * guesses, warnings, pieces and look-alikes are worked out here the way the server works
  * them out (pipeline.refresh_fish_guesses, diagnostics.card_flags, lookalike.py), from the
- * published descriptions (BioCLIP embeddings, float16).
+ * published descriptions (BioCLIP embeddings, float16). Following a fish (follow.py) works
+ * the same way, for videos published with --follow: each follow is kept as events too.
  *
  * Plain script (no modules), so it loads with a classic <script> tag (hosted/runtime.js
  * wires it to the page) and in Node for tests. Everything is under the global BRUV.
@@ -177,6 +178,20 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
         this.sheets.set(Number(det), { sheet: `videos/${key}/${still.sheet}`, rect });
       }
       this.cache = {};
+
+      // Following a fish (follow.py), for videos published with --follow: every frame in
+      // order (setFollowFrames) and, once a follow is opened, every box in them (boxLoader).
+      this.followable = Boolean(manifest.follow);
+      this.frameIds = [];
+      this.frameT = [];
+      this.frameIndex = new Map(); // frame id -> its place in the video
+      this.boxLoader = null; // async () -> the published boxes
+      this.boxes = null; // frame id -> its boxes, highest score first (follow.frame_boxes)
+      this.boxById = null;
+      this.follows = new Map();
+      this.followSeq = 0; // the highest follow id given; ids aren't reused
+      this.markSeq = 0; // marks in the order they were made (follow_marks' rowid)
+      this.volunteer = null; // their id on the site: follows are named F<id>-v<volunteer>
     }
 
     // ---- small helpers
@@ -756,10 +771,254 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
         new_cards: parts.slice(1).map((_, i) => this.maxCard + 1 + i) };
     }
 
+    // ---- following a fish (follow.py)
+
+    setFollowFrames(frames) {
+      this.frameIds = frames.ids;
+      this.frameT = frames.t;
+      this.frameIndex = new Map(frames.ids.map((id, i) => [id, i]));
+    }
+
+    async needFollow() {
+      if (!this.followable) {
+        throw new HttpError(400, "Following a fish isn't available for this video: it was published without --follow.");
+      }
+      if (!this.boxes) {
+        const data = await this.boxLoader();
+        const boxes = new Map(), byId = new Map();
+        data.boxes.forEach((rows, i) => {
+          const frame = this.frameIds[i];
+          boxes.set(frame, rows.map((r) => {
+            const b = { det: r[0], frame, x1: r[1], y1: r[2], x2: r[3], y2: r[4], score: r[5], card: r[6], faint: Boolean(r[7]) };
+            byId.set(b.det, b);
+            return b;
+          }));
+        });
+        this.boxes = boxes;
+        this.boxById = byId;
+      }
+    }
+
+    knownFollow(id) {
+      const f = this.follows.get(id);
+      if (!f) throw new HttpError(404, "No such follow");
+      return f;
+    }
+
+    // The card a box is on now: the volunteer's card after their fixes, else the published one.
+    cardOfDet(det) {
+      const key = `cardOf:${this.version}`;
+      if (!(key in this.cache)) {
+        const now = new Map();
+        for (const c of this.cards.values()) for (const d of c.dets) now.set(d.id, c.id);
+        this.cache[key] = now;
+      }
+      const now = this.cache[key].get(det);
+      if (now !== undefined) return now;
+      const b = this.boxById.get(det);
+      return b ? b.card : null;
+    }
+
+    // follow._spot: the middle of a mark's box, or the spot clicked.
+    spot(m) {
+      if (!m) return null;
+      if (m.state === "box") {
+        const b = this.boxById.get(m.det);
+        return b ? [(b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2] : null;
+      }
+      if (m.state === "nobox" && m.x !== null) return [m.x, m.y];
+      return null;
+    }
+
+    // follow.next_step: forward from the start until the fish has been gone for gone_s, then
+    // backward the same way; the first frame not yet marked is the next.
+    followStep(f) {
+      const ids = this.frameIds, T = this.frameT;
+      const s = this.frameIndex.get(f.startFrame);
+      for (const [phase, dir] of [["forward", 1], ["backward", -1]]) {
+        let seen = T[s];
+        let last = this.spot(f.marks.get(f.startFrame));
+        for (let i = s + dir; i >= 0 && i < ids.length; i += dir) {
+          if (Math.abs(T[i] - seen) > f.gone_s + 1e-6) break;
+          const m = f.marks.get(ids[i]);
+          if (!m) return { phase, frame: ids[i], last };
+          if (m.state !== "gone") {
+            seen = T[i];
+            last = this.spot(m) || last;
+          }
+        }
+      }
+      return { phase: "done", frame: null, last: null };
+    }
+
+    // follow.frame_boxes
+    frameBoxes(frame, followId) {
+      const taken = new Map(); // det -> the latest other follow that clicked it
+      for (const g of this.follows.values()) {
+        const m = g.marks.get(frame);
+        if (g.id === followId || !m || m.state !== "box") continue;
+        const had = taken.get(m.det);
+        if (!had || had.seq < m.seq) taken.set(m.det, { seq: m.seq, name: g.name });
+      }
+      return (this.boxes.get(frame) || []).map((b) => ({
+        det: b.det, x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2, score: b.score, card: this.cardOfDet(b.det), faint: b.faint,
+        taken: taken.has(b.det) ? taken.get(b.det).name : null,
+      }));
+    }
+
+    // follow.summary, against the cards as they are now
+    followSummary(f, done) {
+      const s = { id: f.id, name: f.name, card: f.card, done, gone_s: f.gone_s, boxes: 0, nobox: 0, gone: 0, first_t: null,
+        last_t: null, cards: {}, faint: 0, breaks: [], shared: {}, others: {} };
+      const marks = [...f.marks.entries()].filter(([frame]) => this.frameIndex.has(frame))
+        .sort((a, b) => this.frameIndex.get(a[0]) - this.frameIndex.get(b[0]));
+      let previous = null;
+      for (const [frame, m] of marks) {
+        const t = this.frameT[this.frameIndex.get(frame)];
+        if (m.state === "gone") {
+          s.gone += 1;
+          continue;
+        }
+        if (s.first_t === null) s.first_t = t;
+        s.last_t = t;
+        if (m.state === "nobox") {
+          s.nobox += 1;
+          continue;
+        }
+        s.boxes += 1;
+        const card = this.cardOfDet(m.det);
+        if (card === null) {
+          s.faint += 1;
+          continue;
+        }
+        s.cards[card] = (s.cards[card] || 0) + 1;
+        if (previous !== null && card !== previous) s.breaks.push([t, previous, card]);
+        previous = card;
+      }
+      const mine = new Set(Object.keys(s.cards).map(Number));
+      if (mine.size) {
+        // Other follows (this volunteer's) with boxes on this follow's cards.
+        for (const g of [...this.follows.values()].sort((a, b) => a.id - b.id)) {
+          if (g.id === f.id) continue;
+          const on = new Set();
+          for (const m of g.marks.values()) {
+            if (m.state !== "box") continue;
+            const c = this.cardOfDet(m.det);
+            if (mine.has(c)) on.add(c);
+          }
+          for (const c of on) (s.shared[c] = s.shared[c] || []).push(g.name);
+        }
+        // Frames this follow checked where one of its cards has a box that isn't the fish.
+        const frames = new Map();
+        for (const [frame, m] of f.marks) {
+          for (const b of this.boxes.get(frame) || []) {
+            const c = this.cardOfDet(b.det);
+            if (b.faint || !mine.has(c) || (m.det !== null && b.det === m.det)) continue;
+            if (!frames.has(c)) frames.set(c, new Set());
+            frames.get(c).add(frame);
+          }
+        }
+        for (const [c, set] of frames) s.others[c] = set.size;
+      }
+      return s;
+    }
+
+    // server.follow_view: the follow, what it has found, and the next frame with its boxes.
+    followView(id) {
+      const f = this.knownFollow(id);
+      const step = this.followStep(f);
+      const s = this.followSummary(f, step.phase === "done");
+      const at = (t) => {
+        const [clip, local] = this.locate(t);
+        return { clip, local_t: round(local, 3) };
+      };
+      const where = (frame) => {
+        const t = this.frameT[this.frameIndex.get(frame)];
+        return { id: frame, t: round(t, 3), ...at(t) };
+      };
+      const b = this.boxById.get(f.startDet) || {};
+      const out = {
+        follow: s,
+        seen: s.first_t === null ? null : { from: at(s.first_t), to: at(s.last_t) },
+        breaks: s.breaks.map(([t, a, c]) => ({ ...at(t), from: a, to: c })),
+        gone_s: f.gone_s,
+        start: { ...where(f.startFrame), det: f.startDet, box: { x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 } },
+        phase: step.phase, last: step.last, frame: null, boxes: [],
+      };
+      if (step.frame !== null) {
+        out.frame = where(step.frame);
+        out.boxes = this.frameBoxes(step.frame, f.id);
+      }
+      return out;
+    }
+
+    followList() {
+      return [...this.follows.values()].sort((a, b) => a.id - b.id)
+        .map((f) => this.followSummary(f, this.followStep(f).phase === "done"));
+    }
+
+    // follow.start, from the card's best view
+    followStartEvent(body) {
+      const card = this.cards.get(body.card);
+      if (!card) throw new HttpError(404, "No such card");
+      const best = bestView(card.dets);
+      if (!best) throw new HttpError(400, `Card #${card.id} has no sightings`);
+      const gone = Math.max(1, Math.min(body.gone_s ?? 5, 30));
+      const id = this.followSeq + 1;
+      return { kind: "follow_start", follow: id, card: card.id, det: best.id, frame: best.frame, gone_s: gone,
+        name: `F${id}-v${this.volunteer}` };
+    }
+
+    // follow.mark's checks
+    followMarkEvent(id, body) {
+      this.knownFollow(id);
+      const state = body.state;
+      if (!["box", "nobox", "gone"].includes(state)) throw new HttpError(400, "A mark is one of box, nobox, gone");
+      let det = null, x = null, y = null;
+      if (state === "box") {
+        const b = this.boxById.get(body.det_id);
+        if (!b || b.frame !== body.frame_id) throw new HttpError(400, "That box isn't in this frame");
+        det = b.det;
+      } else if (state === "nobox") {
+        x = body.x ?? null;
+        y = body.y ?? null;
+      }
+      return { kind: "follow_mark", follow: id, frame: body.frame_id, state, det, x, y };
+    }
+
+    // The mark undo takes back: the latest, never the start's.
+    latestMark(f) {
+      let latest = null;
+      for (const [frame, m] of f.marks) if (frame !== f.startFrame && (!latest || m.seq > latest.m.seq)) latest = { frame, m };
+      return latest;
+    }
+
+    applyFollow(e) {
+      if (e.kind === "follow_start") {
+        const f = { id: e.follow, card: e.card, startDet: e.det, startFrame: e.frame, gone_s: e.gone_s, name: e.name, marks: new Map() };
+        f.marks.set(e.frame, { state: "box", det: e.det, x: null, y: null, seq: ++this.markSeq });
+        this.follows.set(f.id, f);
+        this.followSeq = Math.max(this.followSeq, f.id);
+        return;
+      }
+      const f = this.follows.get(e.follow);
+      if (!f) return;
+      if (e.kind === "follow_mark") {
+        f.marks.delete(e.frame); // a mark replaces the frame's earlier one and is the latest
+        f.marks.set(e.frame, { state: e.state, det: e.det ?? null, x: e.x ?? null, y: e.y ?? null, seq: ++this.markSeq });
+      } else if (e.kind === "follow_undo") {
+        const latest = this.latestMark(f);
+        if (latest) f.marks.delete(latest.frame);
+      } else if (e.kind === "follow_delete") {
+        this.follows.delete(f.id);
+      }
+    }
+
     // ---- applying events (new answers, and the log replayed after a reload)
 
     apply(event) {
       if (event.kind === "label") return this.applyLabel(event);
+      if (event.kind.startsWith("follow_")) return this.applyFollow(event);
       if (event.kind === "undo") {
         for (const id of event.cards) {
           if (this.cards.has(id)) this.applyLabel({ card: id, status: "pending", details: null, scope: [] });
@@ -857,9 +1116,55 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
   // The same checks the server's request models make (server.py LabelIn, UndoIn, ...).
   const isText = (v) => typeof v === "string" && v.length > 0;
   const isIds = (v) => Array.isArray(v) && v.every(Number.isInteger);
+  const isNumberOrNull = (v) => v === undefined || v === null || Number.isFinite(v);
+  const isIdOrNull = (v) => v === undefined || v === null || Number.isInteger(v);
   function need(body, name, ok) {
     if (!body || !ok(body[name])) throw new HttpError(422, `Request is missing a valid ${name}`);
     return body[name];
+  }
+
+  // Following a fish (server.py's /api/follows): each change is saved, then applied.
+  async function handleFollow(video, sync, method, path, body) {
+    await video.needFollow();
+    const save = async (e) => {
+      await sync.send([e]);
+      video.apply(e);
+      return e;
+    };
+    let r;
+    if (path === "/api/follows" && method === "GET") return [200, video.followList()];
+    if (path === "/api/follows" && method === "POST") {
+      need(body, "card", Number.isInteger);
+      need(body, "gone_s", isNumberOrNull);
+      const e = await save(video.followStartEvent(body));
+      return [200, video.followView(e.follow)];
+    }
+    if ((r = path.match(/^\/api\/follows\/(\d+)$/))) {
+      const id = Number(r[1]);
+      if (method === "GET") return [200, video.followView(id)];
+      if (method === "DELETE") {
+        video.knownFollow(id);
+        await save({ kind: "follow_delete", follow: id });
+        return [200, { ok: true }];
+      }
+    }
+    if (method === "POST" && (r = path.match(/^\/api\/follows\/(\d+)\/mark$/))) {
+      need(body, "frame_id", Number.isInteger);
+      need(body, "state", (v) => typeof v === "string");
+      need(body, "det_id", isIdOrNull);
+      need(body, "x", isNumberOrNull);
+      need(body, "y", isNumberOrNull);
+      const id = Number(r[1]);
+      await save(video.followMarkEvent(id, body));
+      return [200, video.followView(id)];
+    }
+    if (method === "POST" && (r = path.match(/^\/api\/follows\/(\d+)\/undo$/))) {
+      const id = Number(r[1]);
+      const f = video.knownFollow(id);
+      if (video.latestMark(f)) await save({ kind: "follow_undo", follow: id });
+      return [200, video.followView(id)];
+    }
+    return [404, { detail: "Not Found" }];
   }
 
   async function handle(video, sync, method, path, query, body) {
@@ -868,7 +1173,7 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
     try {
       if (method === "POST") {
         if (/\/label$/.test(path)) need(body, "status", isText);
-        if (/\/undo$/.test(path)) need(body, "batch", isText);
+        if (path === "/api/batch/undo" || path === "/api/rig/undo") need(body, "batch", isText);
         if (/\/split$/.test(path)) need(body, "from_t", Number.isFinite);
         if (/\/move$/.test(path)) need(body, "det_ids", isIds);
         if (path === "/api/lookalikes/answer") {
@@ -877,6 +1182,7 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
           need(body, "status", isText);
         }
       }
+      if (path === "/api/follows" || path.startsWith("/api/follows/")) return await handleFollow(video, sync, method, path, body);
       if (method === "GET" && path === "/api/summary") return [200, video.summary()];
       if (method === "GET" && path === "/api/fish") return [200, video.listFish()];
       if (method === "GET" && (r = m(/^\/api\/fish\/(\d+)$/))) return [200, video.detail(Number(r[1]))];

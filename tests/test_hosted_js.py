@@ -1,7 +1,7 @@
-"""hosted/core.js against the review server (docs/SPEC.md §16). Answers and fixes made
-through the browser's code, then pulled into the project, must give the same card list,
-details, look-alikes and counts as the server; and opening the page again must replay to
-the same state. Needs Node.js (skipped without it)."""
+"""hosted/core.js against the review server (docs/SPEC.md §16). Answers, fixes and follows
+made through the browser's code, then pulled into the project, must give the same card
+list, details, look-alikes, counts and follows as the server; and opening the page again
+must replay to the same state. Needs Node.js (skipped without it)."""
 
 import json
 import shutil
@@ -69,7 +69,7 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
     refresh_fish_guesses(project, keep, settings)
     project.commit()
     site = tmp_path / "site"
-    publish(project.root, site, "V1")
+    publish(project.root, site, "V1", follow=True)
     assert len(published_cards(project)) == len(project.all_fish())
 
     result = tmp_path / "browser.json"
@@ -79,8 +79,11 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
     js = json.loads(result.read_text(encoding="utf-8"))
     steps = js["steps"]
     assert {"label", "label confirmed", "lookalikes", "multiple fish", "split", "split again", "move"} <= set(steps)
+    assert {"follow done", "follow undo", "follow again", "follow taken", "follow delete", "follow short"} <= set(steps)
     assert steps["label"]["status"] == 409  # the joined card's warnings, then confirmed
-    turned_down = {"label": 409, "undo without a batch": 422, "join": 400, "unknown card": 404}
+    turned_down = {"label": 409, "undo without a batch": 422, "join": 400, "unknown card": 404,
+                   "follow bad state": 400, "follow box elsewhere": 400, "follow no frame": 422, "follow unknown": 404,
+                   "follow unknown card": 404}
     for name, res in steps.items():
         assert res["status"] == turned_down.get(name, 200), (name, res)
     assert js["replayed_same"], "the page opened again doesn't show what was done"
@@ -91,7 +94,7 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
         "events": [{"id": i, "volunteer_id": 1, "event": e} for i, e in enumerate(js["events"])],
     }), encoding="utf-8")
     report = pull(project.root, answers, "Ana")
-    assert report.new_cards == {} and report.scope_mismatch == []
+    assert report.new_cards == {} and report.scope_mismatch == [] and report.follows == 3
 
     client = TestClient(create_app(project.root))
     live = js["live"]
@@ -102,3 +105,15 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
     diffs = _differences(py, {k: live[k] for k in ("list", "details", "looks")})
     assert diffs == [], "\n".join(diffs)
     assert client.get("/api/summary").json()["counts"] == live["summary"]["counts"]
+
+    # The follows, by name: ids here are this project's own. One ended "done", as on the site.
+    follows = client.get("/api/follows").json()
+    assert [f["name"] for f in follows] == [f["name"] for f in live["follows"]] == ["F1-v1", "F2-v1", "F4-v1"]
+    py_views = {f["name"]: client.get(f"/api/follows/{f['id']}").json() for f in follows}
+    for summaries in (follows, live["follows"], [v["follow"] for v in py_views.values()],
+                      [v["follow"] for v in live["followViews"].values()]):
+        for f in summaries:
+            f["id"] = None
+    diffs = _differences({"list": follows, "views": py_views}, {"list": live["follows"], "views": live["followViews"]})
+    assert diffs == [], "\n".join(diffs)
+    assert [f["done"] for f in follows] == [True, False, False]

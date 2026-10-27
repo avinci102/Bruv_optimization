@@ -408,7 +408,7 @@ coordinator pulls each volunteer's answers back into the project and exports as 
 Setup and costs: [docs/HOSTED.md](docs/HOSTED.md).
 
 ```
-python -m bruv_app publish --project D:\bruv\A1 --video A1 --site D:\bruv\site
+python -m bruv_app publish --project D:\bruv\A1 --video A1 --site D:\bruv\site   (add --follow to follow fish online)
 python -m bruv_app site volunteers --site D:\bruv\site --csv volunteers.csv
 python -m bruv_app site serve --site D:\bruv\site          (try it on this PC)
 python -m bruv_app pull --project D:\bruv\A1 --answers answers-A1.json --volunteer Ana

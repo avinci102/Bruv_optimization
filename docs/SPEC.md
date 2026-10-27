@@ -1243,14 +1243,23 @@ Cloudflare account. Setup, limits and measurements: [HOSTED.md](HOSTED.md).
   site has both, so it stayed a classic Pages site, as designed and tested. Moving the kit to Workers static assets is
   possible later; it would need its own testing.
 
+**Following a fish online (built 27 Oct 2026, at Vinci's request)**
+- `publish --follow` adds every sampled frame (20 to a WebP strip) and every box, as
+  `follow.frame_boxes` lists them: about 390 MB and 530 files for the 44-minute video. A
+  follow can step anywhere, because the fish wanders from card to card.
+- `hosted/core.js` answers `/api/follows` as `follow.py` does. A box's card is the one
+  it's on after the volunteer's own fixes. "Taken" and "shared" look only at the
+  volunteer's own follows: each copy is their record. After pulling, the PC sees everyone's,
+  so two volunteers following one fish become a cross-check.
+- Follows are saved as events (`follow_start`, `follow_mark`, `follow_undo`,
+  `follow_delete`). `pull` replays them in order through `follow.py`. Each follow keeps
+  the sighting it started from (`start(det_id=)`), its site name (`follows.name`,
+  `F<n>-v<volunteer>`, never a hex copy tag) and its times. It ends "done" exactly as it
+  did on the site.
+- Checked by the browser-against-server test (above), which covers follows field by field.
+
 **Open**
 - Descriptions over 25 MiB (a video about 60% longer than the test video) would need
   splitting.
 - A report of agreement between volunteers on the calibration cards.
 - Joining two cards online.
-- Following a fish online (wave 2, once Vinci has tried it on the PC; not built yet). It
-  steps through every sampled frame, not just the card's frames: from the card's start
-  minus `gone_s` to its end plus `gone_s`, with every box in those frames (faint and
-  still-hidden ones too, from `det_floor` up) and their card numbers. That's much more to
-  publish than a card's sheet. Its state (`follows`, `follow_marks`) and next step
-  (`follow.next_step`) could run in the browser as the review does.

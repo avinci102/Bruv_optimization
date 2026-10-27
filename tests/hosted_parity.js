@@ -1,7 +1,7 @@
-/* Drives hosted/core.js in Node for tests/test_hosted_js.py: answers and fixes on a
- * published video, made through BRUV.handle as the review page makes them, then everything
- * the page can ask for afterwards. The test pulls the saved events into the project and
- * compares the Python review server's answers with these.
+/* Drives hosted/core.js in Node for tests/test_hosted_js.py: answers, fixes and follows on
+ * a published video, made through BRUV.handle as the review and follow pages make them, then
+ * everything the pages can ask for afterwards. The test pulls the saved events into the
+ * project and compares the Python review server's answers with these.
  *
  *   node hosted_parity.js <core.js> <published video folder> <video key> <out.json>
  */
@@ -17,7 +17,15 @@ const manifest = read("manifest.json");
 const cardsJson = read("cards.json");
 const raw = fs.readFileSync(path.join(folder, "emb.bin"));
 const emb = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
-const fresh = () => new BRUV.Video(key, manifest, cardsJson, emb);
+const fresh = () => {
+  const v = new BRUV.Video(key, manifest, cardsJson, emb);
+  v.volunteer = 1;
+  if (manifest.follow) {
+    v.setFollowFrames(read(manifest.follow.frames));
+    v.boxLoader = async () => read(manifest.follow.boxes);
+  }
+  return v;
+};
 
 // The site's database: it keeps each event with its own clock.
 const saved = [];
@@ -41,7 +49,38 @@ async function snapshot(video) {
     out.details[c.id] = (await call(video, "GET", `/api/fish/${c.id}`)).data;
     out.looks[c.id] = (await call(video, "GET", `/api/fish/${c.id}/lookalikes`)).data;
   }
+  if (manifest.follow) {
+    out.follows = (await call(video, "GET", "/api/follows")).data;
+    out.followViews = {};
+    for (const f of out.follows) out.followViews[f.name] = (await call(video, "GET", `/api/follows/${f.id}`)).data;
+  }
   return out;
+}
+
+// Following a fish, as the follow page does: its box where the card has one, now and then
+// another card's box, a spot without a box, an undo; "gone" where nothing is left.
+async function follow(v, step, card, gone, upTo) {
+  const started = await step(`follow ${card}`, "POST", "/api/follows", { card, gone_s: gone });
+  if (started.status !== 200) throw new Error(`starting a follow: ${JSON.stringify(started)}`);
+  let view = started.data;
+  const id = view.follow.id;
+  for (let k = 0; view.phase !== "done" && k < upTo; k++) {
+    if (!view.frame) throw new Error("no frame: " + JSON.stringify(view).slice(0, 400));
+    const frame = view.frame.id;
+    const mine = view.boxes.find((b) => b.card === card);
+    const other = view.boxes.find((b) => b.card !== card);
+    let body;
+    if (k === 2 && other) body = { frame_id: frame, state: "box", det_id: other.det };
+    else if (k === 4) body = { frame_id: frame, state: "nobox", x: 0.4, y: 0.6 };
+    else if (k === 5) body = { frame_id: frame, state: "nobox" };
+    else if (mine) body = { frame_id: frame, state: "box", det_id: mine.det };
+    else body = { frame_id: frame, state: "gone" };
+    const res = await call(v, "POST", `/api/follows/${id}/mark`, body);
+    if (res.status !== 200) throw new Error(`marking ${JSON.stringify(body)}: ${JSON.stringify(res)}`);
+    view = res.data;
+    if (k === 3) view = (await step("follow undo", "POST", `/api/follows/${id}/undo`, {})).data;
+  }
+  return view;
 }
 
 async function main() {
@@ -100,6 +139,28 @@ async function main() {
   if (rest[1]) await step("not fish", "POST", `/api/fish/${rest[1]}/label`, { status: "not_fish", confirm: true });
   if (rest[2]) await step("equipment", "POST", `/api/fish/${rest[2]}/equipment`, { confirm: true });
   if (rest[3]) await step("skip", "POST", `/api/fish/${rest[3]}/label`, { status: "skipped" });
+  // Follows, after the fixes, so they see the volunteer's cards: one to the end, a second
+  // of the same fish left part way (it sees the first one's boxes as taken), a third
+  // discarded, and a fourth asking for less than a second.
+  if (manifest.follow) {
+    const now = (await call(v, "GET", "/api/fish")).data;
+    const longest = now.reduce((a, c) => ((c.end_t - c.start_t) > (a.end_t - a.start_t) ? c : a)).id;
+    const done = await follow(v, step, longest, 2, 400);
+    steps["follow done"] = { status: done.phase === "done" ? 200 : 500, data: done.follow };
+    const second = (await step("follow again", "POST", "/api/follows", { card: longest })).data;
+    const took = second.boxes.find((b) => b.taken);
+    if (took) await step("follow taken", "POST", `/api/follows/${second.follow.id}/mark`, { frame_id: second.frame.id, state: "box", det_id: took.det });
+    const third = (await step("follow discarded", "POST", "/api/follows", { card: now[0].id })).data;
+    await step("follow delete", "DELETE", `/api/follows/${third.follow.id}`);
+    await step("follow short", "POST", "/api/follows", { card: now[now.length - 1].id, gone_s: 0 });
+    const frame = second.frame ? second.frame.id : second.start.id;
+    await step("follow bad state", "POST", `/api/follows/${second.follow.id}/mark`, { frame_id: frame, state: "maybe" });
+    const elsewhere = Object.keys(details).map(Number).flatMap((id) => details[id].filmstrip).find((x) => x.frame_id !== frame);
+    await step("follow box elsewhere", "POST", `/api/follows/${second.follow.id}/mark`, { frame_id: frame, state: "box", det_id: elsewhere.det_id });
+    await step("follow no frame", "POST", `/api/follows/${second.follow.id}/mark`, { state: "gone" });
+    await step("follow unknown", "GET", "/api/follows/999");
+    await step("follow unknown card", "POST", "/api/follows", { card: 999999 });
+  }
   await step("undo without a batch", "POST", "/api/batch/undo", {});
   await step("join", "POST", `/api/fish/${others[0]}/merge`, { other_id: first });
   await step("unknown card", "GET", "/api/fish/999999");

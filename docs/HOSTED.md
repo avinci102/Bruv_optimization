@@ -32,7 +32,7 @@ Nothing, on Cloudflare's free plan, for a pilot of this size:
 
 | Free-plan limit | What uses it | Pilot estimate |
 |---|---|---|
-| 20,000 files per site | One sheet per card, plus 4 files per video | About 1,150 per 44-minute video, so about 15 videos per site |
+| 20,000 files per site | One sheet per card, plus 4 files per video; with `--follow`, one more file per 20 frames | About 1,150 per 44-minute video (about 1,680 with `--follow`), so 11 to 15 videos per site |
 | 25 MiB per file | The largest file is a video's descriptions (`emb.bin`) | 17.8 MB for 44 minutes |
 | Static requests | Pictures and card data | Unlimited and free |
 | 100,000 function requests a day | Sign-in, each answer or fix, 2 per page load | 5 volunteers × ~1,000 a day = 5,000 |
@@ -105,6 +105,11 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
    To put a rule trial online (`try-rules`), add `--trial <name>` with a video name of its
    own, such as `--video A1-faint`. Pull its answers with the same `--trial <name>`: they go
    into the trial, not the project.
+
+   To let people **follow a fish** on the site (frame by frame, as on the PC), add
+   `--follow`. It publishes every sampled frame and every box. It adds about 390 MB and
+   11 minutes for a 44-minute video, so use it for the videos where you want follows. The
+   review page of such a video also shows the real scene at every moment.
 3. **List the volunteers** in a CSV file (Excel can save one), with these columns:
 
    | name | email | pass | role | videos | calibration |
@@ -139,7 +144,7 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
    would go to a preview address instead.
 6. **Send the invitations** (see the template below).
 7. **Watch progress**: sign in with an `admin` pass. The start page shows each volunteer's
-   answers and fixes per video, and when they were last active.
+   answers, fixes and follows per video, and when they were last active.
 8. **Collect the answers.** On the start page, click **Download answers: A1**, then pull
    each volunteer into the project:
    ```
@@ -153,6 +158,8 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
    - Pull a calibration volunteer into a **copy** of the project, to compare with.
    - A snapshot is taken before and after, and the pull is recorded in the run log.
    - It refuses answers for a different video than the project was published as.
+   - Their follows come too, with the name they had on the site (`F3-v2`: follow 3 of
+     volunteer 2), so `evaluate` and `compare-rules` score them on this PC.
 9. **Export** to Excel as usual.
 
 ### Replacing wave 1's pictures with wave 2's
@@ -186,7 +193,8 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
 | Join two cards (merge, `P`) | Not yet: the page says to note the card numbers in a comment. Splitting, moving ticked sightings and "multiple fish" all work. |
 | Export to Excel | The coordinator exports, after pulling. |
 | Bait-arm batch marking | Not on the site; each card's Equipment answer works. |
-| Whole scenes for every moment | Up to 8 whole scenes per card. Other moments show the nearest one, dimmed, with the fish as seen at that moment, and say so. |
+| Whole scenes for every moment | With `--follow`, the same. Otherwise up to 8 whole scenes per card; other moments show the nearest one, dimmed, with the fish as seen at that moment, and say so. |
+| Follow this fish | With `--follow`, the same. Each volunteer's follows are their own: "taken" and "shared" look at their own follows; after pulling, the PC sees everyone's. |
 | Tiny fish and cards outside the review window | Not published. |
 
 ## Privacy and access
@@ -213,27 +221,34 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
     neighbours (≥0.85), and where its pictures are on its sheet;
   - `emb.bin`: float16 descriptions (BioCLIP embeddings) in this order: species names,
     crops, pieces, card looks;
-  - `sheets/<card>.webp`: the card's close-ups and up to 8 whole scenes (640 px wide).
+  - `sheets/<card>.webp`: the card's close-ups and up to 8 whole scenes (640 px wide);
+  - with `--follow`, `follow/`: every sampled frame, 20 to a WebP strip (`<n>.webp`, 640
+    px a frame, 4 to a row), `frames.json` (every frame's id and exact time, in order) and
+    `boxes.json` (every box in each frame, as `follow.frame_boxes` lists them).
   It also records `meta.published` in the project, which `pull` checks.
 - **`hosted/core.js`** answers every `/api/...` request the page makes, mirroring the
   server: the summary and card list, card details, look-alikes and their answers, labels
   (with the same warnings check), undo, split, move and "multiple fish". After a fix it
   works out the new cards' guesses, families, warnings, pieces, look-alikes and look-alike
   groups from the published descriptions, as `pipeline.refresh_fish_guesses`,
-  `diagnostics.card_flags` and `lookalike.py` do.
-- **`hosted/runtime.js`** connects it to the page: it replaces `fetch` for `/api/` and
-  cuts `/crop/<id>` and `/frame/<id>` pictures from the sheets into `blob:` images. A
+  `diagnostics.card_flags` and `lookalike.py` do. With `--follow` it answers
+  `/api/follows` too, as `follow.py` does: the next frame, the boxes in it with the cards
+  they're on now, and what a follow found.
+- **`hosted/runtime.js`** connects it to the review and follow pages: it replaces `fetch`
+  for `/api/` and cuts `/crop/<id>` and `/frame/<id>` pictures from the sheets (or the
+  follow strips) into `blob:` images. A
   service worker would be tidier, but some browsers and managed school laptops block
   them. This way works in any recent browser.
 - **What's saved** is an event log per volunteer and video (D1 table `events`). Kinds:
-  `label`, `undo`, `split`, `move`, `unmerge` and `suggestions`, each with the fields its
-  replay needs and the site's time. New cards are numbered after the highest published
-  card.
+  `label`, `undo`, `split`, `move`, `unmerge`, `suggestions`, and for follows
+  `follow_start` (with the sighting it starts from and its name), `follow_mark`,
+  `follow_undo` and `follow_delete`. Each has the fields its replay needs and the site's
+  time. New cards are numbered after the highest published card.
 - **`hosted/functions/sync/[[path]].js`** is the only server code (sign-in, events,
   feedback, admin). `bruv_app/site.py` has the same API on SQLite for `site serve` and the
   tests. `_routes.json` keeps every other request a free static one.
 - **`bruv_app/pull.py`** replays one volunteer's log onto a project with the store's own
-  methods.
+  methods, and follows with `follow.py`'s, in order: undo takes back the latest mark.
 - **Checking that the browser matches the server** (`tests/test_hosted_js.py`, needs
   Node.js; skipped without it). It publishes the synthetic test project, with one card
   made of two different fish. `tests/hosted_parity.js` then runs `core.js` in Node and
@@ -242,12 +257,17 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
     batch and its undo;
   - "multiple fish", a split, a split of the split-off card, and a move;
   - other answers and an equipment answer;
+  - follows (the video is published with `--follow`): one followed to the end, with a box
+    on another card, spots with and without a box, and an undo; a second of the same fish,
+    which finds the first one's boxes taken and shares its card; one discarded; one asking
+    for less than a second;
   - requests the site turns down.
 
   The test then checks three things:
   - opening the page again replays to exactly the same state;
   - after the events are pulled into the project, the Python server gives the same card
-    list, card details, look-alikes and counts, field by field;
+    list, card details, look-alikes, counts and follows (each one's view and summary),
+    field by field;
   - the published size of each sighting keeps look-alike groups in the server's order
     when two fish are the same size.
 

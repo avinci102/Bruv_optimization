@@ -117,7 +117,7 @@ def create_dev_app(site: Path, db_path: Path, secret: str = "dev-secret"):
     """The hosted site from this PC: public/ as static files plus the /sync API (the same as
     hosted/functions/sync/[[path]].js), on SQLite at `db_path`."""
     from fastapi import FastAPI, Request  # noqa: PLC0415
-    from fastapi.responses import JSONResponse  # noqa: PLC0415
+    from fastapi.responses import FileResponse, JSONResponse  # noqa: PLC0415
     from fastapi.staticfiles import StaticFiles  # noqa: PLC0415
 
     db = sqlite3.connect(db_path, check_same_thread=False)
@@ -218,6 +218,7 @@ def create_dev_app(site: Path, db_path: Path, secret: str = "dev-secret"):
                         """SELECT v.name, a.video, a.role,
                                   SUM(CASE WHEN e.kind='label' THEN 1 ELSE 0 END) AS answers,
                                   SUM(CASE WHEN e.kind IN ('split','move','unmerge') THEN 1 ELSE 0 END) AS fixes,
+                                  SUM(CASE WHEN e.kind='follow_start' THEN 1 ELSE 0 END) AS follows,
                                   MAX(e.at) AS last
                              FROM assignments a JOIN volunteers v ON v.id=a.volunteer_id
                              LEFT JOIN events e ON e.volunteer_id=a.volunteer_id AND e.video=a.video
@@ -231,6 +232,11 @@ def create_dev_app(site: Path, db_path: Path, secret: str = "dev-secret"):
     @app.api_route("/api/{path:path}", methods=["GET", "POST"])
     def not_signed_in(path: str):
         return reply(409, {"detail": "Sign in first: open /start.html."})
+
+    @app.get("/follow")
+    def follow_page():
+        # Pages serves follow.html at /follow; so does this.
+        return FileResponse(site / "public" / "follow.html")
 
     app.mount("/", StaticFiles(directory=site / "public", html=True), name="site")
     return app
