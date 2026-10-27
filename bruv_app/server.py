@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
-from . import imaging
+from . import follow, imaging
 from .diagnostics import card_flags, closest_calls, pieces
 from .equipment import best_match, mark_equipment, rig_candidates
 from .export import export_project
@@ -50,6 +50,19 @@ class LabelIn(BaseModel):
     family: str | None = None
     seconds: float | None = None  # time spent on the card before answering
     queue: bool = False  # answered from the quick-confirm queue
+
+
+class FollowIn(BaseModel):
+    card: int
+    gone_s: float = follow.GONE_S
+
+
+class MarkIn(BaseModel):
+    frame_id: int
+    state: str  # box | nobox | gone
+    det_id: int | None = None
+    x: float | None = None  # where the fish was, for "nobox" (0-1 of the frame)
+    y: float | None = None
 
 
 class EquipmentIn(BaseModel):
@@ -211,14 +224,21 @@ def create_app(project_root: Path) -> FastAPI:
             for f in ranked[:top]
         ]
 
-    @app.get("/")
-    def index():
+    def static_page(name: str, assets: tuple[str, ...]) -> HTMLResponse:
         # The script and styles get a new address whenever they change, so a browser never
         # runs an old copy from its cache after an update.
-        page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-        for name in ("app.js", "styles.css"):
-            page = page.replace(f"/static/{name}", f"/static/{name}?v={(STATIC_DIR / name).stat().st_mtime_ns}")
+        page = (STATIC_DIR / name).read_text(encoding="utf-8")
+        for asset in assets:
+            page = page.replace(f"/static/{asset}", f"/static/{asset}?v={(STATIC_DIR / asset).stat().st_mtime_ns}")
         return HTMLResponse(page)
+
+    @app.get("/")
+    def index():
+        return static_page("index.html", ("app.js", "styles.css"))
+
+    @app.get("/follow")
+    def follow_page():
+        return static_page("follow.html", ("follow.js", "styles.css"))
 
     @app.get("/api/summary")
     def summary():
@@ -610,6 +630,97 @@ def create_app(project_root: Path) -> FastAPI:
                 raise HTTPException(400, str(exc)) from exc
             refresh_fish_guesses(project, fish_id, settings)
             project.commit()
+            return {"ok": True}
+
+    # --- following one fish (follow.py) ----------------------------------------------------
+
+    def follow_view(follow_id: int) -> dict:
+        """A follow, what it has found so far, and the next frame to look at with its boxes."""
+        row = project.db.execute(
+            "SELECT f.*, d.frame_id AS start_frame, d.x1, d.y1, d.x2, d.y2 FROM follows f "
+            "JOIN detections d ON d.id=f.start_det WHERE f.id=?", (follow_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "No such follow")
+        step = follow.next_step(project, follow_id)
+        timeline = load_timeline(project)
+
+        def where(frame_id: int) -> dict:
+            fr = project.frame(frame_id)
+            clip, local = timeline.locate(fr.t)
+            return {"id": fr.id, "t": round(fr.t, 3), "clip": clip, "local_t": round(local, 3)}
+
+        s = follow.summary(project, follow_id)
+
+        def at(t: float) -> dict:
+            clip, local = timeline.locate(t)
+            return {"clip": clip, "local_t": round(local, 3)}
+
+        out = {
+            "follow": s.as_dict(),
+            # Times as the page shows them: clip and time within it.
+            "seen": None if s.first_t is None else {"from": at(s.first_t), "to": at(s.last_t)},
+            "breaks": [{**at(t), "from": a, "to": b} for t, a, b in s.breaks],
+            "gone_s": row["gone_s"],
+            "start": {**where(row["start_frame"]), "det": row["start_det"],
+                      "box": {k: row[k] for k in ("x1", "y1", "x2", "y2")}},
+            "phase": step.phase,
+            "last": step.last,
+            "frame": None,
+            "boxes": [],
+        }
+        if step.frame_id is not None:
+            out["frame"] = where(step.frame_id)
+            out["boxes"] = follow.frame_boxes(project, step.frame_id, follow_id)
+        return out
+
+    def known_follow(follow_id: int) -> None:
+        if project.db.execute("SELECT 1 FROM follows WHERE id=?", (follow_id,)).fetchone() is None:
+            raise HTTPException(404, "No such follow")
+
+    @app.get("/api/follows")
+    def follows():
+        with lock:
+            return [s.as_dict() for s in follow.all_follows(project)]
+
+    @app.post("/api/follows")
+    def start_follow(body: FollowIn):
+        with lock:
+            if project.fish(body.card) is None:
+                raise HTTPException(404, "No such card")
+            try:
+                follow_id = follow.start(project, body.card, max(1.0, min(body.gone_s, 30.0)))
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return follow_view(follow_id)
+
+    @app.get("/api/follows/{follow_id}")
+    def get_follow(follow_id: int):
+        with lock:
+            return follow_view(follow_id)
+
+    @app.post("/api/follows/{follow_id}/mark")
+    def mark_follow(follow_id: int, body: MarkIn):
+        with lock:
+            known_follow(follow_id)
+            try:
+                follow.mark(project, follow_id, body.frame_id, body.state, body.det_id, body.x, body.y)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return follow_view(follow_id)
+
+    @app.post("/api/follows/{follow_id}/undo")
+    def undo_follow(follow_id: int):
+        with lock:
+            known_follow(follow_id)
+            follow.undo(project, follow_id)
+            return follow_view(follow_id)
+
+    @app.delete("/api/follows/{follow_id}")
+    def discard_follow(follow_id: int):
+        with lock:
+            known_follow(follow_id)
+            follow.discard(project, follow_id)
             return {"ok": True}
 
     @app.get("/frame/{frame_id}")

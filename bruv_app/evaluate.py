@@ -12,6 +12,12 @@ the annotator can't be sure of (after a crossing, or a disappearance) is marked
 detections (annotation_sheet) marks its rows "unchecked": frames still holding one are
 left out, so a detector box never passes for an answer just because nobody changed it.
 
+A row's scope says what was annotated: "frame" (every object in the frame, the default) or
+"individual" (one fish followed through the frames, follow.py; other fish in those frames
+weren't). Frames with only individual rows score identity (tracking, merging, cards and the
+following stage) but not detection, since the other boxes there were never judged. A fish
+that was there without a box is a point (x1 = x2), which no detection can match.
+
 The scores keep the stages apart (review V2, section E), so a tracker error isn't blamed on
 the merge, nor a merge error on the species model:
 
@@ -20,7 +26,10 @@ the merge, nor a merge error on the species model:
 - merging (B): merge edges joining two pure tracklets of different fish; cards hit by
   both A and B are counted apart;
 - cards: multi-fish and multi-taxon cards, impurity, duplicate cards per fish;
-- science: MaxN per taxon over the annotated frames, from the reviewed labels.
+- science: MaxN per taxon over the annotated frames, from the reviewed labels;
+- following: for each followed fish, how much of its visit the run boxed, how many cards
+  it ended up on, and why its card changed (near another fish, a gap in its boxes, the
+  frame's edge, or none of these).
 """
 
 from __future__ import annotations
@@ -39,6 +48,9 @@ from .store import Project
 from .track import iou
 
 KINDS = ("fish", "equipment", "other", "none", "unchecked")
+SCOPES = ("frame", "individual")
+# A box this close to the frame's edge (0-1 of the frame) is at the edge (as views.EDGE).
+EDGE = 0.01
 MIN_IOU = 0.5
 # Size bands for recall, as the box's longer side in pixels of the review frames (the
 # same measure as Settings.tiny_fish_px).
@@ -80,6 +92,7 @@ class Box:
     det_id: str = ""  # the detection a pre-filled row came from (a convenience, not a key)
     annotator: str = ""
     note: str = ""
+    scope: str = "frame"  # frame (every object annotated) | individual (one followed fish)
 
     @property
     def frame(self) -> tuple[str, int, int]:
@@ -110,6 +123,9 @@ def read_sidecar(path: Path) -> list[Box]:
                 raise ValueError(f"{path.name} line {n}: {exc}") from exc
             values["kind"] = values["kind"].lower() or "fish"
             values["identity"] = values["identity"].lower() or "certain"
+            values["scope"] = values["scope"].lower() or "frame"
+            if values["scope"] not in SCOPES:
+                raise ValueError(f"{path.name} line {n}: scope must be one of {', '.join(SCOPES)}")
             if values["kind"] not in KINDS:
                 raise ValueError(f"{path.name} line {n}: kind must be one of {', '.join(KINDS)}")
             boxes.append(Box(**values))
@@ -163,6 +179,7 @@ class RunView:
     chains: dict[int, list[int]]  # original card -> its tracklets, in time order
     frame_size: tuple[int, int]  # the review frames' width and height
     grouping: str  # "frozen" (as built) or "current" (may include review edits)
+    times: dict[tuple[str, int, int], float] = field(default_factory=dict)  # each frame's time
 
 
 def load_run(project: Project) -> RunView:
@@ -185,9 +202,11 @@ def load_run(project: Project) -> RunView:
         if answer:
             labels.update((d["id"], answer) for d in project.fish_detections(f["id"]))
     frames: dict[tuple[str, int, int], list[Found]] = {}
+    times: dict[tuple[str, int, int], float] = {}
     sizes = []
-    for f in project.db.execute("SELECT chapter, src_index, width, height FROM frames_src ORDER BY seq"):
+    for f in project.db.execute("SELECT chapter, src_index, t, width, height FROM frames_src ORDER BY seq"):
         frames[(deployment, f["chapter"], f["src_index"])] = []
+        times[(deployment, f["chapter"], f["src_index"])] = f["t"]
         sizes.append((f["width"], f["height"]))
     starts: dict[int, float] = {}
     rows = project.db.execute(
@@ -210,7 +229,7 @@ def load_run(project: Project) -> RunView:
     for card in chains:
         chains[card].sort(key=lambda t: (starts.get(t, 0.0), t))
     size = Counter(sizes).most_common(1)[0][0] if sizes else (960, 540)
-    return RunView(frames, dict(chains), size, grouping)
+    return RunView(frames, dict(chains), size, grouping, times)
 
 
 # --- scores ---------------------------------------------------------------------------------
@@ -251,6 +270,17 @@ class Report:
     cards_tracker_only: int = 0  # A
     cards_merge_only: int = 0  # B
     cards_both: int = 0  # C
+    # following (rows of scope "individual")
+    followed: int = 0  # fish followed
+    follow_frames: int = 0  # frames annotated for followed fish alone
+    follow_present: int = 0  # times a followed fish was in a frame
+    follow_found: int = 0  # ... and the run had its box
+    cards_per_followed: float = 0.0
+    # Cards holding a followed fish that also have another box in a frame checked for it
+    # (where it was elsewhere, or gone): the card holds another fish, or a second box.
+    cards_followed: int = 0
+    cards_with_another: int = 0
+    card_changes: dict = field(default_factory=dict)  # cause -> times a followed fish's card changed
     # science
     maxn: dict = field(default_factory=dict)  # taxon -> (annotated, from the run)
 
@@ -290,6 +320,16 @@ class Report:
             f"{self.duplicate_cards_per_fish:.2f} extra cards per fish",
             f"  mixed cards by cause: tracker {self.cards_tracker_only}, merge {self.cards_merge_only}, both {self.cards_both}",
         ]
+        if self.followed:
+            out += [
+                f"Following: {self.followed} fish followed over {self.follow_frames} frames annotated for them alone; "
+                f"the run boxed them {rate(self.follow_found, self.follow_present)} of the times they were there; "
+                f"{self.cards_per_followed:.2f} cards per fish; "
+                f"{rate(self.cards_with_another, self.cards_followed)} of their cards also hold another box "
+                "in frames checked for the fish",
+                "  card changes along a followed fish: "
+                + (", ".join(f"{cause} {n}" for cause, n in self.card_changes.items()) or "none"),
+            ]
         if self.maxn:
             exact = sum(a == b for a, b in self.maxn.values())
             out.append(f"MaxN over the annotated frames: {exact} of {len(self.maxn)} taxa exact")
@@ -308,6 +348,31 @@ def _band(px: float) -> str:
     return f"{SIZE_BANDS[-1]}+"
 
 
+def _near(frame: list[Found], f: Found) -> bool:
+    """Another box in the frame overlapping the fish's, or within the fish's own size of it."""
+    reach = max(f.box.x2 - f.box.x1, f.box.y2 - f.box.y1)
+    cx, cy = (f.box.x1 + f.box.x2) / 2, (f.box.y1 + f.box.y2) / 2
+    for o in frame:
+        if o.det_id == f.det_id:
+            continue
+        ox, oy = (o.box.x1 + o.box.x2) / 2, (o.box.y1 + o.box.y2) / 2
+        if iou(o.box, f.box) > 0 or max(abs(ox - cx), abs(oy - cy)) < reach:
+            return True
+    return False
+
+
+def _why(run: RunView, ka: tuple, a: Found, kb: tuple, b: Found, position: dict) -> str:
+    """The likely cause of a followed fish's card changing between two of its boxes, in this
+    order: another fish close by, frames between them without its box, the frame's edge."""
+    if _near(run.frames[ka], a) or _near(run.frames[kb], b):
+        return "near another fish"
+    if position[kb] - position[ka] > 1:
+        return "gap in its boxes"
+    if any(min(f.box.x1, f.box.y1, 1 - f.box.x2, 1 - f.box.y2) < EDGE for f in (a, b)):
+        return "at the frame's edge"
+    return "none of these"
+
+
 def evaluate(run: RunView, boxes: list[Box], min_iou: float = MIN_IOU) -> Report:
     report = Report(grouping=run.grouping)
     by_frame: dict[tuple, list[Box]] = defaultdict(list)
@@ -320,6 +385,8 @@ def evaluate(run: RunView, boxes: list[Box], min_iou: float = MIN_IOU) -> Report
     width, height = run.frame_size
     truth_counts: dict[tuple, Counter] = {}
     run_counts: dict[tuple, Counter] = {}
+    followed: dict[str, list[tuple]] = defaultdict(list)  # individual -> (t, frame, det id or None)
+    checked: list[tuple] = []  # (individual, frame, its det id or None): frames checked for a followed fish
     for key, annotated in by_frame.items():
         if any(b.kind == "unchecked" for b in annotated):
             report.frames_unchecked += 1
@@ -327,6 +394,24 @@ def evaluate(run: RunView, boxes: list[Box], min_iou: float = MIN_IOU) -> Report
         if key not in run.frames:
             report.frames_unsampled += 1
             continue
+        whole = [b for b in annotated if b.scope == "frame"]
+        if not whole:
+            # Only followed fish were annotated here: who they are, not what else is there.
+            report.follow_frames += 1
+            fish = [b for b in annotated if b.kind == "fish" and b.individual]
+            found = run.frames[key]
+            hit = dict(match_boxes([b.detection for b in fish], [f.box for f in found], min_iou))
+            for i, b in enumerate(fish):
+                report.follow_present += 1
+                det_id = found[hit[i]].det_id if i in hit else None
+                if det_id is not None:
+                    report.follow_found += 1
+                    who[det_id] = b
+                followed[b.individual].append((run.times.get(key, 0.0), key, det_id))
+                checked.append((b.individual, key, det_id))
+            checked.extend((b.individual, key, None) for b in annotated if b.kind == "none" and b.individual)
+            continue
+        annotated = whole
         report.frames += 1
         objects = [b for b in annotated if b.kind != "none"]
         found = run.frames[key]
@@ -420,6 +505,30 @@ def evaluate(run: RunView, boxes: list[Box], min_iou: float = MIN_IOU) -> Report
             report.cards_both += wrong and mixed
     report.duplicate_cards_per_fish = float(np.mean([len(c) - 1 for c in cards_of.values()])) if cards_of else 0.0
 
+    # Following: where each followed fish's card changes, and the likely cause.
+    position = {key: i for i, key in enumerate(sorted(run.times, key=run.times.get))}
+    report.followed = len(followed)
+    changes: Counter = Counter()
+    per_fish = []
+    for visit in followed.values():
+        visit.sort(key=lambda v: v[0])
+        boxed = [(key, found_by_id[d]) for _, key, d in visit if d is not None]
+        per_fish.append(len({f.card for _, f in boxed if f.card is not None}))
+        for (ka, a), (kb, b) in zip(boxed, boxed[1:]):
+            if a.card != b.card:
+                changes[_why(run, ka, a, kb, b, position)] += 1
+    report.cards_per_followed = float(np.mean(per_fish)) if per_fish else 0.0
+    cards_of_fish: dict[str, set[int]] = defaultdict(set)
+    for ind, visit in followed.items():
+        cards_of_fish[ind].update(found_by_id[d].card for _, _, d in visit if d is not None and found_by_id[d].card is not None)
+    mixed: set[int] = set()
+    for ind, key, det_id in checked:
+        mixed.update(f.card for f in run.frames[key] if f.card in cards_of_fish[ind] and f.det_id != det_id)
+    followed_cards = set().union(*cards_of_fish.values()) if cards_of_fish else set()
+    report.cards_followed = len(followed_cards)
+    report.cards_with_another = len(mixed & followed_cards)
+    report.card_changes = dict(changes.most_common())
+
     # Science: MaxN per taxon over the annotated frames.
     taxa = {t for c in truth_counts.values() for t in c} | {t for c in run_counts.values() for t in c}
     report.maxn = {
@@ -485,7 +594,14 @@ def threshold_curve(project: Project, boxes: list[Box], thresholds: list[float],
     return out
 
 
-def evaluate_project(project: Project, boxes: list[Box], min_iou: float = MIN_IOU) -> Report:
+def evaluate_project(project: Project, boxes: list[Box], min_iou: float = MIN_IOU, follows: bool = True) -> Report:
+    """Score a project against `boxes` and, unless `follows` is False, the fish followed in
+    the project itself (follow.py) that the boxes don't already hold."""
+    if follows:
+        from .follow import sidecar_rows  # noqa: PLC0415 (follow.py imports this module)
+
+        have = {(b.frame, b.individual) for b in boxes if b.scope == "individual"}
+        boxes = [*boxes, *(b for b in sidecar_rows(project) if (b.frame, b.individual) not in have)]
     deployment = project.get_meta("deployment")
     others = {b.deployment for b in boxes} - {deployment}
     if others and not any(b.deployment == deployment for b in boxes):

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Follow a fish</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>Follow a fish</h1>
+    <span id="who" class="muted"></span>
+    <span id="phase" class="phase" hidden></span>
+    <span id="counts" class="muted"></span>
+    <a id="back" class="back-link" href="/">← Back to the review</a>
+  </header>
+
+  <main class="follow-main">
+    <section class="viewer">
+      <div id="stage" class="stage">
+        <div id="zoomer" class="zoomer">
+          <img id="follow-frame" alt="The frame to look at">
+          <div id="boxes"></div>
+          <div id="ring" class="ring" hidden></div>
+        </div>
+      </div>
+      <p id="where" class="muted"></p>
+    </section>
+
+    <aside class="panel">
+      <div id="intro" hidden>
+        <figure class="crop-wrap">
+          <img id="start-crop" alt="The fish to follow">
+          <figcaption id="start-caption">The fish to follow</figcaption>
+        </figure>
+        <p>Follow this fish through the video, one frame at a time: click it in each frame. It goes
+          forward until the fish has gone, then back from here to where it came in.</p>
+        <label class="toggle">Keep looking after it has gone for
+          <select id="gone">
+            <option value="5">5 seconds</option>
+            <option value="10">10 seconds</option>
+          </select>
+        </label>
+        <p><button id="begin" class="primary">Start following <kbd>Enter</kbd></button></p>
+      </div>
+
+      <div id="keys" hidden>
+        <h2>In each frame</h2>
+        <ul class="key-list">
+          <li><strong>Click its box</strong>: any box, a dashed (faint) one too.</li>
+          <li><strong>No box on it?</strong> Click the fish itself, or press <kbd>B</kbd> if you can't point to it (behind the bait, say).</li>
+          <li><kbd>O</kbd> it isn't in this frame.</li>
+          <li><kbd>Backspace</kbd> undo the last frame · <kbd>Z</kbd> zoom in where it was · <kbd>Esc</kbd> back to the review</li>
+        </ul>
+        <p class="hint">The ring is where you last saw it. A box with a name on it was taken by another follow.
+          Not sure which fish it is any more? Press <kbd>O</kbd> and let it go: a short, sure follow is worth more than a long guess.</p>
+      </div>
+
+      <div id="done" hidden>
+        <h2>Followed</h2>
+        <div id="done-text"></div>
+        <p class="actions">
+          <button id="done-back" class="primary">Back to the review</button>
+          <button id="done-undo">Undo the last frame</button>
+          <button id="discard">Discard this follow</button>
+        </p>
+      </div>
+      <div id="message" role="status"></div>
+    </aside>
+  </main>
+
+  <script src="/static/follow.js"></script>
+</body>
+</html>

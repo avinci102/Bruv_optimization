@@ -318,6 +318,23 @@ contested links were measured on the first 185 NP339 answers.
   missed. `evaluate --project … --annotations key.csv` then scores detection, tracking,
   joining and MaxN separately; `--thresholds 0.1 0.2 0.3 0.4` adds detection at other
   score thresholds, from the boxes the run kept (down to 0.1).
+- **Following a fish** (ground truth for the cards). On a card, **Follow this fish**
+  shows its best view, then steps through the frames from there: click the fish's box in
+  each frame (a dashed, faint box too), click the fish itself if it has no box (or press
+  `B` if you can't point to it), and `O` when it isn't there. Each click moves on. It goes
+  forward until the fish has been gone for 5 seconds (or 10), in case it comes back, then
+  back from the start the same way. `Backspace` undoes a frame, and `Z` zooms in where you
+  last saw it. At the end it lists the cards the fish's boxes are on, where its card
+  changed, and any of those cards with a box where the fish wasn't (a swap onto another
+  fish, to split with `X`). One follow is one fish's visit. When unsure which fish it is, press `O` and let
+  it go: a short, sure follow is worth more than a long guess.
+
+  `evaluate --project …` scores the follows with no answer key needed: how much of each
+  visit the run boxed, how many cards each fish ended on, and why its card changed (near
+  another fish, a gap in its boxes, the frame's edge). Only the followed fish were
+  annotated in those frames, so they score identity, not the detector's false boxes.
+  `follow-sheet --project … --out follows.csv` saves them as an answer key, to score a
+  re-run of the same footage.
 - **Crop sources (E1).** `crop-test --project … --limit 60` crops the same sightings from
   the review JPEG, the same frame without JPEG, the 1280 px decode and the original video
   frame, checks each against the saved frame, and compares the species guesses
