@@ -239,6 +239,25 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
   follow strips) into `blob:` images. A
   service worker would be tidier, but some browsers and managed school laptops block
   them. This way works in any recent browser.
+  - **Pictures are made ahead.** The review page lists the open card's frames, nearest
+    the one shown first, and then the next card's pictures (`BRUV_preload`). On the follow
+    page, the runtime itself makes the 30 frames on each side of the one shown. Two are
+    made at a time, in that order. A picture that's ready shows at once. One that isn't
+    keeps the previous picture on screen, dimmed, rather than going blank. The last 600
+    pictures are kept.
+  - **Pictures are WebP.** Chrome encodes JPEGs only while the page is idle, which held
+    each frame up by about a second. WebP took a tenth of that. Safari, which can't encode
+    WebP, gets JPEGs.
+  - **Measured on 28 Oct** (local copy of `trial`, this laptop, browser pane hidden):
+
+    | Stepping with ↓ | Before | After |
+    |---|---|---|
+    | Card of 272 sightings (55 in its filmstrip), 2 s after opening | 1.2 s a step; 63 s for all 55 | 7 ms a step (90% under 0.11 s); 1.9 s for all 55 |
+    | Card of 23 sightings, straight after opening | 1.1 s a step; 24 s in all | 6 ms a step; 0.2 s in all |
+    | Follow page, the next frame after a mark | 1.1–1.5 s | mostly 30–60 ms, at most 0.4 s |
+
+    Over the internet, the first frames of a card also wait for their strips to download;
+    after that, the frames ahead are ready.
 - **What's saved** is an event log per volunteer and video (D1 table `events`). Kinds:
   `label`, `undo`, `split`, `move`, `unmerge`, `suggestions`, and for follows
   `follow_start` (with the sighting it starts from and its name), `follow_mark`,

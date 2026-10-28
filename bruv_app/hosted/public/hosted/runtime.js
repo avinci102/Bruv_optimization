@@ -7,7 +7,8 @@
  *     (/sync) first, so nothing shows as done that wasn't saved;
  *   - pictures at /crop/<sighting> and /frame/<frame> are cut from the card's published
  *     sheet, or for a video published with --follow from its strips of every frame, and
- *     shown as blob: images.
+ *     shown as blob: images; those wanted next (the page lists them with BRUV_preload, and
+ *     the frames around the one being followed) are made ahead.
  * A service worker would do this more quietly, but some browsers block those (private
  * windows, managed school laptops); this works in any recent browser.
  */
@@ -92,7 +93,9 @@
 
   const sheets = new Map(); // card sheet url -> Promise<ImageBitmap>, the last 40 used
   const strips = new Map(); // strip of frames -> Promise<ImageBitmap>, the last 4 (each is large)
-  const made = new Map(); // "/crop/12" -> Promise<blob url>
+  const made = new Map(); // "/crop/12" -> Promise<blob url>, the last KEEP used
+  const done = new Map(); // "/crop/12" -> blob url, once made: shown at once
+  const KEEP = 600; // pictures kept made (tens of KB each); older ones are freed
 
   function sheet(url, cache = sheets, keep = 40) {
     if (cache.has(url)) {
@@ -126,8 +129,15 @@
     return c;
   }
 
+  // WebP where the browser can make it: Chrome makes JPEGs only while the page is idle, which
+  // held each frame up by about a second (WebP took a tenth of that). Safari can't make WebP
+  // (it gives a PNG instead), so it gets JPEGs from then on.
+  let pictureType = "image/webp";
   function toUrl(c) {
-    return new Promise((resolve) => c.toBlob((b) => resolve(URL.createObjectURL(b)), "image/jpeg", 0.9));
+    return new Promise((resolve) => c.toBlob((b) => {
+      if (b.type !== pictureType) pictureType = "image/jpeg";
+      resolve(URL.createObjectURL(b));
+    }, pictureType, 0.9));
   }
 
   async function crop(state, det) {
@@ -184,17 +194,76 @@
   }
 
   function picture(path) {
-    if (!made.has(path)) {
-      const p = ready.then((state) => {
-        let m;
-        if ((m = path.match(/^\/crop\/(\d+)$/))) return crop(state, Number(m[1]));
-        if ((m = path.match(/^\/frame\/(\d+)$/))) return frame(state, Number(m[1]));
-        throw new Error("not a picture");
-      });
-      p.catch(() => made.delete(path));
-      made.set(path, p);
+    if (made.has(path)) {
+      const hit = made.get(path);
+      made.delete(path);
+      made.set(path, hit);
+      return hit;
     }
-    return made.get(path);
+    const p = ready.then((state) => {
+      let m;
+      if ((m = path.match(/^\/crop\/(\d+)$/))) return crop(state, Number(m[1]));
+      if ((m = path.match(/^\/frame\/(\d+)$/))) return frame(state, Number(m[1]));
+      throw new Error("not a picture");
+    }).then((url) => {
+      done.set(path, url);
+      return url;
+    });
+    p.catch(() => made.delete(path));
+    made.set(path, p);
+    trim();
+    return p;
+  }
+
+  // Frees the least recently used pictures past KEEP, except any on screen or still being made.
+  function trim() {
+    for (const key of made.keys()) {
+      if (made.size <= KEEP) break;
+      const url = done.get(key);
+      if (!url || document.querySelector(`img[data-picture="${key}"]`)) continue;
+      made.delete(key);
+      done.delete(key);
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  // Pictures wanted soon (the open card's frames, the frames around the one being followed),
+  // made two at a time in the order given, nearest first, so frames that share a strip are
+  // cut while it's at hand. A new list replaces the old one: what's wanted now comes first.
+  let queue = [];
+  let working = 0;
+  function preload(paths) {
+    queue = paths.filter((p) => PICTURE.test(p) && !made.has(p));
+    pump();
+  }
+  function pump() {
+    while (working < 2 && queue.length) {
+      const path = queue.shift();
+      if (made.has(path)) continue;
+      working++;
+      picture(path).catch(() => {}).finally(() => {
+        working--;
+        pump();
+      });
+    }
+  }
+  window.BRUV_preload = preload;
+
+  // On the follow page the next frame is the one just after or before the one shown (a
+  // follow goes forward, then back): the frames around it are made ahead, nearest first.
+  const AROUND = 30;
+  function around(path) {
+    const m = path.match(/^\/frame\/(\d+)$/);
+    if (!m || !location.pathname.startsWith("/follow")) return;
+    ready.then((state) => {
+      const i = state.frameIndex.get(Number(m[1]));
+      if (i === undefined) return;
+      const paths = [];
+      for (let k = 1; k <= AROUND; k++) {
+        for (const j of [i + k, i - k]) if (j >= 0 && j < state.frameIds.length) paths.push(`/frame/${state.frameIds[j]}`);
+      }
+      preload(paths);
+    }).catch(() => {});
   }
 
   const BLANK = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
@@ -210,12 +279,28 @@
     }
   }
 
+  // A picture made already is shown at once. Otherwise the picture keeps what it showed,
+  // dimmed, until the new one is made (so stepping through frames never flashes blank); a
+  // picture that showed nothing yet starts blank.
   function show(img, path) {
     img.dataset.picture = path;
-    desc.set.call(img, BLANK);
-    picture(path).then((url) => {
-      if (img.dataset.picture === path) desc.set.call(img, url);
-    }).catch(() => {});
+    around(path);
+    const url = done.get(path);
+    if (url) {
+      picture(path); // (now the most recently used)
+      img.classList.remove("bruv-wait");
+      desc.set.call(img, url);
+      return;
+    }
+    if (!String(desc.get.call(img)).startsWith("blob:")) desc.set.call(img, BLANK);
+    img.classList.add("bruv-wait");
+    picture(path).then((made) => {
+      if (img.dataset.picture !== path) return;
+      img.classList.remove("bruv-wait");
+      desc.set.call(img, made);
+    }).catch(() => {
+      if (img.dataset.picture === path) img.classList.remove("bruv-wait");
+    });
   }
 
   Object.defineProperty(HTMLImageElement.prototype, "src", {
@@ -257,7 +342,7 @@
   // fish" unless the video was published with --follow.
   document.addEventListener("DOMContentLoaded", () => {
     const style = document.createElement("style");
-    style.textContent = "#export { display: none !important; }";
+    style.textContent = "#export { display: none !important; } img.bruv-wait { opacity: 0.5; }";
     document.head.appendChild(style);
     const noFollow = document.createElement("style");
     noFollow.textContent = "#follow { display: none !important; }";
