@@ -30,7 +30,7 @@ bruv = "bruv_app.cli:main"
 include = ["bruv_app*"]
 
 [tool.setuptools.package-data]
-bruv_app = ["static/*", "extra_species.txt"]
+bruv_app = ["static/*", "extra_species.txt", "hosted/*", "hosted/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

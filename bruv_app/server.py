@@ -9,7 +9,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -53,7 +53,14 @@ class LabelIn(BaseModel):
 
 
 class FollowIn(BaseModel):
-    card: int
+    # Where to start: a card (its best view), a box, or a box drawn around a fish in a frame.
+    card: int | None = None
+    det_id: int | None = None
+    frame_id: int | None = None
+    x: float | None = None  # the drawn box's middle and size (0-1 of the frame)
+    y: float | None = None
+    w: float | None = None
+    h: float | None = None
     gone_s: float = follow.GONE_S
 
 
@@ -63,6 +70,15 @@ class MarkIn(BaseModel):
     det_id: int | None = None
     x: float | None = None  # where the fish was, for "nobox" (0-1 of the frame)
     y: float | None = None
+    w: float | None = None  # the size of a box drawn around it there
+    h: float | None = None
+    via: str | None = None  # "suggested": the box the page offered, taken
+    rest: bool = False  # gone for good: gone here and in the frames left this way
+
+
+class FixIn(BaseModel):
+    kind: str | None = None  # follow.FIXES, or None to take it back
+    follow: int | None = None  # the follow it was said in
 
 
 class EquipmentIn(BaseModel):
@@ -636,11 +652,9 @@ def create_app(project_root: Path, db: str = "project.db") -> FastAPI:
     # --- following one fish (follow.py) ----------------------------------------------------
 
     def follow_view(follow_id: int) -> dict:
-        """A follow, what it has found so far, and the next frame to look at with its boxes."""
-        row = project.db.execute(
-            "SELECT f.*, d.frame_id AS start_frame, d.x1, d.y1, d.x2, d.y2 FROM follows f "
-            "JOIN detections d ON d.id=f.start_det WHERE f.id=?", (follow_id,)
-        ).fetchone()
+        """A follow, what it has found so far, the next frame to look at with its boxes, and the
+        fish's boxes nearest that frame (close-ups to remember it by)."""
+        row = follow._follow(project, follow_id)
         if row is None:
             raise HTTPException(404, "No such follow")
         step = follow.next_step(project, follow_id)
@@ -657,18 +671,25 @@ def create_app(project_root: Path, db: str = "project.db") -> FastAPI:
             clip, local = timeline.locate(t)
             return {"clip": clip, "local_t": round(local, 3)}
 
+        def corners(box) -> dict | None:
+            return None if box is None else dict(zip(("x1", "y1", "x2", "y2"), box))
+
+        first = project.db.execute("SELECT * FROM follow_marks WHERE follow_id=? AND frame_id=?",
+                                   (follow_id, row["first_frame"])).fetchone()
+        here = step.frame_id if step.frame_id is not None else row["first_frame"]
         out = {
             "follow": s.as_dict(),
             # Times as the page shows them: clip and time within it.
             "seen": None if s.first_t is None else {"from": at(s.first_t), "to": at(s.last_t)},
             "breaks": [{**at(t), "from": a, "to": b} for t, a, b in s.breaks],
             "gone_s": row["gone_s"],
-            "start": {**where(row["start_frame"]), "det": row["start_det"],
-                      "box": {k: row[k] for k in ("x1", "y1", "x2", "y2")}},
+            "start": {**where(row["first_frame"]), "det": row["start_det"],
+                      "box": corners(follow.mark_box(project, first) if first is not None else None)},
             "phase": step.phase,
             "last": step.last,
             "frame": None,
             "boxes": [],
+            "recent": [{**where(fid), **corners(box)} for fid, box in follow.recent(project, follow_id, here)],
         }
         if step.frame_id is not None:
             out["frame"] = where(step.frame_id)
@@ -687,10 +708,23 @@ def create_app(project_root: Path, db: str = "project.db") -> FastAPI:
     @app.post("/api/follows")
     def start_follow(body: FollowIn):
         with lock:
-            if project.fish(body.card) is None:
-                raise HTTPException(404, "No such card")
+            gone = max(1.0, min(body.gone_s, 30.0))
             try:
-                follow_id = follow.start(project, body.card, max(1.0, min(body.gone_s, 30.0)))
+                if body.det_id is not None:
+                    if project.db.execute("SELECT 1 FROM detections WHERE id=?", (body.det_id,)).fetchone() is None:
+                        raise HTTPException(404, "No such box")
+                    follow_id = follow.start(project, follow.card_of(project, body.det_id), gone, det_id=body.det_id)
+                elif body.frame_id is not None:
+                    if project.frame(body.frame_id) is None:
+                        raise HTTPException(404, "No such frame")
+                    follow_id = follow.start(project, None, gone, frame_id=body.frame_id,
+                                             box=(body.x, body.y, body.w, body.h))
+                elif body.card is not None:
+                    if project.fish(body.card) is None:
+                        raise HTTPException(404, "No such card")
+                    follow_id = follow.start(project, body.card, gone)
+                else:
+                    raise HTTPException(400, "Start from a card, a box, or a box drawn around a fish")
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             return follow_view(follow_id)
@@ -705,7 +739,13 @@ def create_app(project_root: Path, db: str = "project.db") -> FastAPI:
         with lock:
             known_follow(follow_id)
             try:
-                follow.mark(project, follow_id, body.frame_id, body.state, body.det_id, body.x, body.y)
+                if body.rest:
+                    if body.state != "gone":
+                        raise ValueError("Gone for good is a mark of state gone")
+                    follow.mark_rest(project, follow_id, body.frame_id)
+                else:
+                    follow.mark(project, follow_id, body.frame_id, body.state, body.det_id, body.x, body.y,
+                                w=body.w, h=body.h, via="suggested" if body.via == "suggested" else None)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             return follow_view(follow_id)
@@ -723,6 +763,56 @@ def create_app(project_root: Path, db: str = "project.db") -> FastAPI:
             known_follow(follow_id)
             follow.discard(project, follow_id)
             return {"ok": True}
+
+    @app.get("/api/frames")
+    def frames_around(at: int | None = None, i: int = 0, n: int = 10,
+                      follow_id: int | None = Query(None, alias="follow")):
+        """The frames around one (`at`, a frame id, or `i`, its place in the video), n each
+        side, with their boxes and, given a follow, its mark in each: for looking through the
+        video while following a fish, or to find one to follow."""
+        with lock:
+            every = follow.frames(project)
+            if not every:
+                raise HTTPException(404, "No frames")
+            if at is not None:
+                here = next((k for k, r in enumerate(every) if r["id"] == at), None)
+                if here is None:
+                    raise HTTPException(404, "No such frame")
+            else:
+                here = max(0, min(i, len(every) - 1))
+            marks = {}
+            if follow_id is not None:
+                known_follow(follow_id)
+                marks = {m["frame_id"]: m for m in
+                         project.db.execute("SELECT * FROM follow_marks WHERE follow_id=?", (follow_id,))}
+            n = max(0, min(n, 40))
+            first = max(0, here - n)
+            timeline = load_timeline(project)
+            out = []
+            for r in every[first:here + n + 1]:
+                clip, local = timeline.locate(r["t"])
+                m = marks.get(r["id"])
+                out.append({
+                    "id": r["id"], "t": round(r["t"], 3), "clip": clip, "local_t": round(local, 3),
+                    "boxes": follow.frame_boxes(project, r["id"], follow_id or 0),
+                    "mark": None if m is None else {"state": m["state"], "det": m["det_id"], "x": m["x"], "y": m["y"],
+                                                    "w": m["w"], "h": m["h"]},
+                })
+            return {"total": len(every), "index": here, "first": first, "frames": out}
+
+    @app.post("/api/boxes/{det_id}/fix")
+    def fix_box(det_id: int, body: FixIn):
+        """What's wrong with a box (follow.FIXES), said while following; kept for measuring."""
+        with lock:
+            if project.db.execute("SELECT 1 FROM detections WHERE id=?", (det_id,)).fetchone() is None:
+                raise HTTPException(404, "No such box")
+            if body.follow is not None:
+                known_follow(body.follow)
+            try:
+                follow.fix_box(project, det_id, body.kind, body.follow)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return {"det": det_id, "fix": body.kind}
 
     @app.get("/frame/{frame_id}")
     def frame(frame_id: int):

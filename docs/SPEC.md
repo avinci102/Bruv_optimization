@@ -1170,3 +1170,136 @@ Built:
     per frame;
   - candidate 4, BioCLIP appearance at every link: it needs every box embedded before
     tracking, which only a GPU makes practical.
+
+## 16. Hosted review for the pilot (26 Oct 2026)
+
+Agreed with Vinci in the architecture session. The program stays open-source and
+offline-first: each user processes and reviews on their own device, GPU optional, and
+Vinci is never a choke point. For the pilot, volunteers review on a website instead, as a
+way to collect data. The website is an optional kit that a school deploys on its own free
+Cloudflare account. Setup, limits and measurements: [HOSTED.md](HOSTED.md).
+
+**Decisions**
+- No tunnel and no server on the processing PC. The GPU PC only processes and publishes;
+  it can be off while volunteers review. (This replaces the tunnel plan in the shared
+  rules.)
+- Static Cloudflare Pages site on a new free account for the project: the pictures and
+  card data as files. A Pages Function with a D1 database handles sign-in and stores
+  answers, fixes and feedback.
+- Sign-in with an access pass or the invited email, with no password or verification:
+  the data isn't sensitive. The pictures are public files; sign-in protects the answers.
+- Each volunteer gets 2 videos per wave (about 10 videos a wave). Their copy of their own
+  video is the review of record (the answer key). Overlap is only targeted: calibration
+  assignments of chosen cards, each answered in the volunteer's own copy.
+- Wave 2's pictures replace wave 1's. Answers stay in the database.
+- Live fixes online: split, move ticked sightings, and "multiple fish". Joining two
+  cards waits. Tiny fish and cards outside the review window aren't published.
+- One page, one API. The review page is unchanged. The site's copy loads two scripts
+  that answer the same `/api` requests and picture addresses in the browser.
+- Corrections can be consolidated into the master project with traceability: `pull`
+  records the volunteer (`reviews.reviewer`, a new column, added by the add-only
+  migration), the time, the site's card number, the corrections log, and snapshots before
+  and after.
+- No fallback to a local server. Volunteers running the program locally is a later
+  option.
+- Each volunteer's answers to the look-alike suggestions are kept for training only if
+  they opt in (target state; the pilot logs them, `suggestion_log`).
+
+**How it works**
+- `publish` writes each video as static files, using the review server's own endpoint
+  code:
+  - one WebP sheet per card, with the close-ups the page shows and up to 8 whole scenes;
+  - the card data;
+  - the float16 BioCLIP descriptions, so the browser can redo the light work after a fix.
+- `hosted/core.js` mirrors the server's answers, including after a fix: guesses,
+  families, warnings, pieces, look-alikes and look-alike groups.
+- `hosted/runtime.js` connects it to the page. It isn't a service worker, because those
+  are blocked in some browsers and managed laptops.
+- What a volunteer does is an event log (D1 `events`). It is saved before it shows as
+  done, and replayed on top of the published cards each time the page opens.
+- `pull` replays one volunteer's log onto the project with the store's own methods. It
+  refuses a log for a different video than the project was published as
+  (`meta.published`).
+
+**Checked**
+- `tests/test_hosted_js.py` (needs Node.js) drives `core.js` with the page's own
+  requests: answers, warnings, a look-alike batch and undo, and every online fix. It
+  checks that a reload replays to the same state. It then pulls the events into the
+  project and compares the Python server's answers with the browser's, field by field.
+  They match. The same was checked by hand in a browser on the demo.
+- `tests/test_hosted.py` covers publish, the volunteer list, the /sync API (through the
+  local copy of the site), pull and the commands.
+- The 44-minute test video publishes to 1,153 files and about 263 MB. Its largest file,
+  17.8 MB, is under the 25 MiB limit.
+
+**Deployed (27 Oct 2026)**
+- Vinci's free Cloudflare account serves the site at `bruv-review.pages.dev`. The trial
+  video (`trial`) is `bruv_project_full_v2`: 1,149 cards, 273 MB.
+- It stays on Cloudflare's free plans by decision: Pages, Workers Free for the functions,
+  D1 Free. On those plans, a limit that is reached stops that part until midnight UTC;
+  nothing is billed.
+- When an AI coding agent runs it, wrangler 4.15x makes new Pages sites as the newer kind
+  that runs on Workers, unless the folder has a `functions` folder or a `_routes.json`. The
+  site has both, so it stayed a classic Pages site, as designed and tested. Moving the kit to Workers static assets is
+  possible later; it would need its own testing.
+
+**Following a fish online (built 27 Oct 2026, at Vinci's request)**
+- `publish --follow` adds every sampled frame (20 to a WebP strip) and every box, as
+  `follow.frame_boxes` lists them: about 390 MB and 530 files for the 44-minute video. A
+  follow can step anywhere, because the fish wanders from card to card.
+- `hosted/core.js` answers `/api/follows` as `follow.py` does. A box's card is the one
+  it's on after the volunteer's own fixes. "Taken" and "shared" look only at the
+  volunteer's own follows: each copy is their record. After pulling, the PC sees everyone's,
+  so two volunteers following one fish become a cross-check.
+- Follows are saved as events (`follow_start`, `follow_mark`, `follow_undo`,
+  `follow_delete`). `pull` replays them in order through `follow.py`. Each follow keeps
+  the sighting it started from (`start(det_id=)`), its site name (`follows.name`,
+  `F<n>-v<volunteer>`, never a hex copy tag) and its times. It ends "done" exactly as it
+  did on the site.
+- Checked by the browser-against-server test (above), which covers follows field by field.
+
+**Following a fish as its own task (built 29 Oct 2026, at Vinci's request)**
+Vinci's first follow online showed:
+- following was hard to find;
+- separated cards make the card a poor starting point;
+- boxes on tails needed a way to be corrected;
+- they used undo to look back at the fish rather than to fix a mistake.
+They asked for follow to be its own workflow, mainly to give better feedback for making
+better cards, and for it to work on a tablet or phone. All of it is in `follow.py`,
+`server.py`, `core.js` (same answers, checked by the parity test) and `follow.html`/`.js`:
+1. **Frames under the picture.** `/api/frames?at=<frame>|i=<place>&n=&follow=` gives the
+   frames around a moment, with their boxes and the follow's mark in each. `↑` `↓` look
+   back and ahead without changing anything; `Space` returns to the step. "Last seen"
+   shows close-ups of the fish's boxes nearest the step (`recent` in the follow's view),
+   cut from the frame by the browser.
+2. **Tablets and phones.** Every key has a button (large on touch screens). One finger
+   draws a box or presses on one; two fingers zoom the page. Overlapping boxes under a
+   finger are offered as close-ups to choose from.
+3. **Its own page.** `/follow` with no card lists the follows. You find a fish anywhere,
+   then start from any box (a faint one, on no card: `follows.card` is NULL) or from a box
+   drawn around a fish the detector missed (`follows.start_det` NULL,
+   `follows.start_frame`). There is a header link on the review page and a start-page
+   button per video on the site. "Follow this fish" on a card still starts from its best
+   view.
+4. **The box offered.** The box nearest where the fish was last seen (within a quarter of
+   the frame's height, not one fixed or taken) glows; `Enter` takes it. Taken boxes are
+   marked `via = 'suggested'` (`follow_marks.via`), so how often people just accept it can
+   be measured.
+5. **Corrections.**
+   - A drawn box where the fish had none is a "nobox" mark with its size
+     (`follow_marks.w`, `h`). It is a real box in the sidecar (note "no box, drawn").
+   - **Gone for good** marks the rest of this direction's frames gone at once
+     (`follow_rest` event, `follow_marks.batch`); undo takes the batch back whole.
+   - What's wrong with a box (part of a fish, not a fish, a second box on one fish) goes
+     to the new table `box_fixes`, with the latest row holding. It is shown on the box, and
+     pulled from the site (`box_fix` events) with the volunteer's name.
+   - Nothing changes boxes, cards, the detector or any threshold because of these. They
+     are evidence to measure first.
+- All schema changes are add-only: new columns `follows.start_frame`, `follow_marks.w`,
+  `h`, `via` and `batch`, and the new table `box_fixes`.
+
+**Open**
+- Descriptions over 25 MiB (a video about 60% longer than the test video) would need
+  splitting.
+- A report of agreement between volunteers on the calibration cards.
+- Joining two cards online.

@@ -7,28 +7,64 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
+<body class="follow-page">
   <header>
-    <h1>Follow a fish</h1>
+    <h1><a id="brand" class="brand" href="/" title="Back to the page you came from">BRUV Fish ID</a></h1>
+    <span class="muted">Follow a fish</span>
     <span id="who" class="muted"></span>
     <span id="phase" class="phase" hidden></span>
     <span id="counts" class="muted"></span>
+    <a id="home-link" href="/follow">Your follows</a>
     <a id="back" class="back-link" href="/">← Back to the review</a>
   </header>
 
   <main class="follow-main">
     <section class="viewer">
+      <div id="looking" class="looking" hidden>
+        <span id="looking-text"></span>
+        <button id="to-step" type="button">Back to my step <kbd>Space</kbd></button>
+      </div>
       <div id="stage" class="stage">
         <div id="zoomer" class="zoomer">
-          <img id="follow-frame" alt="The frame to look at">
+          <img id="follow-frame" alt="The frame to look at" draggable="false">
           <div id="boxes"></div>
           <div id="ring" class="ring" hidden></div>
+          <div id="drawing" class="drawing" hidden></div>
         </div>
       </div>
       <p id="where" class="muted"></p>
+
+      <div id="tools" class="tools" hidden>
+        <button id="t-accept" type="button" class="primary" disabled>That's it <kbd>Enter</kbd></button>
+        <button id="t-gone" type="button">Not in this frame <kbd>O</kbd></button>
+        <button id="t-nobox" type="button" title="It's there but you can't point to it (behind the bait, say)">There, can't point <kbd>B</kbd></button>
+        <button id="t-rest" type="button" title="It has left: say it's gone in every frame left this way at once">Gone for good <kbd>G</kbd></button>
+        <button id="t-undo" type="button">Undo <kbd>⌫</kbd></button>
+        <button id="t-zoom" type="button" aria-pressed="false">Zoom <kbd>Z</kbd></button>
+        <button id="t-fix" type="button" aria-pressed="false" title="Tap a box to say what's wrong with it: a tail, not a fish, two boxes on one fish">Fix a box <kbd>F</kbd></button>
+      </div>
+
+      <div class="strip-head">
+        <span id="strip-label" class="muted">Frames: <span class="keys-only"><kbd>↑</kbd> <kbd>↓</kbd> to look back and ahead</span><span class="touch-only">tap or swipe them to look back and ahead</span></span>
+        <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Where in the video" hidden>
+      </div>
+      <div id="carousel" class="filmstrip carousel"></div>
     </section>
 
     <aside class="panel">
+      <div id="home" hidden>
+        <h2>Follow a new fish</h2>
+        <p>Find a fish: step through the video with <kbd>↑</kbd> <kbd>↓</kbd>, the slider or the frames under
+          the picture, then click (tap) its box. No box on it? Drag one around it.</p>
+        <div id="pick" hidden>
+          <div id="pick-closeup" class="closeups"></div>
+          <p id="pick-text" class="muted"></p>
+          <p><button id="pick-start" type="button" class="primary">Follow this fish <kbd>Enter</kbd></button></p>
+        </div>
+        <h2>Your follows</h2>
+        <div id="follow-list" class="follow-list"></div>
+      </div>
+
       <div id="intro" hidden>
         <figure class="crop-wrap">
           <img id="start-crop" alt="The fish to follow">
@@ -36,22 +72,33 @@
         </figure>
         <p>Follow this fish through the video, one frame at a time: click it in each frame. It goes
           forward until the fish has gone, then back from here to where it came in.</p>
-        <label class="toggle">Keep looking after it has gone for
-          <select id="gone">
-            <option value="5">5 seconds</option>
-            <option value="10">10 seconds</option>
-          </select>
-        </label>
-        <p><button id="begin" class="primary">Start following <kbd>Enter</kbd></button></p>
+        <p class="hint">Another fish in this frame? Click its box to follow that one instead.</p>
+        <p><button id="begin" type="button" class="primary">Start following <kbd>Enter</kbd></button></p>
       </div>
 
+      <label id="gone-wrap" class="toggle" hidden>Keep looking after it has gone for
+        <select id="gone">
+          <option value="5">5 seconds</option>
+          <option value="10">10 seconds</option>
+        </select>
+      </label>
+
       <div id="keys" hidden>
+        <div id="suggest" hidden>
+          <h2>Is this it?</h2>
+          <div id="suggest-closeup" class="closeups"></div>
+          <p class="hint">The box nearest where you last saw it. <kbd>Enter</kbd> or “That's it” takes it; click another box if it isn't.</p>
+        </div>
+        <h2>Last seen</h2>
+        <div id="recent" class="closeups"></div>
         <h2>In each frame</h2>
         <ul class="key-list">
           <li><strong>Click its box</strong>: any box, a dashed (faint) one too.</li>
-          <li><strong>No box on it?</strong> Click the fish itself, or press <kbd>B</kbd> if you can't point to it (behind the bait, say).</li>
-          <li><kbd>O</kbd> it isn't in this frame.</li>
+          <li><strong>No box on it?</strong> Click the fish itself or drag a box around it, or press <kbd>B</kbd> if you can't point to it (behind the bait, say).</li>
+          <li><kbd>O</kbd> it isn't in this frame · <kbd>G</kbd> it has gone for good.</li>
+          <li><kbd>↑</kbd> <kbd>↓</kbd> look back and ahead (nothing changes) · <kbd>Space</kbd> back to your step.</li>
           <li><kbd>Backspace</kbd> undo the last frame · <kbd>Z</kbd> zoom in where it was · <kbd>Esc</kbd> back to the review</li>
+          <li><strong>A wrong box?</strong> Right-click it (or press and hold, or <kbd>F</kbd> then click it): a tail or fin, not a fish, two boxes on one fish.</li>
         </ul>
         <p class="hint">The ring is where you last saw it. A box with a name on it was taken by another follow.
           Not sure which fish it is any more? Press <kbd>O</kbd> and let it go: a short, sure follow is worth more than a long guess.</p>
@@ -61,14 +108,19 @@
         <h2>Followed</h2>
         <div id="done-text"></div>
         <p class="actions">
-          <button id="done-back" class="primary">Back to the review</button>
-          <button id="done-undo">Undo the last frame</button>
-          <button id="discard">Discard this follow</button>
+          <button id="done-back" type="button" class="primary">Back to the review</button>
+          <a id="done-new" class="button-link" href="/follow">Follow another fish</a>
+          <button id="done-undo" type="button">Undo the last frame</button>
+          <button id="discard" type="button">Discard this follow</button>
         </p>
       </div>
+      <p id="data-note" class="hint" hidden>On the website, following loads about 3 MB to begin and about 0.75 MB
+        for every 5 seconds of video you look through: use Wi-Fi if your data is limited.</p>
       <div id="message" role="status"></div>
     </aside>
   </main>
+
+  <div id="menu" class="box-menu" role="menu" hidden></div>
 
   <script src="/static/follow.js"></script>
 </body>
