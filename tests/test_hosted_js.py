@@ -88,11 +88,13 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
     steps = js["steps"]
     assert {"label", "label confirmed", "lookalikes", "multiple fish", "split", "split again", "move"} <= set(steps)
     assert {"follow done", "follow undo", "follow faint", "follow again", "follow taken", "follow delete",
-            "follow short"} <= set(steps)
+            "follow short", "follow drawn box", "follow rest", "follow rest undo", "follow rest again",
+            "follow from a box", "follow from a drawn box", "box fix", "box fix faint", "box fix taken back"} <= set(steps)
     assert steps["label"]["status"] == 409  # the joined card's warnings, then confirmed
     turned_down = {"label": 409, "undo without a batch": 422, "join": 400, "unknown card": 404,
                    "follow bad state": 400, "follow box elsewhere": 400, "follow no frame": 422, "follow unknown": 404,
-                   "follow unknown card": 404}
+                   "follow unknown card": 404, "box fix bad": 400, "follow rest elsewhere": 400, "follow drawn bad": 400,
+                   "follow from nothing": 400, "follow unknown box": 404, "frames unknown": 404, "frames bad": 422}
     for name, res in steps.items():
         assert res["status"] == turned_down.get(name, 200), (name, res)
     assert js["replayed_same"], "the page opened again doesn't show what was done"
@@ -103,7 +105,7 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
         "events": [{"id": i, "volunteer_id": 1, "event": e} for i, e in enumerate(js["events"])],
     }), encoding="utf-8")
     report = pull(project.root, answers, "Ana")
-    assert report.new_cards == {} and report.scope_mismatch == [] and report.follows == 3
+    assert report.new_cards == {} and report.scope_mismatch == [] and report.follows == 5 and report.box_fixes == 4
 
     client = TestClient(create_app(project.root))
     live = js["live"]
@@ -117,15 +119,28 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
 
     # The follows, by name: ids here are this project's own. One ended "done", as on the site.
     follows = client.get("/api/follows").json()
-    assert [f["name"] for f in follows] == [f["name"] for f in live["follows"]] == ["F1-v1", "F2-v1", "F4-v1"]
+    names = ["F1-v1", "F2-v1", "F4-v1", "F5-v1", "F6-v1"]
+    assert [f["name"] for f in follows] == [f["name"] for f in live["follows"]] == names
     py_views = {f["name"]: client.get(f"/api/follows/{f['id']}").json() for f in follows}
+    # The frames around each follow's start, with its marks; and around a place in the video.
+    py_frames = {f["name"]: client.get(f"/api/frames?at={py_views[f['name']]['start']['id']}&n=12&follow={f['id']}").json()
+                 for f in follows}
     for summaries in (follows, live["follows"], [v["follow"] for v in py_views.values()],
                       [v["follow"] for v in live["followViews"].values()]):
         for f in summaries:
             f["id"] = None
-    diffs = _differences({"list": follows, "views": py_views}, {"list": live["follows"], "views": live["followViews"]})
+    diffs = _differences({"list": follows, "views": py_views, "frames": py_frames, "around": client.get("/api/frames?i=1&n=3").json()},
+                         {"list": live["follows"], "views": live["followViews"], "frames": live["followFrames"],
+                          "around": live["frames"]})
     assert diffs == [], "\n".join(diffs)
-    assert [f["done"] for f in follows] == [True, False, False]
+    assert [f["done"] for f in follows] == [True, False, False, True, False]
     # The faint box clicked in the first follow: on no card, counted apart, on both sides.
     assert py_views["F1-v1"]["follow"]["faint"] == 1
     assert any(b["faint"] and b["card"] is None for b in py_views["F2-v1"]["boxes"])
+    # Boxes drawn around the fish where it had none, its close-ups, and boxes said to be wrong.
+    frames = [fr for f in py_frames.values() for fr in f["frames"]]
+    assert sum(1 for fr in frames if fr["mark"] and fr["mark"]["w"]) >= 2 and len(py_views["F1-v1"]["recent"]) == 5
+    assert {"part", "twice"} <= {b["fix"] for fr in frames for b in fr["boxes"]}
+    # Started from a faint box (on no card), and from a box drawn around a fish.
+    assert py_views["F5-v1"]["follow"]["card"] is None and py_views["F5-v1"]["start"]["det"] is not None
+    assert py_views["F6-v1"]["start"]["det"] is None and py_views["F6-v1"]["start"]["box"]["x1"] == pytest.approx(0.25)

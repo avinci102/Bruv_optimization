@@ -190,3 +190,62 @@ def test_a_follow_from_the_site_keeps_its_name_start_and_time(project):
 
     with pytest.raises(ValueError, match="No sighting"):
         start(project, card, det_id=10**9)
+
+
+def test_starting_anywhere_gone_for_good_and_box_fixes(project):
+    """A follow started from any box or from a box drawn around a fish; "gone for good" says
+    gone in every frame left this way at once and is taken back whole; the frames around a
+    moment come with the follow's marks; boxes said to be wrong are kept and shown."""
+    client = TestClient(create_app(project.root))
+    card = _contiguous_card(project)
+    dets = {d["frame_id"]: d["id"] for d in project.fish_detections(card)}
+    middle = sorted(dets)[len(dets) // 2]
+    view = client.post("/api/follows", json={"det_id": dets[middle], "gone_s": 3}).json()
+    fid = view["follow"]["id"]
+    assert view["start"]["id"] == middle and view["follow"]["card"] == card
+    # The box the page offered, taken; then the fish has gone for good going forward.
+    view = client.post(f"/api/follows/{fid}/mark", json={"frame_id": view["frame"]["id"], "state": "box",
+                                                         "det_id": dets.get(view["frame"]["id"]), "via": "suggested"}).json()
+    rest_from = view["frame"]["id"]
+    assert client.post(f"/api/follows/{fid}/mark", json={"frame_id": middle, "state": "gone", "rest": True}).status_code == 400
+    view = client.post(f"/api/follows/{fid}/mark", json={"frame_id": rest_from, "state": "gone", "rest": True}).json()
+    assert view["phase"] == "backward" and view["follow"]["gone"] >= 2
+    gone = view["follow"]["gone"]
+    view = client.post(f"/api/follows/{fid}/undo").json()  # all of it, in one go
+    assert view["follow"]["gone"] == 0 and view["frame"]["id"] == rest_from and view["phase"] == "forward"
+    assert client.post(f"/api/follows/{fid}/mark", json={"frame_id": rest_from, "state": "gone", "rest": True}).json()["follow"]["gone"] == gone
+    via = project.db.execute("SELECT via FROM follow_marks WHERE follow_id=? ORDER BY rowid", (fid,)).fetchall()
+    assert [r["via"] for r in via][:2] == [None, "suggested"] and {r["via"] for r in via[2:]} == {"rest"}
+
+    # The frames around the start, with this follow's marks, and close-ups nearest it first.
+    around = client.get(f"/api/frames?at={middle}&n=2&follow={fid}").json()
+    assert [f["id"] for f in around["frames"]][2] == middle and around["frames"][2]["mark"]["state"] == "box"
+    assert around["index"] - around["first"] == 2 and around["total"] == project.frame_count()
+    assert client.get("/api/frames?i=0&n=1").json()["first"] == 0
+    recent = client.get(f"/api/follows/{fid}").json()["recent"]
+    assert [r["id"] for r in recent][0] in (middle, rest_from) and len(recent) == 2
+
+    # A box drawn around a fish the detector missed: a follow starts from it, and a later
+    # frame's drawn box is a mark; both are sidecar boxes.
+    other = next(f for f in sorted(dets) if f != middle)
+    drawn = client.post("/api/follows", json={"frame_id": other, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.1}).json()
+    assert drawn["start"]["det"] is None and drawn["start"]["box"] == pytest.approx({"x1": 0.4, "y1": 0.45, "x2": 0.6, "y2": 0.55})
+    drawn = client.post(f"/api/follows/{drawn['follow']['id']}/mark",
+                        json={"frame_id": drawn["frame"]["id"], "state": "nobox", "x": 0.52, "y": 0.5, "w": 0.2, "h": 0.1}).json()
+    assert drawn["last"] == [0.52, 0.5]
+    rows = [r for r in sidecar_rows(project) if r.note == "no box, drawn"]
+    assert len(rows) == 2 and rows[0].x1 == pytest.approx(0.4)
+    for bad in ({"frame_id": other, "x": 0.5, "y": 0.5, "w": 0}, {"gone_s": 2}):
+        assert client.post("/api/follows", json=bad).status_code == 400
+    assert client.post("/api/follows", json={"det_id": 10**9}).status_code == 404
+
+    # What's wrong with a box: kept, shown with the box, taken back; and turned down.
+    box = dets[other]
+    assert client.post(f"/api/boxes/{box}/fix", json={"kind": "part", "follow": fid}).json() == {"det": box, "fix": "part"}
+    fixed = {b["det"]: b["fix"] for b in client.get(f"/api/frames?at={other}&n=0").json()["frames"][0]["boxes"]}
+    assert fixed[box] == "part"
+    client.post(f"/api/boxes/{box}/fix", json={"kind": None})
+    assert {b["det"]: b["fix"] for b in frame_boxes(project, other, 0)}[box] is None
+    assert project.db.execute("SELECT COUNT(*) FROM box_fixes").fetchone()[0] == 2  # nothing is removed
+    assert client.post(f"/api/boxes/{box}/fix", json={"kind": "maybe"}).status_code == 400
+    assert client.post("/api/boxes/999999999/fix", json={"kind": "part"}).status_code == 404

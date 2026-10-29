@@ -52,26 +52,44 @@ async function snapshot(video) {
   if (manifest.follow) {
     out.follows = (await call(video, "GET", "/api/follows")).data;
     out.followViews = {};
-    for (const f of out.follows) out.followViews[f.name] = (await call(video, "GET", `/api/follows/${f.id}`)).data;
+    out.followFrames = {};
+    for (const f of out.follows) {
+      const view = (await call(video, "GET", `/api/follows/${f.id}`)).data;
+      out.followViews[f.name] = view;
+      out.followFrames[f.name] = (await call(video, "GET", `/api/frames?at=${view.start.id}&n=12&follow=${f.id}`)).data;
+    }
+    out.frames = (await call(video, "GET", "/api/frames?i=1&n=3")).data;
   }
   return out;
 }
 
-// Following a fish, as the follow page does: its box where the card has one, now and then
-// another card's box, a spot without a box, a faint box (on no card), an undo; "gone" where
-// nothing is left.
+// Following a fish, as the follow page does: its box where the card has one (once the box the
+// page offered), another card's box, a spot without a box, a box drawn around it, a faint box
+// (on no card), an undo, what's wrong with a box; "gone" where nothing is left, and once
+// "gone for good" (undone, then said again).
 async function follow(v, step, card, gone, upTo) {
   const started = await step(`follow ${card}`, "POST", "/api/follows", { card, gone_s: gone });
   if (started.status !== 200) throw new Error(`starting a follow: ${JSON.stringify(started)}`);
   let view = started.data;
   const id = view.follow.id;
   let clickedFaint = false; // the first faint box from step 6 on (the fish may be gone at 6 itself)
+  let rested = false;
+  let drew = false; // a box drawn around the fish, the step after the faint box
   for (let k = 0; view.phase !== "done" && k < upTo; k++) {
     if (!view.frame) throw new Error("no frame: " + JSON.stringify(view).slice(0, 400));
     const frame = view.frame.id;
     const mine = view.boxes.find((b) => b.card === card);
     const other = view.boxes.find((b) => b.card !== card && !b.faint);
     const faint = view.boxes.find((b) => b.faint);
+    if (k === 1 && other) {
+      await step("box fix", "POST", `/api/boxes/${other.det}/fix`, { kind: "part", follow: id });
+      await step("box fix bad", "POST", `/api/boxes/${other.det}/fix`, { kind: "maybe" });
+    }
+    if (k === 3 && faint) {
+      await step("box fix faint", "POST", `/api/boxes/${faint.det}/fix`, { kind: "not_fish" });
+      await step("box fix taken back", "POST", `/api/boxes/${faint.det}/fix`, { kind: null, follow: id });
+      await call(v, "POST", `/api/boxes/${faint.det}/fix`, { kind: "twice" });
+    }
     let body;
     let name = null;
     if (k === 2 && other) body = { frame_id: frame, state: "box", det_id: other.det };
@@ -81,7 +99,20 @@ async function follow(v, step, card, gone, upTo) {
     }
     else if (k === 4) body = { frame_id: frame, state: "nobox", x: 0.4, y: 0.6 };
     else if (k === 5) body = { frame_id: frame, state: "nobox" };
-    else if (mine) body = { frame_id: frame, state: "box", det_id: mine.det };
+    else if (clickedFaint && !drew) {
+      [body, name] = [{ frame_id: frame, state: "nobox", x: 0.4, y: 0.5, w: 0.12, h: 0.1 }, "follow drawn box"];
+      drew = true;
+    }
+    else if (mine) body = { frame_id: frame, state: "box", det_id: mine.det, via: k === 1 ? "suggested" : null };
+    else if (drew && !rested) {
+      // Gone for good, taken back, said for a frame that isn't the next (turned down), then said.
+      rested = true;
+      const r = await step("follow rest", "POST", `/api/follows/${id}/mark`, { frame_id: frame, state: "gone", rest: true });
+      if (r.status !== 200) throw new Error(`gone for good: ${JSON.stringify(r)}`);
+      await step("follow rest undo", "POST", `/api/follows/${id}/undo`, {});
+      await step("follow rest elsewhere", "POST", `/api/follows/${id}/mark`, { frame_id: view.start.id, state: "gone", rest: true });
+      [body, name] = [{ frame_id: frame, state: "gone", rest: true }, "follow rest again"];
+    }
     else body = { frame_id: frame, state: "gone" };
     const res = name ? await step(name, "POST", `/api/follows/${id}/mark`, body) : await call(v, "POST", `/api/follows/${id}/mark`, body);
     if (res.status !== 200) throw new Error(`marking ${JSON.stringify(body)}: ${JSON.stringify(res)}`);
@@ -168,6 +199,22 @@ async function main() {
     await step("follow no frame", "POST", `/api/follows/${second.follow.id}/mark`, { state: "gone" });
     await step("follow unknown", "GET", "/api/follows/999");
     await step("follow unknown card", "POST", "/api/follows", { card: 999999 });
+    // Follows started anywhere in the video: from a box (a faint one, on no card), and from a
+    // box drawn around a fish; and starts and requests the site turns down.
+    const page = (await call(v, "GET", `/api/frames?at=${done.start.id}&n=8`)).data;
+    const faintBox = page.frames.flatMap((f) => f.boxes).find((b) => b.faint);
+    let fromBox = (await step("follow from a box", "POST", "/api/follows", { det_id: faintBox.det, gone_s: 1 })).data;
+    for (let k = 0; fromBox.phase !== "done" && k < 3; k++) {
+      fromBox = (await call(v, "POST", `/api/follows/${fromBox.follow.id}/mark`, { frame_id: fromBox.frame.id, state: "gone" })).data;
+    }
+    const drawnStart = (await step("follow from a drawn box", "POST", "/api/follows",
+      { frame_id: page.frames[2].id, x: 0.3, y: 0.3, w: 0.1, h: 0.08, gone_s: 1 })).data;
+    await call(v, "POST", `/api/follows/${drawnStart.follow.id}/mark`, { frame_id: drawnStart.frame.id, state: "nobox", x: 0.32, y: 0.31 });
+    await step("follow drawn bad", "POST", "/api/follows", { frame_id: page.frames[2].id, x: 0.3, y: 0.3, w: 0 });
+    await step("follow from nothing", "POST", "/api/follows", { gone_s: 2 });
+    await step("follow unknown box", "POST", "/api/follows", { det_id: 99999999 });
+    await step("frames unknown", "GET", "/api/frames?at=99999999");
+    await step("frames bad", "GET", "/api/frames?i=x");
   }
   await step("undo without a batch", "POST", "/api/batch/undo", {});
   await step("join", "POST", `/api/fish/${others[0]}/merge`, { other_id: first });

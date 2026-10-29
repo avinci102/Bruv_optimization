@@ -1258,6 +1258,46 @@ Cloudflare account. Setup, limits and measurements: [HOSTED.md](HOSTED.md).
   did on the site.
 - Checked by the browser-against-server test (above), which covers follows field by field.
 
+**Following a fish as its own task (built 29 Oct 2026, at Vinci's request)**
+Vinci's first follow online showed:
+- following was hard to find;
+- separated cards make the card a poor starting point;
+- boxes on tails needed a way to be corrected;
+- they used undo to look back at the fish rather than to fix a mistake.
+They asked for follow to be its own workflow, mainly to give better feedback for making
+better cards, and for it to work on a tablet or phone. All of it is in `follow.py`,
+`server.py`, `core.js` (same answers, checked by the parity test) and `follow.html`/`.js`:
+1. **Frames under the picture.** `/api/frames?at=<frame>|i=<place>&n=&follow=` gives the
+   frames around a moment, with their boxes and the follow's mark in each. `↑` `↓` look
+   back and ahead without changing anything; `Space` returns to the step. "Last seen"
+   shows close-ups of the fish's boxes nearest the step (`recent` in the follow's view),
+   cut from the frame by the browser.
+2. **Tablets and phones.** Every key has a button (large on touch screens). One finger
+   draws a box or presses on one; two fingers zoom the page. Overlapping boxes under a
+   finger are offered as close-ups to choose from.
+3. **Its own page.** `/follow` with no card lists the follows. You find a fish anywhere,
+   then start from any box (a faint one, on no card: `follows.card` is NULL) or from a box
+   drawn around a fish the detector missed (`follows.start_det` NULL,
+   `follows.start_frame`). There is a header link on the review page and a start-page
+   button per video on the site. "Follow this fish" on a card still starts from its best
+   view.
+4. **The box offered.** The box nearest where the fish was last seen (within a quarter of
+   the frame's height, not one fixed or taken) glows; `Enter` takes it. Taken boxes are
+   marked `via = 'suggested'` (`follow_marks.via`), so how often people just accept it can
+   be measured.
+5. **Corrections.**
+   - A drawn box where the fish had none is a "nobox" mark with its size
+     (`follow_marks.w`, `h`). It is a real box in the sidecar (note "no box, drawn").
+   - **Gone for good** marks the rest of this direction's frames gone at once
+     (`follow_rest` event, `follow_marks.batch`); undo takes the batch back whole.
+   - What's wrong with a box (part of a fish, not a fish, a second box on one fish) goes
+     to the new table `box_fixes`, with the latest row holding. It is shown on the box, and
+     pulled from the site (`box_fix` events) with the volunteer's name.
+   - Nothing changes boxes, cards, the detector or any threshold because of these. They
+     are evidence to measure first.
+- All schema changes are add-only: new columns `follows.start_frame`, `follow_marks.w`,
+  `h`, `via` and `batch`, and the new table `box_fixes`.
+
 **Open**
 - Descriptions over 25 MiB (a video about 60% longer than the test video) would need
   splitting.

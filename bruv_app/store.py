@@ -85,6 +85,12 @@ CREATE TABLE IF NOT EXISTS follows (
 CREATE TABLE IF NOT EXISTS follow_marks (
     follow_id INTEGER, frame_id INTEGER, state TEXT, det_id INTEGER, x REAL, y REAL, at TEXT,
     PRIMARY KEY (follow_id, frame_id));
+-- What a person said about a box while following (follow.py): part of a fish that has a box
+-- of its own (a tail, a fin), not a fish, or a second box on the same fish. The latest row
+-- for a box holds (kind NULL takes it back); rows are never removed. Kept for measuring the
+-- detector: nothing changes boxes or cards because of them.
+CREATE TABLE IF NOT EXISTS box_fixes (
+    id INTEGER PRIMARY KEY, at TEXT, det_id INTEGER, kind TEXT, follow_id INTEGER, reviewer TEXT);
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
@@ -163,7 +169,13 @@ class Project:
             "reviews": {"details": "TEXT", "family": "TEXT", "reviewer": "TEXT"},
             # name: a follow pulled from the hosted review site keeps the name it had there
             # (F<site id>-v<volunteer>); NULL for follows made on this PC (follow.name).
-            "follows": {"name": "TEXT"},
+            # start_frame: where the follow started; a follow can start from a box drawn
+            # around a fish the detector missed, so with no start_det.
+            "follows": {"name": "TEXT", "start_frame": "INTEGER"},
+            # w h: the size of a box drawn around the fish where it had none (x y: its middle).
+            # via: "suggested" (the box the page offered, accepted) or "rest" (gone for good).
+            # batch: the marks one "gone for good" made, taken back together.
+            "follow_marks": {"w": "REAL", "h": "REAL", "via": "TEXT", "batch": "INTEGER"},
         }
         for table, columns in added.items():
             have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}

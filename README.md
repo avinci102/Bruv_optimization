@@ -375,6 +375,21 @@ contested links were measured on the first 185 NP339 answers.
   fish, to split with `X`). One follow is one fish's visit. When unsure which fish it is, press `O` and let
   it go: a short, sure follow is worth more than a long guess.
 
+  Following has its own page too: **Follow a fish** in the review page's header (on the
+  website, a button per video on the start page) lists your follows and lets you find a
+  fish anywhere in the video (`↑` `↓`, the slider, or the frames under the picture), then
+  click its box or drag a box around it to start. While following:
+  - the frames under the picture show where you've been; `↑` `↓` look back and ahead
+    without changing anything, and `Space` returns to your step. "Last seen" shows
+    close-ups of the fish nearest where you are;
+  - the box nearest where you last saw it glows: `Enter` or **That's it** takes it;
+  - drag a box around the fish where it has none; **Gone for good** (`G`) marks every frame
+    left this way at once (`Backspace` takes it back whole);
+  - right-click a wrong box (press and hold on a tablet, or **Fix a box**): part of a fish
+    (a tail), not a fish, or a second box on one fish. These are kept for measuring the
+    fish finder; they change nothing.
+  Every key has a button, so it works on a tablet or phone.
+
   `evaluate --project …` scores the follows with no answer key needed: how much of each
   visit the run boxed, how many cards each fish ended on, and why its card changed (near
   another fish, a gap in its boxes, the frame's edge). Only the followed fish were

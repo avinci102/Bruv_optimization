@@ -365,7 +365,8 @@ def cmd_pull(args) -> None:
 
     report = pull(Path(args.project), Path(args.answers), args.volunteer, trial=args.trial)
     print(f"{report.volunteer}: {report.events} events → {report.answers} answers, {report.fixes} fixes, "
-          f"{report.undone} undone" + (f", {report.follows} follows" if report.follows else ""))
+          f"{report.undone} undone" + (f", {report.follows} follows" if report.follows else "")
+          + (f", {report.box_fixes} box fixes" if report.box_fixes else ""))
     if report.new_cards:
         print("  New cards: " + ", ".join(f"site #{k} → #{v}" for k, v in report.new_cards.items()))
     if report.scope_mismatch:

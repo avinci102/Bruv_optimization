@@ -337,16 +337,22 @@
     }
   }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
 
-  // A small link back to the start page: switch video, or say how the session went. The
-  // Excel export is the coordinator's, after pulling, so it's hidden; so is "Follow this
-  // fish" unless the video was published with --follow.
+  // A small link back to the start page: switch video, or say how the session went; the
+  // review page's title goes there too (the page volunteers came from). The Excel export is
+  // the coordinator's, after pulling, so it's hidden; so is following a fish unless the
+  // video was published with --follow.
   document.addEventListener("DOMContentLoaded", () => {
     const style = document.createElement("style");
     style.textContent = "#export { display: none !important; } img.bruv-wait { opacity: 0.5; }";
     document.head.appendChild(style);
     const noFollow = document.createElement("style");
-    noFollow.textContent = "#follow { display: none !important; }";
+    noFollow.textContent = "#follow, #follow-link, #home-link { display: none !important; }";
     document.head.appendChild(noFollow);
+    const brand = document.getElementById("brand");
+    if (brand && location.pathname === "/") {
+      brand.href = "/start.html";
+      brand.title = "Back to the start page: your videos";
+    }
     ready.then((state) => {
       if (state.followable) noFollow.remove();
     }).catch(() => {});

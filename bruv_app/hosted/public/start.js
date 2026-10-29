@@ -33,13 +33,26 @@ function remember(video) {
   }
 }
 
-function open(video) {
+function open(video, page = "/") {
   if (!remember(video)) {
     message("This browser is blocking site storage, which the review page needs. Allow it for this site, or use a normal (not private) window.", "error");
     return;
   }
   message(`Opening ${video}…`);
-  location.href = "/";
+  location.href = page;
+}
+
+// A video published with following a fish (publish --follow) gets its own button for it.
+async function addFollow(video, after) {
+  try {
+    const res = await fetch(`/videos/${encodeURIComponent(video)}/manifest.json`, { credentials: "same-origin" });
+    if (!res.ok || !(await res.json()).follow) return;
+    const b = document.createElement("button");
+    b.textContent = `Follow fish in ${video}`;
+    b.title = "Find a fish anywhere in the video and follow it frame by frame";
+    b.onclick = () => open(video, "/follow");
+    after.after(b);
+  } catch (e) { /* no button */ }
 }
 
 function showVideos(me) {
@@ -57,6 +70,7 @@ function showVideos(me) {
     b.textContent = v.role === "calibration" ? `${v.video} (shared check: ${v.cards ? v.cards.length : "all"} cards)` : v.video;
     b.onclick = () => open(v.video);
     box.append(b);
+    if (v.role !== "calibration") addFollow(v.video, b);
     $("fb-video").append(new Option(v.video, v.video));
   }
   if (me.role === "admin") showAdmin();

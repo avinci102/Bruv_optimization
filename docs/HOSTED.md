@@ -194,7 +194,7 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
 | Export to Excel | The coordinator exports, after pulling. |
 | Bait-arm batch marking | Not on the site; each card's Equipment answer works. |
 | Whole scenes for every moment | With `--follow`, the same. Otherwise up to 8 whole scenes per card; other moments show the nearest one, dimmed, with the fish as seen at that moment, and say so. |
-| Follow this fish | With `--follow`, the same. Each volunteer's follows are their own: "taken" and "shared" look at their own follows; after pulling, the PC sees everyone's. |
+| Follow this fish, and following as its own task | With `--follow`, the same, with a "Follow fish in <video>" button per video on the start page. Each volunteer's follows and box fixes are their own: "taken" and "shared" look at their own follows; after pulling, the PC sees everyone's. |
 | Tiny fish and cards outside the review window | Not published. |
 
 ## Privacy and access
@@ -260,9 +260,10 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
     after that, the frames ahead are ready.
 - **What's saved** is an event log per volunteer and video (D1 table `events`). Kinds:
   `label`, `undo`, `split`, `move`, `unmerge`, `suggestions`, and for follows
-  `follow_start` (with the sighting it starts from and its name), `follow_mark`,
-  `follow_undo` and `follow_delete`. Each has the fields its replay needs and the site's
-  time. New cards are numbered after the highest published card.
+  `follow_start` (with the sighting, or the drawn box, it starts from and its name),
+  `follow_mark`, `follow_rest` (gone for good: the frames it marked), `follow_undo`,
+  `follow_delete` and `box_fix` (what's wrong with a box). Each has the fields its replay
+  needs and the site's time. New cards are numbered after the highest published card.
 - **`hosted/functions/sync/[[path]].js`** is the only server code (sign-in, events,
   feedback, admin). `bruv_app/site.py` has the same API on SQLite for `site serve` and the
   tests. `_routes.json` keeps every other request a free static one.
