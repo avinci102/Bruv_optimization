@@ -19,7 +19,7 @@ import secrets
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +41,7 @@ class Volunteer:
     role: str  # "volunteer" or "admin"
     own: list[str]  # videos that are theirs to review (the review of record)
     calibration: dict[str, list[int] | None]  # shared checks: video -> card ids (None: all)
+    own_cards: dict[str, list[int]] = field(default_factory=dict)  # own videos they review only part of
 
 
 def _sql(value) -> str:
@@ -51,33 +52,38 @@ def _sql(value) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _video_cards(item: str) -> tuple[str, list[int] | None]:
+    """"A3=12;15;99" as ("A3", [12, 15, 99]), or with commas in a quoted cell; "A3" as ("A3", None)."""
+    video, _, cards = item.partition("=")
+    return video, [int(c) for c in cards.replace(";", ",").split(",") if c.strip()] if cards else None
+
+
 def read_volunteers(path: Path) -> list[Volunteer]:
     """A CSV with the columns name, email, pass, role, videos, calibration. videos: the
-    volunteer's own videos ("A1 A2"); calibration: shared checks, a video alone (all its
-    cards) or with card ids ("A3=12;15;99 A4", or with commas in a quoted cell). An empty
-    pass gets a new one."""
+    volunteer's own videos ("A1 A2"), or the part of one that's theirs, by card ids
+    ("A1=4;5;6 A2"); calibration: shared checks, a video alone (all its cards) or with card
+    ids ("A3=12;15;99 A4"). An empty pass gets a new one."""
     out = []
     with open(path, newline="", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
             row = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
             if not row.get("name"):
                 continue
-            cal: dict[str, list[int] | None] = {}
-            for item in row.get("calibration", "").split():
-                video, _, cards = item.partition("=")
-                cal[video] = [int(c) for c in cards.replace(";", ",").split(",") if c.strip()] if cards else None
+            own = dict(_video_cards(item) for item in row.get("videos", "").split())
             out.append(Volunteer(
                 row["name"], row.get("email") or None, (row.get("pass") or new_pass()).upper(),
-                row.get("role") or "volunteer", row.get("videos", "").split(), cal,
+                row.get("role") or "volunteer", list(own), dict(_video_cards(item) for item in row.get("calibration", "").split()),
+                {video: cards for video, cards in own.items() if cards},
             ))
     return out
 
 
-def volunteers_sql(volunteers: list[Volunteer]) -> str:
+def volunteers_sql(volunteers: list[Volunteer], add_only: bool = False) -> str:
     """SQL that sets the site's volunteers and assignments to exactly this list. A volunteer
     is known by their pass, so their saved answers stay theirs whatever the row order; one
-    left off the list can no longer sign in, and their answers stay in the database."""
-    lines = ["DELETE FROM assignments;", "UPDATE volunteers SET active = 0;"]
+    left off the list can no longer sign in, and their answers stay in the database. With
+    `add_only`, it adds or updates these volunteers and leaves everyone else as they are."""
+    lines = [] if add_only else ["DELETE FROM assignments;", "UPDATE volunteers SET active = 0;"]
     for v in volunteers:
         lines.append(
             "INSERT INTO volunteers (name, email, pass, role, active) VALUES "
@@ -85,8 +91,12 @@ def volunteers_sql(volunteers: list[Volunteer]) -> str:
             "ON CONFLICT(pass) DO UPDATE SET name=excluded.name, email=excluded.email, role=excluded.role, active=1;"
         )
         who = f"(SELECT id FROM volunteers WHERE pass={_sql(v.passcode)})"
+        if add_only:
+            lines.append(f"DELETE FROM assignments WHERE volunteer_id={who};")
         for video in v.own:
-            lines.append(f"INSERT INTO assignments (volunteer_id, video, role, cards) VALUES ({who}, {_sql(video)}, 'own', NULL);")
+            cards = v.own_cards.get(video)
+            lines.append(f"INSERT INTO assignments (volunteer_id, video, role, cards) VALUES ({who}, {_sql(video)}, 'own', "
+                         f"{_sql(json.dumps(cards) if cards else None)});")
         for video, cards in v.calibration.items():
             lines.append(
                 f"INSERT INTO assignments (volunteer_id, video, role, cards) VALUES ({who}, {_sql(video)}, 'calibration', "
@@ -102,7 +112,8 @@ def write_volunteers(volunteers: list[Volunteer], path: Path) -> None:
         w.writerow(["name", "email", "pass", "role", "videos", "calibration"])
         for v in volunteers:
             cal = " ".join(f"{k}={','.join(map(str, c))}" if c else k for k, c in v.calibration.items())
-            w.writerow([v.name, v.email or "", v.passcode, v.role, " ".join(v.own), cal])
+            own = " ".join(f"{k}={','.join(map(str, v.own_cards[k]))}" if v.own_cards.get(k) else k for k in v.own)
+            w.writerow([v.name, v.email or "", v.passcode, v.role, own, cal])
 
 
 # --- the site, served from this PC ------------------------------------------------------

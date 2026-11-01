@@ -204,7 +204,8 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
 
     // ---- small helpers
 
-    // A calibration assignment shows only the cards chosen for it.
+    // An assignment with a list of cards (a shared check, or a volunteer's part of a video)
+    // shows only those.
     restrict(ids) {
       const keep = new Set(ids.map(Number));
       for (const id of [...this.cards.keys()]) if (!keep.has(id)) this.cards.delete(id);
@@ -1237,6 +1238,21 @@ var BRUV = (typeof self !== "undefined" ? self : globalThis).BRUV || {};
     }
   }
   B.Video = Video;
+
+  // A big published file comes in parts (publish._json_parts, _binary_parts): the manifest
+  // names one file or a list of them.
+  B.partNames = (listed) => (Array.isArray(listed) ? listed : [listed]);
+  B.joinJson = (parts, key) => ({ [key]: parts.flatMap((p) => p[key]) });
+  B.joinBuffers = (parts) => {
+    if (parts.length === 1) return parts[0];
+    const all = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+    let at = 0;
+    for (const p of parts) {
+      all.set(new Uint8Array(p), at);
+      at += p.byteLength;
+    }
+    return all.buffer;
+  };
 
   function matched(suggested, status, species, family) {
     if (!suggested) return null;

@@ -34,13 +34,15 @@
   // The published video with this volunteer's saved answers and fixes replayed on top.
   const ready = (async () => {
     const base = `/videos/${video}/`;
-    const [manifest, cards, emb, mine, me] = await Promise.all([
-      getJson(base + "manifest.json"),
-      getJson(base + "cards.json"),
-      realFetch(base + "emb.bin").then((r) => {
+    const jsonParts = async (listed, key) =>
+      BRUV.joinJson(await Promise.all(BRUV.partNames(listed).map((name) => getJson(base + name))), key);
+    const manifest = await getJson(base + "manifest.json");
+    const [cards, emb, mine, me] = await Promise.all([
+      jsonParts(manifest.cards, "cards"),
+      Promise.all(BRUV.partNames(manifest.emb.file).map((name) => realFetch(base + name).then((r) => {
         if (!r.ok) throw new BRUV.HttpError(r.status, "This video's data is missing from the site.");
         return r.arrayBuffer();
-      }),
+      }))).then(BRUV.joinBuffers),
       getJson(`/sync/events?video=${encodeURIComponent(video)}`),
       getJson("/sync/me"),
     ]);
@@ -50,7 +52,7 @@
       // Every frame in order: following a fish steps through them, and any moment's scene
       // can be shown whole. The boxes in them are loaded when a follow is opened.
       state.setFollowFrames(await getJson(base + manifest.follow.frames));
-      state.boxLoader = () => getJson(base + manifest.follow.boxes);
+      state.boxLoader = () => jsonParts(manifest.follow.boxes, "boxes");
     }
     const assignment = (me.videos || []).find((v) => v.video === video);
     if (assignment && assignment.cards) state.restrict(assignment.cards);

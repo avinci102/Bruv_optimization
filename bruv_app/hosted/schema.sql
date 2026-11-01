@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS volunteers (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT, pass TEXT NOT NULL UNIQUE,
     role TEXT NOT NULL DEFAULT 'volunteer', active INTEGER NOT NULL DEFAULT 1);
 -- role: 'own' (the volunteer's own video, the review of record) or 'calibration' (a
--- shared check: cards, a JSON list of card ids, or NULL for the whole video).
+-- shared check). cards: a JSON list of the card ids they see, or NULL for the whole video.
 CREATE TABLE IF NOT EXISTS assignments (
     volunteer_id INTEGER NOT NULL, video TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'own', cards TEXT,
     PRIMARY KEY (volunteer_id, video));

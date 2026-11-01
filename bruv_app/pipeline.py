@@ -433,6 +433,10 @@ class Pipeline:
             self.project.save_det_change(change)
             self.project.set_meta("still_key", key)
             self.project.finish_run(run_id, measured=len(change))
+        if s.still_fixed_places:
+            looks_still = [(r["frame_id"], (r["x1"], r["y1"], r["x2"], r["y2"])) for r in self.project.still_boxes(s, s.det_threshold)]
+            self.project.set_meta("still_places", still_mod.fixed_places(
+                looks_still, self.project.frame_count(), s.still_place_min_share, s.still_place_min_iou))
         hidden = self.project.still_ids(s)
         self.project.set_meta("still_hidden", len(hidden))
         self.project.mark_stage("still")

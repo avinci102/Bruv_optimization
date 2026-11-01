@@ -49,6 +49,13 @@ class Settings:
     still_min_width: float = 0.06
     still_max_change: float = 0.10
     still_window_s: float = 60.0
+    # Option per project, off by default until it's measured on answers: hide such a box only
+    # where they keep coming back (still.fixed_places), so a pale fish in murky water, which
+    # hardly differs from the background either, keeps its card. A place counts when at least
+    # still_place_min_share of the frames have one there, overlapping by still_place_min_iou.
+    still_fixed_places: bool = False
+    still_place_min_share: float = 0.005
+    still_place_min_iou: float = 0.5
 
     # Tracking (lightweight IoU + centre distance, Hungarian matching).
     track_min_iou: float = 0.05

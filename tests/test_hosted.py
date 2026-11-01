@@ -197,6 +197,70 @@ def test_a_volunteer_keeps_their_answers_when_the_list_changes(tmp_path):
     assert rows == [("V1", "own", None), ("V2", "own", None), ("V3", "calibration", "[12, 15]"), ("V4", "calibration", None)]
 
 
+def test_a_volunteer_can_have_part_of_a_video_as_their_own(tmp_path):
+    path = tmp_path / "guests.csv"
+    path.write_text("name,email,pass,role,videos,calibration\nGuest 1,,,volunteer,V1=4;5;6 V2,V3=7\n", encoding="utf-8")
+    guest = read_volunteers(path)[0]
+    assert guest.own == ["V1", "V2"] and guest.own_cards == {"V1": [4, 5, 6]} and guest.calibration == {"V3": [7]}
+    write_volunteers([guest], tmp_path / "out.csv")
+    again = read_volunteers(tmp_path / "out.csv")[0]
+    assert (again.passcode, again.own, again.own_cards, again.calibration) == (guest.passcode, guest.own, guest.own_cards, guest.calibration)
+    db = sqlite3.connect(tmp_path / "site.db")
+    from bruv_app.site import HOSTED_DIR
+
+    db.executescript((HOSTED_DIR / "schema.sql").read_text(encoding="utf-8"))
+    db.executescript(volunteers_sql([guest]))
+    assert db.execute("SELECT video, role, cards FROM assignments ORDER BY video").fetchall() == [
+        ("V1", "own", "[4, 5, 6]"), ("V2", "own", None), ("V3", "calibration", "[7]")]
+
+
+def test_adding_volunteers_leaves_everyone_else_as_they_are(tmp_path):
+    people = read_volunteers(_volunteer_csv(tmp_path))
+    db = sqlite3.connect(tmp_path / "site.db")
+    from bruv_app.site import HOSTED_DIR
+
+    db.executescript((HOSTED_DIR / "schema.sql").read_text(encoding="utf-8"))
+    db.executescript(volunteers_sql(people))
+    before = db.execute("SELECT volunteer_id, video, role, cards FROM assignments ORDER BY 1, 2").fetchall()
+    path = tmp_path / "guests.csv"
+    path.write_text("name,email,pass,role,videos,calibration\nGuest 1,,BRUV-TEST-GST1,volunteer,V1=4;5,\n", encoding="utf-8")
+    guest = read_volunteers(path)
+    db.executescript(volunteers_sql(guest, add_only=True))
+    assert db.execute("SELECT name, active FROM volunteers ORDER BY id").fetchall() == [("Vinci", 1), ("Ana", 1), ("Bea", 1), ("Guest 1", 1)]
+    gid = db.execute("SELECT id FROM volunteers WHERE name='Guest 1'").fetchone()[0]
+    rows = db.execute("SELECT volunteer_id, video, role, cards FROM assignments ORDER BY 1, 2").fetchall()
+    assert rows == [*before, (gid, "V1", "own", "[4, 5]")]
+    # Again, with their cards changed: still that one volunteer, with the new cards.
+    guest[0].own_cards["V1"] = [9]
+    db.executescript(volunteers_sql(guest, add_only=True))
+    assert db.execute("SELECT volunteer_id, video, role, cards FROM assignments ORDER BY 1, 2").fetchall() == [*before, (gid, "V1", "own", "[9]")]
+    assert db.execute("SELECT COUNT(*) FROM volunteers").fetchone()[0] == 4
+
+
+def test_big_files_are_published_in_parts(project, tmp_path, monkeypatch):
+    whole = tmp_path / "whole"
+    publish(project.root, whole, "V1", follow=True)
+    monkeypatch.setattr("bruv_app.publish.PART_BYTES", 100)
+    parts = tmp_path / "parts"
+    publish(project.root, parts, "V1", follow=True)
+    folder, plain = parts / "public" / "videos" / "V1", whole / "public" / "videos" / "V1"
+    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    read = lambda name: json.loads((folder / name).read_text(encoding="utf-8"))  # noqa: E731
+    assert all(isinstance(x, list) and len(x) > 1 for x in (manifest["cards"], manifest["emb"]["file"], manifest["follow"]["boxes"]))
+    assert not (folder / "cards.json").exists() and not (folder / "emb.bin").exists() and not (folder / "follow" / "boxes.json").exists()
+    for listed, key, file in ((manifest["cards"], "cards", "cards.json"), (manifest["follow"]["boxes"], "boxes", "follow/boxes.json")):
+        joined = [item for name in listed for item in read(name)[key]]
+        assert json.dumps(joined) == json.dumps(json.loads((plain / file).read_text(encoding="utf-8"))[key])
+    assert b"".join((folder / name).read_bytes() for name in manifest["emb"]["file"]) == (plain / "emb.bin").read_bytes()
+    assert all((folder / name).stat().st_size <= 100 for name in manifest["emb"]["file"])
+    # Cut between items, so a part can only pass the size by holding one big item alone.
+    for name in manifest["cards"]:
+        assert (folder / name).stat().st_size <= 120 or len(read(name)["cards"]) == 1
+    # A small video stays in single files, as before.
+    plain_manifest = json.loads((plain / "manifest.json").read_text(encoding="utf-8"))
+    assert plain_manifest["cards"] == "cards.json" and plain_manifest["emb"]["file"] == "emb.bin" and plain_manifest["follow"]["boxes"] == "follow/boxes.json"
+
+
 @pytest.fixture
 def client(site, tmp_path):
     out, _ = site

@@ -67,7 +67,8 @@ function showVideos(me) {
   for (const v of me.videos) {
     const b = document.createElement("button");
     b.className = "primary";
-    b.textContent = v.role === "calibration" ? `${v.video} (shared check: ${v.cards ? v.cards.length : "all"} cards)` : v.video;
+    b.textContent = v.role === "calibration" ? `${v.video} (shared check: ${v.cards ? v.cards.length : "all"} cards)`
+      : v.cards ? `${v.video} (your ${v.cards.length} cards)` : v.video;
     b.onclick = () => open(v.video);
     box.append(b);
     if (v.role !== "calibration") addFollow(v.video, b);

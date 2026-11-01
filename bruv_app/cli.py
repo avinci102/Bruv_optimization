@@ -264,15 +264,19 @@ def cmd_rebuild(args) -> None:
             setattr(settings, key, getattr(defaults, key))
     if args.track_gap is not None:
         settings.track_max_missed_s = args.track_gap
+    if args.fixed_places:
+        settings.still_fixed_places = True
     project.save_settings(settings)
     before = len(project.all_fish())
-    print(f"Rebuilding {before} cards: still objects {'hidden' if settings.still_filter else 'tracked'}, "
-          f"tracks bridge {settings.track_max_missed_s:g} s"
+    still = "tracked" if not settings.still_filter else "hidden at fixed places" if settings.still_fixed_places else "hidden"
+    print(f"Rebuilding {before} cards: still objects {still}, tracks bridge {settings.track_max_missed_s:g} s"
           + (", contested links refused" if settings.track_refuse_contested else "") + "…")
     with keep_awake():
         report = Pipeline(project, progress=_progress()).rebuild()
     print(f"Done: {len(project.all_fish())} cards (was {before}); {project.get_meta('still_hidden', 0)} "
           "sightings hidden as still objects.")
+    if settings.still_fixed_places:
+        print(f"  Fixed places: {project.get_meta('still_places')}")
     print(f"  {report['carried']} cards got your earlier answer (all their sightings had it)")
     print(f"  {report['partly_answered']} hold answered and new sightings, {report['conflicting']} mix "
           "different answers: both left for you")
@@ -334,14 +338,15 @@ def cmd_site_volunteers(args) -> None:
 
     site = Path(args.site)
     volunteers = read_volunteers(Path(args.csv))
-    (site / "volunteers.sql").write_text(volunteers_sql(volunteers), encoding="utf-8")
+    name = Path(args.csv).stem + ".sql" if args.add else "volunteers.sql"
+    (site / name).write_text(volunteers_sql(volunteers, add_only=args.add), encoding="utf-8")
     out = Path(args.out) if args.out else Path(args.csv).with_name(Path(args.csv).stem + "-with-passes.csv")
     write_volunteers(volunteers, out)
-    print(f"{len(volunteers)} volunteers: {site / 'volunteers.sql'} (load it into the site's database), passes in {out}")
+    print(f"{len(volunteers)} volunteers: {site / name} (load it into the site's database), passes in {out}")
     for v in volunteers:
-        own = ", ".join(v.own) or "—"
+        own = ", ".join(f"{k} ({len(v.own_cards[k])} cards)" if k in v.own_cards else k for k in v.own) or "—"
         cal = ", ".join(f"{k} ({len(c)} cards)" if c else k for k, c in v.calibration.items()) or "—"
-        print(f"  {v.name:<18} {v.passcode}  own: {own}; shared check: {cal}")
+        print(f"  {v.name:<18} {'' if args.no_passes else v.passcode + '  '}own: {own}; shared check: {cal}")
 
 
 def cmd_site_serve(args) -> None:
@@ -793,6 +798,8 @@ def main(argv: list[str] | None = None) -> None:
                    help="adopt the current defaults: still objects hidden, short tracks, contested links refused")
     p.add_argument("--track-gap", type=float, metavar="SECONDS",
                    help="how long a fish may go unseen and keep its track (0.25 at 4 fps: one frame)")
+    p.add_argument("--fixed-places", action="store_true",
+                   help="hide still objects only where they keep coming back, for footage where pale fish look still")
     p.set_defaults(func=cmd_rebuild)
 
     p = sub.add_parser("model-test", help="species models side by side on your answered cards")
@@ -819,6 +826,8 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--site", required=True)
     q.add_argument("--csv", required=True, help="columns: name, email, pass, role, videos, calibration")
     q.add_argument("--out", help="the list with passes filled in (default: <csv>-with-passes.csv)")
+    q.add_argument("--add", action="store_true", help="add these volunteers and leave everyone else as they are (<csv>.sql)")
+    q.add_argument("--no-passes", action="store_true", help="don't print the passes (they're in the file)")
     q.set_defaults(func=cmd_site_volunteers)
     q = site_sub.add_parser("serve", help="serve the site from this PC, with a local database (for trying it)")
     q.add_argument("--site", required=True)

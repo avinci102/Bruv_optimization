@@ -144,3 +144,38 @@ def test_the_browser_gives_the_servers_answers(project, tmp_path):
     # Started from a faint box (on no card), and from a box drawn around a fish.
     assert py_views["F5-v1"]["follow"]["card"] is None and py_views["F5-v1"]["start"]["det"] is not None
     assert py_views["F6-v1"]["start"]["det"] is None and py_views["F6-v1"]["start"]["box"]["x1"] == pytest.approx(0.25)
+
+
+def test_the_browser_joins_a_big_videos_parts(project, tmp_path, monkeypatch):
+    settings = project.load_settings()
+    settings.tiny_fish_px = 0
+    project.save_settings(settings)
+    monkeypatch.setattr("bruv_app.publish.PART_BYTES", 100)
+    publish(project.root, tmp_path / "site", "V1", follow=True)
+    folder = tmp_path / "site" / "public" / "videos" / "V1"
+    script = tmp_path / "join.js"
+    script.write_text(r"""
+const fs = require("fs"), path = require("path"), vm = require("vm");
+const [, , core, folder] = process.argv;
+vm.runInThisContext(fs.readFileSync(core, "utf8"), { filename: core });
+const read = (name) => JSON.parse(fs.readFileSync(path.join(folder, name), "utf8"));
+const m = read("manifest.json");
+const buffer = (name) => { const raw = fs.readFileSync(path.join(folder, name)); return raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength); };
+(async () => {
+  const video = new BRUV.Video("V1", m, BRUV.joinJson(BRUV.partNames(m.cards).map(read), "cards"), BRUV.joinBuffers(BRUV.partNames(m.emb.file).map(buffer)));
+  video.setFollowFrames(read(m.follow.frames));
+  video.boxLoader = async () => BRUV.joinJson(BRUV.partNames(m.follow.boxes).map(read), "boxes");
+  await video.needFollow();
+  const sync = { send: async () => ({ ok: true }) };
+  const [status, list] = await BRUV.handle(video, sync, "GET", "/api/fish", new URLSearchParams(), null);
+  console.log(JSON.stringify({ status, cards: list.map((c) => c.id), frames: video.boxes.size, boxes: video.boxById.size,
+    parts: [BRUV.partNames(m.cards).length, BRUV.partNames(m.emb.file).length, BRUV.partNames(m.follow.boxes).length] }));
+})().catch((e) => { console.error(e); process.exit(1); });
+""", encoding="utf-8")
+    run = subprocess.run([NODE, str(script), str(CORE), str(folder)], capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stderr
+    seen = json.loads(run.stdout)
+    assert seen["status"] == 200 and all(n > 1 for n in seen["parts"])
+    assert sorted(seen["cards"]) == sorted(published_cards(project))
+    assert seen["frames"] == project.frame_count()
+    assert seen["boxes"] == project.db.execute("SELECT COUNT(*) FROM detections").fetchone()[0]

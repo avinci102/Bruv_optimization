@@ -4,6 +4,7 @@ without losing the answers (docs/SPEC.md §13, after the first 185 answers)."""
 import json
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from bruv_app import demo
@@ -12,13 +13,14 @@ from bruv_app.detect import ColorBlobDetector, Detection
 from bruv_app.export import export_project
 from bruv_app.pipeline import CARRY_KEY, EARLIER_KEY, Pipeline, create_project
 from bruv_app.server import create_app
-from bruv_app.still import background_change, is_still
+from bruv_app.still import at_places, background_change, fixed_places, is_still
 from bruv_app.store import REVIEWED
 from bruv_app.track import track_all
 
 from .conftest import demo_settings, label_like_perfect_human
 
 RIG = (0.85, 0.85, 0.95, 0.97)  # bottom right: no synthetic fish swims there
+PALE = (0.65, 0.85, 0.75, 0.97)  # beside it, in the same still water
 
 
 def test_a_box_that_never_changes_is_still_and_a_moving_fish_is_not():
@@ -88,8 +90,81 @@ def test_the_rig_is_hidden_before_tracking_and_the_fish_keep_their_cards(tmp_pat
     export_project(project, tmp_path / "out.xlsx")
 
 
+def test_fixed_places_are_where_still_boxes_keep_coming_back():
+    rig = (0.3, 0.4, 0.7, 0.7)
+    rig_seen = [(f, (rig[0] + 0.005 * (f % 3), rig[1], rig[2], rig[3])) for f in range(60)]
+    passing = [(f, (0.01 * f, 0.1, 0.01 * f + 0.1, 0.2)) for f in range(0, 90, 10)]  # a pale fish, never in one place for long
+    places = fixed_places(rig_seen + passing, 200, 0.05, 0.5)
+    assert len(places) == 1 and places[0] == pytest.approx(rig, abs=0.01)
+    assert at_places([rig, (0.0, 0.1, 0.1, 0.2), (0.45, 0.5, 0.55, 0.6)], places, 0.5) == [True, False, False]  # (only part of it: not it)
+    assert fixed_places(passing, 200, 0.05, 0.5) == [] and at_places([rig], [], 0.5) == [False] and at_places([], places, 0.5) == []
+    # Seen a lot in one frame is still one frame.
+    assert fixed_places([(1, rig)] * 50, 200, 0.05, 0.5) == []
+
+
+class FishRigAndPaleFish(FishAndRig):
+    """The rig in every frame, and a big pale fish that doesn't show against the water in a
+    few of them, as the detector boxes fish in murky footage."""
+
+    name = "fish-rig-and-pale-fish"
+
+    def detect(self, images):
+        self.seen = getattr(self, "seen", -1)
+        out = []
+        for found in super().detect(images):
+            self.seen += 1
+            out.append(found + ([Detection(*PALE, 0.8)] if 3 <= self.seen < 8 else []))
+        return out
+
+
+def _pale_ids(project):
+    rows = project.db.execute("SELECT id, x1, y1 FROM detections").fetchall()
+    return {r["id"] for r in rows if (round(r["x1"], 2), round(r["y1"], 2)) == PALE[:2]}
+
+
+def test_with_fixed_places_a_pale_fish_keeps_its_card_and_the_rig_stays_hidden(tmp_path, synthetic_videos):
+    def made(folder, **settings):
+        template = demo.make_mock_template(tmp_path / "t.xlsx")
+        project = create_project(tmp_path / folder, synthetic_videos, template, demo_settings(**settings))
+        Pipeline(project, detector=FishRigAndPaleFish(), classifier=demo.DemoClassifier()).run()
+        return project, {d["id"] for f in project.all_fish() for d in project.fish_detections(f["id"])}
+
+    # The default: both look still, so both are hidden.
+    plain, on_cards = made("plain")
+    assert _pale_ids(plain) and project_still(plain) == _rig_ids(plain) | _pale_ids(plain) and not _pale_ids(plain) & on_cards
+    # Only where they keep coming back: the rig is hidden, the pale fish makes a card.
+    fixed, on_cards = made("fixed", still_fixed_places=True, still_place_min_share=0.5)
+    settings = fixed.load_settings()
+    assert fixed.get_meta("still_places") == [pytest.approx(list(RIG))]
+    assert project_still(fixed) == _rig_ids(fixed) and _pale_ids(fixed) <= on_cards and not _rig_ids(fixed) & on_cards
+    assert {r["id"] for r in fixed.still_detections(settings, settings.det_threshold)} == _rig_ids(fixed)
+    assert fixed.get_meta("still_hidden") == len(_rig_ids(fixed))
+    assert TestClient(create_app(fixed.root)).get("/api/still").json()["count"] == len(_rig_ids(fixed))
+
+
+def project_still(project):
+    return project.still_ids(project.load_settings())
+
+
+def test_rebuilding_with_fixed_places_brings_the_pale_fish_back(tmp_path, synthetic_videos):
+    template = demo.make_mock_template(tmp_path / "t.xlsx")
+    project = create_project(tmp_path / "p", synthetic_videos, template, demo_settings(still_place_min_share=0.5))
+    Pipeline(project, detector=FishRigAndPaleFish(), classifier=demo.DemoClassifier()).run()
+    label_like_perfect_human(project)
+    answered = sum(f["status"] in REVIEWED for f in project.all_fish())
+    pale = _pale_ids(project)
+    assert not pale & {d["id"] for f in project.all_fish() for d in project.fish_detections(f["id"])}
+    settings = project.load_settings()
+    settings.still_fixed_places = True
+    project.save_settings(settings)
+    report = Pipeline(project, classifier=demo.DemoClassifier()).rebuild()
+    assert pale <= {d["id"] for f in project.all_fish() for d in project.fish_detections(f["id"])}
+    assert report["carried"] >= answered and report["new"] >= 1
+    assert project_still(project) == _rig_ids(project)
+
+
 def test_settings_files_from_before_keep_their_behaviour(tmp_path):
-    assert Settings().still_filter and Settings().track_refuse_contested
+    assert Settings().still_filter and Settings().track_refuse_contested and not Settings().still_fixed_places
     assert Settings().track_max_missed_s == 0.25
     path = tmp_path / "settings.json"
     old = {k: v for k, v in json.loads(json.dumps(Settings().__dict__)).items()

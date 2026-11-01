@@ -105,3 +105,57 @@ def background_change(
 def is_still(box, change: float | None, min_width: float, max_change: float) -> bool:
     """Still: wide enough to judge, and hardly any of it differs from the background."""
     return change is not None and (box[2] - box[0]) >= min_width and change < max_change
+
+
+def _overlap(boxes: np.ndarray, box: np.ndarray) -> np.ndarray:
+    """Each of `boxes` against `box`: intersection over union."""
+    across = np.clip(np.minimum(boxes[:, 2], box[2]) - np.maximum(boxes[:, 0], box[0]), 0, None)
+    down = np.clip(np.minimum(boxes[:, 3], box[3]) - np.maximum(boxes[:, 1], box[1]), 0, None)
+    shared = across * down
+    area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]) + (box[2] - box[0]) * (box[3] - box[1])
+    return shared / np.maximum(area - shared, 1e-9)
+
+
+def fixed_places(boxes: list[tuple[int, tuple[float, float, float, float]]], frame_count: int,
+                 min_share: float, min_iou: float) -> list[list[float]]:
+    """Where still boxes keep coming back to: the rig and whatever else is fixed in view.
+
+    boxes: (frame id, (x1, y1, x2, y2)) of the boxes that look still. Widest first, each joins
+    the place it overlaps most by at least `min_iou`, or starts a new one; a place is its
+    boxes' average. Those seen in at least `min_share` of the frames are returned.
+
+    In murky water a pale fish hardly differs from the background, so that test alone hid
+    wide boxes all over NP218, nearly all of them fish in a sample of those away from its
+    rig. A fish passes; the rig stays. In at least 0.5% of the frames: 4 places on NP339 (its
+    rig in 8.7%), one on NP218 (its rig, 62%) and one on NP219 (1.4%). The other places on
+    all three were under 0.5%, most under 0.2%. There's no box-level answer for these videos,
+    and min_share was chosen after seeing them, so it's an option until answers measure it.
+    """
+    centres: list[np.ndarray] = []
+    counts: list[int] = []
+    seen: list[set[int]] = []
+    for frame_id, box in sorted(boxes, key=lambda b: b[1][0] - b[1][2]):
+        b = np.asarray(box, dtype=np.float64)
+        if centres:
+            overlap = _overlap(np.array(centres), b)
+            best = int(overlap.argmax())
+            if overlap[best] >= min_iou:
+                counts[best] += 1
+                centres[best] = centres[best] + (b - centres[best]) / counts[best]
+                seen[best].add(frame_id)
+                continue
+        centres.append(b)
+        counts.append(1)
+        seen.append({frame_id})
+    return [c.tolist() for c, s in zip(centres, seen) if len(s) >= min_share * frame_count]
+
+
+def at_places(boxes: list[tuple[float, float, float, float]], places: list[list[float]], min_iou: float) -> list[bool]:
+    """Whether each box matches one of the places."""
+    if not boxes or not places:
+        return [False] * len(boxes)
+    rows = np.array(boxes, dtype=np.float64)
+    hit = np.zeros(len(boxes), dtype=bool)
+    for place in places:
+        hit |= _overlap(rows, np.asarray(place, dtype=np.float64)) >= min_iou
+    return hit.tolist()

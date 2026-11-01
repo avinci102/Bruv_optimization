@@ -52,6 +52,7 @@ FRAMES_PER_CARD = 8  # full scenes per card: best view, pieces, closest calls, t
 QUALITY = 80  # WebP quality of the sheets
 FOLLOW_STRIP = 20  # frames per picture file for following a fish (5 s at 4 fps)
 FOLLOW_COLS = 4  # those frames in rows of 4: 2,560 px wide, well inside WebP's 16,383
+PART_BYTES = 20_000_000  # a data file past this is cut into parts (the free plan allows 25 MiB a file)
 
 STATIC_DIR = Path(__file__).parent / "static"
 HOSTED_DIR = Path(__file__).parent / "hosted"
@@ -161,6 +162,37 @@ def _crops_for(detail: dict) -> list[int]:
     return list(dict.fromkeys(d for d in dets if d is not None))
 
 
+def _json_parts(folder: Path, stem: str, key: str, items: list) -> str | list[str]:
+    """`items` as {key: items} in <stem>.json, or in <stem>.0.json, <stem>.1.json... when that
+    would be too big for one file. Returns what the manifest lists: the browser joins them
+    (hosted/core.js)."""
+    parts: list[list[str]] = [[]]
+    size = 0
+    for item in items:
+        text = json.dumps(item, separators=(",", ":"))
+        if parts[-1] and size + len(text) > PART_BYTES:
+            parts.append([])
+            size = 0
+        parts[-1].append(text)
+        size += len(text) + 1
+    names = [f"{stem}.json"] if len(parts) == 1 else [f"{stem}.{i}.json" for i in range(len(parts))]
+    for name, part in zip(names, parts):
+        (folder / name).write_text('{"' + key + '":[' + ",".join(part) + "]}", encoding="utf-8")
+    return names[0] if len(names) == 1 else names
+
+
+def _binary_parts(folder: Path, stem: str, data: bytes) -> str | list[str]:
+    """`data` in <stem>.bin, or in <stem>.0.bin, <stem>.1.bin... when too big for one file."""
+    if len(data) <= PART_BYTES:
+        (folder / f"{stem}.bin").write_bytes(data)
+        return f"{stem}.bin"
+    names = []
+    for i, start in enumerate(range(0, len(data), PART_BYTES)):
+        names.append(f"{stem}.{i}.bin")
+        (folder / names[-1]).write_bytes(data[start:start + PART_BYTES])
+    return names
+
+
 def _publish_follow(project: Project, folder: Path, progress=None) -> dict:
     """Every sampled frame, packed FOLLOW_STRIP to a WebP strip, and every box in each frame
     as follow.frame_boxes lists it (highest score first): what the hosted follow page steps
@@ -195,9 +227,8 @@ def _publish_follow(project: Project, folder: Path, progress=None) -> dict:
           int(b["faint"])] for b in frame_boxes(project, f["id"], 0)]
         for f in frames
     ]
-    (out / "boxes.json").write_text(json.dumps({"boxes": boxes}, separators=(",", ":")), encoding="utf-8")
-    return {"frames": "follow/frames.json", "boxes": "follow/boxes.json", "strip": FOLLOW_STRIP, "cols": FOLLOW_COLS,
-            "w": w, "h": h, "files": strips}
+    return {"frames": "follow/frames.json", "boxes": _json_parts(folder, "follow/boxes", "boxes", boxes), "strip": FOLLOW_STRIP,
+            "cols": FOLLOW_COLS, "w": w, "h": h, "files": strips}
 
 
 def publish(project_root: Path, out: Path, key: str, progress=None, trial: str | None = None,
@@ -322,7 +353,7 @@ def publish(project_root: Path, out: Path, key: str, progress=None, trial: str |
         np.array(piece_rows).reshape(len(piece_rows), dim) if piece_rows else np.zeros((0, dim)),
         looks.emb.reshape(len(looks.ids), dim) if looks.emb.size else np.zeros((0, dim)),
     ]
-    np.concatenate(blocks).astype(np.float16).tofile(folder / "emb.bin")
+    emb_files = _binary_parts(folder, "emb", np.concatenate(blocks).astype(np.float16).tobytes())
     followable = _publish_follow(project, folder, progress) if follow else None
 
     names = species_labels(project)
@@ -361,13 +392,12 @@ def publish(project_root: Path, out: Path, key: str, progress=None, trial: str |
         "names": names,
         "name_family": name_family,
         "name_entries": {k: family_entry(v, k) for k, v in name_members.items()},
-        "emb": {"file": "emb.bin", "dtype": "float16", "dim": int(dim), "labels": len(blocks[0]),
+        "emb": {"file": emb_files, "dtype": "float16", "dim": int(dim), "labels": len(blocks[0]),
                 "crops": len(blocks[1]), "pieces": len(blocks[2]), "looks": len(blocks[3])},
         "look_ids": [int(x) for x in looks.ids],
-        "cards": "cards.json",
+        "cards": _json_parts(folder, "cards", "cards", cards),
         "follow": followable,
     }
-    (folder / "cards.json").write_text(json.dumps({"cards": cards}, separators=(",", ":")), encoding="utf-8")
     (folder / "manifest.json").write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
     # So `pull` can tell this project from another video's (copies made from now on carry it).
     project.set_meta("published", {"video": key, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

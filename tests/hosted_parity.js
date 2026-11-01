@@ -14,15 +14,18 @@ const [, , coreJs, folder, key, outPath] = process.argv;
 vm.runInThisContext(fs.readFileSync(coreJs, "utf8"), { filename: coreJs });
 const read = (name) => JSON.parse(fs.readFileSync(path.join(folder, name), "utf8"));
 const manifest = read("manifest.json");
-const cardsJson = read("cards.json");
-const raw = fs.readFileSync(path.join(folder, "emb.bin"));
-const emb = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+const joined = (listed, k) => BRUV.joinJson(BRUV.partNames(listed).map(read), k);
+const cardsJson = joined(manifest.cards, "cards");
+const emb = BRUV.joinBuffers(BRUV.partNames(manifest.emb.file).map((name) => {
+  const raw = fs.readFileSync(path.join(folder, name));
+  return raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+}));
 const fresh = () => {
   const v = new BRUV.Video(key, manifest, cardsJson, emb);
   v.volunteer = 1;
   if (manifest.follow) {
     v.setFollowFrames(read(manifest.follow.frames));
-    v.boxLoader = async () => read(manifest.follow.boxes);
+    v.boxLoader = async () => joined(manifest.follow.boxes, "boxes");
   }
   return v;
 };

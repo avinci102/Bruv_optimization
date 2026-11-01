@@ -904,6 +904,23 @@ arm, which never moves, answered card after card. Measured on those answers:
    answers; the gap is wide, but the next drop is the real test. Hidden boxes stay in the
    project (`det_change`), make no cards and aren't counted. The review page shows a sample,
    since a fish motionless for over a minute would be hidden too.
+
+   **The next drops showed the limit (NP218 and NP219, 1 Nov 2026).** In NP218's murky water
+   hidden fish differed from the background by about 4-15 levels against the test's 25, so
+   2,931 of the 5,333 wide boxes off its rig's place were hidden, and nearly all of a 48-box
+   sample of them were fish. NP219, clearer, lost 1,102. A lower tolerance was no answer: at
+   ±8 NP218 still hid 358, in the sample nearly all faint fish, and at ±10 only 58% of NP339's
+   rig boxes stayed hidden, against 82%. What separates them is where the boxes are: the same place in 62% of NP218's frames
+   (its rig), while the rest are scattered, most places under 0.2% of frames. So
+   `still_fixed_places` applies the test only at places holding at least 0.5% of frames, found
+   per video. Replaying the tracker (it matched the real runs exactly with today's rules),
+   not-tiny pieces rise 2.4% on NP218, 0.5% on NP219 and 5.9% on NP339, with some rope and
+   reef coming back as cards. It's off by default, because these videos have no box-level
+   answers and 0.5% was chosen after seeing them: it's on for NP218 and NP219 so their
+   reviewers' answers measure it. Rescuing boxes under the score threshold that clearly differ
+   from the background is the next idea: the samples are mostly clear fish, but tracked as
+   they are, not-tiny pieces rise 1.9 to 2.7 times, mostly single boxes, and long chains
+   get fewer. Using them only to carry on existing tracks (`track_faint`) is still to test.
 2. **Shorter tracks, and contested links refused** (`track_max_missed_s` 0.25: at 4 fps a
    fish may miss one frame; `track_refuse_contested`: no link where another fish or box
    was the better match). The tracker re-run on the same detections, scored on the 49

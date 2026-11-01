@@ -33,7 +33,7 @@ Nothing, on Cloudflare's free plan, for a pilot of this size:
 | Free-plan limit | What uses it | Pilot estimate |
 |---|---|---|
 | 20,000 files per site | One sheet per card, plus 4 files per video; with `--follow`, one more file per 20 frames | About 1,150 per 44-minute video (about 1,680 with `--follow`), so 11 to 15 videos per site |
-| 25 MiB per file | The largest file is a video's descriptions (`emb.bin`) | 17.8 MB for 44 minutes |
+| 25 MiB per file | The largest file is a video's descriptions (`emb.bin`) | 17.8 MB for 44 minutes; publish cuts a data file past 20 MB into parts |
 | Static requests | Pictures and card data | Unlimited and free |
 | 100,000 function requests a day | Sign-in, each answer or fix, 2 per page load | 5 volunteers × ~1,000 a day = 5,000 |
 | 100,000 database rows written a day | About 3 per answer (the row and its 2 indexes) | About 15,000 |
@@ -123,6 +123,8 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
      when you change the list.
    - **role**: `admin` sees everyone's progress and downloads the answers.
    - **videos**: the volunteer's own videos. Their review of those is the review of record.
+     To share a video among several people, give each their part by card numbers:
+     `A1=12;13;14 A2`. Following a fish still covers the whole video.
    - **calibration**: shared checks for comparing volunteers. A video alone means all its
      cards; `A3=12;15;40` means just those cards. Use these only where you want to measure
      agreement. Each volunteer answers in their own copy.
@@ -132,6 +134,9 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
    python -m bruv_app site volunteers --site D:\bruv\site --csv volunteers.csv
    npx wrangler d1 execute bruv-review --remote --file volunteers.sql
    ```
+   This sets the site's list to exactly this file, so anyone left off can no longer sign in.
+   To add people and leave everyone else as they are, use `--add` with a file of just them
+   (`guests.csv` makes `guests.sql`). `--no-passes` keeps the passes out of the terminal.
 4. **Try it on this PC first** (the same site, with a local database):
    ```
    python -m bruv_app site serve --site D:\bruv\site
@@ -215,7 +220,8 @@ name is taken, Cloudflare adds a few letters; the create command prints the addr
   published answers are what the local server would give. It writes, per video, under
   `public/videos/<name>/`:
   - `manifest.json`: the summary, settings, species names and families, chapter
-    timeline, and the still-object sample;
+    timeline, the still-object sample, and the data files, which are in numbered parts
+    (`cards.0.json`, `emb.0.bin`, `follow/boxes.0.json`) when one file would pass 20 MB;
   - `cards.json`: every card's list entry and detail, its sightings (box, time, quality,
     piece, description row, size in pixels), its pieces, look, published look-alike
     neighbours (≥0.85), and where its pictures are on its sheet;
@@ -314,5 +320,6 @@ laptop:
 - About 15 videos of this length fit in one site, or 11 published with `--follow`.
 - Following a fish downloads a strip of 20 frames (about 0.75 MB) every 5 seconds of
   video it steps through, and the boxes file once.
-- A video about 60% longer than this one would put `emb.bin` over 25 MiB. It would then
-  have to be split into parts; publish doesn't do that yet.
+- A video about 60% longer than this one puts `emb.bin` over the limit, and footage with
+  faint boxes kept (from October 2026) puts `follow/boxes.json` over it too, so publish cuts
+  them into parts and the browser joins them.

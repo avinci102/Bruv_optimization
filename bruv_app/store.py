@@ -18,6 +18,7 @@ import numpy as np
 
 from .config import Settings
 from .detect import Detection
+from .still import at_places
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -414,27 +415,40 @@ class Project:
     def det_changes(self) -> dict[int, float]:
         return dict(self.db.execute("SELECT det_id, change FROM det_change").fetchall())
 
+    def still_boxes(self, settings: Settings, min_score: float = 0.0) -> list[sqlite3.Row]:
+        """Every box that looks still (wide enough, hardly differing from the background),
+        wherever it is, scoring at least `min_score`."""
+        return self.db.execute(
+            """SELECT d.id, d.frame_id, d.x1, d.y1, d.x2, d.y2 FROM detections d JOIN det_change c ON c.det_id=d.id
+               WHERE d.x2 - d.x1 >= ? AND c.change < ? AND d.score >= ?""",
+            (settings.still_min_width, settings.still_max_change, min_score),
+        ).fetchall()
+
+    def _at_fixed_places(self, rows: list[sqlite3.Row], settings: Settings) -> list[sqlite3.Row]:
+        """With still_fixed_places, only the boxes at the places the still stage found."""
+        if not settings.still_fixed_places:
+            return rows
+        boxes = [(r["x1"], r["y1"], r["x2"], r["y2"]) for r in rows]
+        hit = at_places(boxes, self.get_meta("still_places") or [], settings.still_place_min_iou)
+        return [r for r, keep in zip(rows, hit) if keep]
+
     def still_ids(self, settings: Settings) -> set[int]:
         """Detections the still-object test hides (none if it's off or hasn't run)."""
         if not settings.still_filter:
             return set()
-        rows = self.db.execute(
-            """SELECT d.id FROM detections d JOIN det_change c ON c.det_id=d.id
-               WHERE d.x2 - d.x1 >= ? AND c.change < ?""",
-            (settings.still_min_width, settings.still_max_change),
-        )
-        return {r[0] for r in rows}
+        return {r["id"] for r in self._at_fixed_places(self.still_boxes(settings), settings)}
 
     def still_detections(self, settings: Settings, min_score: float) -> list[sqlite3.Row]:
         """The hidden still objects scoring at least `min_score`, in time order."""
         if not settings.still_filter:
             return []
-        return self.db.execute(
+        rows = self.db.execute(
             """SELECT d.*, c.change, f.t, f.path, f.width, f.height FROM detections d
                JOIN det_change c ON c.det_id=d.id JOIN frames f ON f.id=d.frame_id
                WHERE d.x2 - d.x1 >= ? AND c.change < ? AND d.score >= ? ORDER BY f.t, d.id""",
             (settings.still_min_width, settings.still_max_change, min_score),
         ).fetchall()
+        return self._at_fixed_places(rows, settings)
 
     # --- tracklets & fish ------------------------------------------------------------------
 
