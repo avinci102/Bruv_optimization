@@ -375,6 +375,21 @@ contested links were measured on the first 185 NP339 answers.
   fish, to split with `X`). One follow is one fish's visit. When unsure which fish it is, press `O` and let
   it go: a short, sure follow is worth more than a long guess.
 
+  Following has its own page too: **Follow a fish** in the review page's header (on the
+  website, a button per video on the start page) lists your follows and lets you find a
+  fish anywhere in the video (`↑` `↓`, the slider, or the frames under the picture), then
+  click its box or drag a box around it to start. While following:
+  - the frames under the picture show where you've been; `↑` `↓` look back and ahead
+    without changing anything, and `Space` returns to your step. "Last seen" shows
+    close-ups of the fish nearest where you are;
+  - the box nearest where you last saw it glows: `Enter` or **That's it** takes it;
+  - drag a box around the fish where it has none; **Gone for good** (`G`) marks every frame
+    left this way at once (`Backspace` takes it back whole);
+  - right-click a wrong box (press and hold on a tablet, or **Fix a box**): part of a fish
+    (a tail), not a fish, or a second box on one fish. These are kept for measuring the
+    fish finder; they change nothing.
+  Every key has a button, so it works on a tablet or phone.
+
   `evaluate --project …` scores the follows with no answer key needed: how much of each
   visit the run boxed, how many cards each fish ended on, and why its card changed (near
   another fish, a gap in its boxes, the frame's edge). Only the followed fish were
@@ -398,6 +413,22 @@ contested links were measured on the first 185 NP339 answers.
   `model_test\` for a second run. The project is only read, so its review page can stay
   open. On NP339 neither BioCLIP 2.5 nor Fishial beat BioCLIP 2 overall (SPEC §14).
 
+## Volunteers reviewing in a browser (optional)
+
+A school can let volunteers review in a web browser, with nothing to install, on its own
+free Cloudflare site. The processing PC publishes each video as files and can then be
+switched off. Volunteers sign in with an access pass or their email. Their answers and
+fixes (split, move ticked sightings, multiple fish) are saved on the site. The
+coordinator pulls each volunteer's answers back into the project and exports as usual.
+Setup and costs: [docs/HOSTED.md](docs/HOSTED.md).
+
+```
+python -m bruv_app publish --project D:\bruv\A1 --video A1 --site D:\bruv\site   (add --follow to follow fish online)
+python -m bruv_app site volunteers --site D:\bruv\site --csv volunteers.csv
+python -m bruv_app site serve --site D:\bruv\site          (try it on this PC)
+python -m bruv_app pull --project D:\bruv\A1 --answers answers-A1.json --volunteer Ana
+```
+
 ## Development
 
 ```bash
@@ -405,9 +436,12 @@ pip install -r requirements-dev.txt -e .
 pytest
 ```
 
-The tests use synthetic data only (fake detector, synthetic video, mock template).
+The tests use synthetic data only (fake detector, synthetic video, mock template). With
+[Node.js](https://nodejs.org) installed, they also check the hosted site's browser code
+against the review server (`tests/test_hosted_js.py`); without it, that test is skipped.
 
 Layout: `bruv_app/` holds the package (video → detect → still → track → continuity →
 classify → store → metrics → template/export, plus server and static UI with lookalike;
-provenance, evaluate, diagnostics, equipment, crops and modeltest for measuring accuracy). `tests/` holds the tests, and
+provenance, evaluate, diagnostics, equipment, crops and modeltest for measuring accuracy;
+publish, site, pull and `hosted/` for the volunteers' review site). `tests/` holds the tests, and
 `scripts/` the Windows helpers.

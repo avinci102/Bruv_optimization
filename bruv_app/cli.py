@@ -264,15 +264,19 @@ def cmd_rebuild(args) -> None:
             setattr(settings, key, getattr(defaults, key))
     if args.track_gap is not None:
         settings.track_max_missed_s = args.track_gap
+    if args.fixed_places:
+        settings.still_fixed_places = True
     project.save_settings(settings)
     before = len(project.all_fish())
-    print(f"Rebuilding {before} cards: still objects {'hidden' if settings.still_filter else 'tracked'}, "
-          f"tracks bridge {settings.track_max_missed_s:g} s"
+    still = "tracked" if not settings.still_filter else "hidden at fixed places" if settings.still_fixed_places else "hidden"
+    print(f"Rebuilding {before} cards: still objects {still}, tracks bridge {settings.track_max_missed_s:g} s"
           + (", contested links refused" if settings.track_refuse_contested else "") + "…")
     with keep_awake():
         report = Pipeline(project, progress=_progress()).rebuild()
     print(f"Done: {len(project.all_fish())} cards (was {before}); {project.get_meta('still_hidden', 0)} "
           "sightings hidden as still objects.")
+    if settings.still_fixed_places:
+        print(f"  Fixed places: {project.get_meta('still_places')}")
     print(f"  {report['carried']} cards got your earlier answer (all their sightings had it)")
     print(f"  {report['partly_answered']} hold answered and new sightings, {report['conflicting']} mix "
           "different answers: both left for you")
@@ -311,6 +315,68 @@ def cmd_model_test(args) -> None:
         result, saved = run(project, classifiers, out, Path(args.key) if args.key else None, _progress())
     print("\n".join(report_lines(result)))
     print(f"Saved {saved}")
+
+
+def cmd_publish(args) -> None:
+    from .publish import publish, site_report, write_site  # noqa: PLC0415
+
+    site = Path(args.site)
+    for project, key in zip(args.project, args.video or [Path(p).name for p in args.project]):
+        print(f"Publishing {project}{f' (trial {args.trial})' if args.trial else ''} as video {key}…")
+        report = publish(Path(project), site, key, _progress(), trial=args.trial, follow=args.follow)
+        print(f"  {report['cards']} cards, {report['files']} files, {report['bytes'] / 1e6:.0f} MB")
+    write_site(site)
+    total = site_report(site)
+    print(f"Site in {site / 'public'}: {total['files']} files ({total['files'] / total['limit']:.0%} of the free plan's "
+          f"{total['limit']:,}), {total['bytes'] / 1e9:.2f} GB")
+    if total["files"] > total["limit"]:
+        print("Too many files for one free Pages site: publish some videos to a second site (docs/HOSTED.md).")
+
+
+def cmd_site_volunteers(args) -> None:
+    from .site import read_volunteers, volunteers_sql, write_volunteers  # noqa: PLC0415
+
+    site = Path(args.site)
+    volunteers = read_volunteers(Path(args.csv))
+    name = Path(args.csv).stem + ".sql" if args.add else "volunteers.sql"
+    (site / name).write_text(volunteers_sql(volunteers, add_only=args.add), encoding="utf-8")
+    out = Path(args.out) if args.out else Path(args.csv).with_name(Path(args.csv).stem + "-with-passes.csv")
+    write_volunteers(volunteers, out)
+    print(f"{len(volunteers)} volunteers: {site / name} (load it into the site's database), passes in {out}")
+    for v in volunteers:
+        own = ", ".join(f"{k} ({len(v.own_cards[k])} cards)" if k in v.own_cards else k for k in v.own) or "—"
+        cal = ", ".join(f"{k} ({len(c)} cards)" if c else k for k, c in v.calibration.items()) or "—"
+        print(f"  {v.name:<18} {'' if args.no_passes else v.passcode + '  '}own: {own}; shared check: {cal}")
+
+
+def cmd_site_serve(args) -> None:
+    import uvicorn  # noqa: PLC0415
+
+    from .site import create_dev_app, load_volunteers_into  # noqa: PLC0415
+
+    site = Path(args.site)
+    db = site / "local.db"
+    if (site / "volunteers.sql").exists():
+        load_volunteers_into(db, (site / "volunteers.sql").read_text(encoding="utf-8"))
+    url = f"http://127.0.0.1:{args.port}/start.html"
+    print(f"The review site, served from this PC, at {url}  (Ctrl+C to stop)")
+    if not args.no_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    uvicorn.run(create_dev_app(site, db), host="127.0.0.1", port=args.port, log_level="warning")
+
+
+def cmd_pull(args) -> None:
+    from .pull import pull  # noqa: PLC0415
+
+    report = pull(Path(args.project), Path(args.answers), args.volunteer, trial=args.trial)
+    print(f"{report.volunteer}: {report.events} events → {report.answers} answers, {report.fixes} fixes, "
+          f"{report.undone} undone" + (f", {report.follows} follows" if report.follows else "")
+          + (f", {report.box_fixes} box fixes" if report.box_fixes else ""))
+    if report.new_cards:
+        print("  New cards: " + ", ".join(f"site #{k} → #{v}" for k, v in report.new_cards.items()))
+    if report.scope_mismatch:
+        print(f"  ⚠ {len(report.scope_mismatch)} answers covered different sightings than on the site "
+              f"(cards {', '.join(map(str, report.scope_mismatch[:10]))}…): is this the project that was published?")
 
 
 def cmd_snapshot(args) -> None:
@@ -732,6 +798,8 @@ def main(argv: list[str] | None = None) -> None:
                    help="adopt the current defaults: still objects hidden, short tracks, contested links refused")
     p.add_argument("--track-gap", type=float, metavar="SECONDS",
                    help="how long a fish may go unseen and keep its track (0.25 at 4 fps: one frame)")
+    p.add_argument("--fixed-places", action="store_true",
+                   help="hide still objects only where they keep coming back, for footage where pale fish look still")
     p.set_defaults(func=cmd_rebuild)
 
     p = sub.add_parser("model-test", help="species models side by side on your answered cards")
@@ -742,6 +810,37 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--key", help="the team's answer key (.xlsx), to score its clip_1 sightings too")
     p.add_argument("--out", help="folder for the saved embeddings and results (default: <project>/model_test)")
     p.set_defaults(func=cmd_model_test)
+
+    p = sub.add_parser("publish", help="make the hosted review site's files from processed videos")
+    p.add_argument("--project", nargs="+", required=True, help="processed project folder(s), one per video")
+    p.add_argument("--video", nargs="+", help="each video's short name on the site (default: the folder name)")
+    p.add_argument("--site", required=True, help="the site folder to write (public/ is what gets uploaded)")
+    p.add_argument("--trial", help="publish this rule trial's cards (try-rules) instead, under its own --video name")
+    p.add_argument("--follow", action="store_true",
+                   help="also publish every frame and box, so fish can be followed on the site (about 350 MB a 44-minute video)")
+    p.set_defaults(func=cmd_publish)
+
+    p = sub.add_parser("site", help="the hosted review site: volunteers, or try it on this PC")
+    site_sub = p.add_subparsers(dest="site_command", required=True)
+    q = site_sub.add_parser("volunteers", help="volunteer list (CSV) → the site's database, with access passes")
+    q.add_argument("--site", required=True)
+    q.add_argument("--csv", required=True, help="columns: name, email, pass, role, videos, calibration")
+    q.add_argument("--out", help="the list with passes filled in (default: <csv>-with-passes.csv)")
+    q.add_argument("--add", action="store_true", help="add these volunteers and leave everyone else as they are (<csv>.sql)")
+    q.add_argument("--no-passes", action="store_true", help="don't print the passes (they're in the file)")
+    q.set_defaults(func=cmd_site_volunteers)
+    q = site_sub.add_parser("serve", help="serve the site from this PC, with a local database (for trying it)")
+    q.add_argument("--site", required=True)
+    q.add_argument("--port", type=int, default=8790)
+    q.add_argument("--no-browser", action="store_true")
+    q.set_defaults(func=cmd_site_serve)
+
+    p = sub.add_parser("pull", help="bring a volunteer's answers and fixes from the site into a project")
+    p.add_argument("--project", required=True, help="the project folder of that video (a copy per volunteer)")
+    p.add_argument("--answers", required=True, help="the answers file downloaded from the site's start page")
+    p.add_argument("--volunteer", required=True, help="their name, email or id on the site")
+    p.add_argument("--trial", help="the rule trial that was published (publish --trial), to pull into")
+    p.set_defaults(func=cmd_pull)
 
     p = sub.add_parser("snapshot", help="freeze a read-only copy of a project's results (e.g. before review)")
     p.add_argument("--project", required=True)

@@ -8,8 +8,9 @@ from fastapi.testclient import TestClient
 from bruv_app.cli import main
 from bruv_app.detect import Detection
 from bruv_app.evaluate import COLUMNS, Box, Found, RunView, evaluate, evaluate_project, read_sidecar, write_sidecar
-from bruv_app.follow import sidecar_rows
+from bruv_app.follow import frame_boxes, mark, sidecar_rows, start, summary
 from bruv_app.server import create_app
+from bruv_app.views import best_view
 
 DEP = "dep-test"
 WHERE = {
@@ -162,3 +163,89 @@ def test_how_long_to_keep_looking_is_kept_sensible(project, gone):
     client = TestClient(create_app(project.root))
     view = client.post("/api/follows", json={"card": _contiguous_card(project), "gone_s": gone}).json()
     assert 1.0 <= view["gone_s"] <= 30.0
+
+
+def test_a_follow_from_the_site_keeps_its_name_start_and_time(project):
+    """pull.py brings a follow made on the hosted site: the sighting it started from (even if
+    another is the card's best view now), the name it had there, and when it was made."""
+    card = _contiguous_card(project)
+    dets = project.fish_detections(card)
+    best = best_view(dets)
+    other = next(d for d in dets if d["id"] != best["id"])
+    at = "2026-11-01T10:00:00+00:00"
+    site = start(project, card, 2.0, det_id=other["id"], name="F7-v3", at=at)
+    client = TestClient(create_app(project.root))
+    view = client.get(f"/api/follows/{site}").json()
+    assert view["start"]["det"] == other["id"] and view["follow"]["name"] == "F7-v3"
+    assert project.db.execute("SELECT at FROM follows WHERE id=?", (site,)).fetchone()["at"] == at
+    assert project.db.execute("SELECT at FROM follow_marks WHERE follow_id=?", (site,)).fetchone()["at"] == at
+
+    # A follow made here sees the site's by its name: the box it took, and the card it shares.
+    here = start(project, card)
+    assert {b["det"]: b["taken"] for b in frame_boxes(project, other["frame_id"], here)}[other["id"]] == "F7-v3"
+    mark(project, here, other["frame_id"], "box", det_id=other["id"])
+    assert summary(project, here).shared == {card: ["F7-v3"]}
+    assert summary(project, site).shared[card][0].startswith(f"F{here}-")
+    assert "F7-v3" in {r.individual for r in sidecar_rows(project)}
+
+    with pytest.raises(ValueError, match="No sighting"):
+        start(project, card, det_id=10**9)
+
+
+def test_starting_anywhere_gone_for_good_and_box_fixes(project):
+    """A follow started from any box or from a box drawn around a fish; "gone for good" says
+    gone in every frame left this way at once and is taken back whole; the frames around a
+    moment come with the follow's marks; boxes said to be wrong are kept and shown."""
+    client = TestClient(create_app(project.root))
+    card = _contiguous_card(project)
+    dets = {d["frame_id"]: d["id"] for d in project.fish_detections(card)}
+    middle = sorted(dets)[len(dets) // 2]
+    view = client.post("/api/follows", json={"det_id": dets[middle], "gone_s": 3}).json()
+    fid = view["follow"]["id"]
+    assert view["start"]["id"] == middle and view["follow"]["card"] == card
+    # The box the page offered, taken; then the fish has gone for good going forward.
+    view = client.post(f"/api/follows/{fid}/mark", json={"frame_id": view["frame"]["id"], "state": "box",
+                                                         "det_id": dets.get(view["frame"]["id"]), "via": "suggested"}).json()
+    rest_from = view["frame"]["id"]
+    assert client.post(f"/api/follows/{fid}/mark", json={"frame_id": middle, "state": "gone", "rest": True}).status_code == 400
+    view = client.post(f"/api/follows/{fid}/mark", json={"frame_id": rest_from, "state": "gone", "rest": True}).json()
+    assert view["phase"] == "backward" and view["follow"]["gone"] >= 2
+    gone = view["follow"]["gone"]
+    view = client.post(f"/api/follows/{fid}/undo").json()  # all of it, in one go
+    assert view["follow"]["gone"] == 0 and view["frame"]["id"] == rest_from and view["phase"] == "forward"
+    assert client.post(f"/api/follows/{fid}/mark", json={"frame_id": rest_from, "state": "gone", "rest": True}).json()["follow"]["gone"] == gone
+    via = project.db.execute("SELECT via FROM follow_marks WHERE follow_id=? ORDER BY rowid", (fid,)).fetchall()
+    assert [r["via"] for r in via][:2] == [None, "suggested"] and {r["via"] for r in via[2:]} == {"rest"}
+
+    # The frames around the start, with this follow's marks, and close-ups nearest it first.
+    around = client.get(f"/api/frames?at={middle}&n=2&follow={fid}").json()
+    assert [f["id"] for f in around["frames"]][2] == middle and around["frames"][2]["mark"]["state"] == "box"
+    assert around["index"] - around["first"] == 2 and around["total"] == project.frame_count()
+    assert client.get("/api/frames?i=0&n=1").json()["first"] == 0
+    recent = client.get(f"/api/follows/{fid}").json()["recent"]
+    assert [r["id"] for r in recent][0] in (middle, rest_from) and len(recent) == 2
+
+    # A box drawn around a fish the detector missed: a follow starts from it, and a later
+    # frame's drawn box is a mark; both are sidecar boxes.
+    other = next(f for f in sorted(dets) if f != middle)
+    drawn = client.post("/api/follows", json={"frame_id": other, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.1}).json()
+    assert drawn["start"]["det"] is None and drawn["start"]["box"] == pytest.approx({"x1": 0.4, "y1": 0.45, "x2": 0.6, "y2": 0.55})
+    drawn = client.post(f"/api/follows/{drawn['follow']['id']}/mark",
+                        json={"frame_id": drawn["frame"]["id"], "state": "nobox", "x": 0.52, "y": 0.5, "w": 0.2, "h": 0.1}).json()
+    assert drawn["last"] == [0.52, 0.5]
+    rows = [r for r in sidecar_rows(project) if r.note == "no box, drawn"]
+    assert len(rows) == 2 and rows[0].x1 == pytest.approx(0.4)
+    for bad in ({"frame_id": other, "x": 0.5, "y": 0.5, "w": 0}, {"gone_s": 2}):
+        assert client.post("/api/follows", json=bad).status_code == 400
+    assert client.post("/api/follows", json={"det_id": 10**9}).status_code == 404
+
+    # What's wrong with a box: kept, shown with the box, taken back; and turned down.
+    box = dets[other]
+    assert client.post(f"/api/boxes/{box}/fix", json={"kind": "part", "follow": fid}).json() == {"det": box, "fix": "part"}
+    fixed = {b["det"]: b["fix"] for b in client.get(f"/api/frames?at={other}&n=0").json()["frames"][0]["boxes"]}
+    assert fixed[box] == "part"
+    client.post(f"/api/boxes/{box}/fix", json={"kind": None})
+    assert {b["det"]: b["fix"] for b in frame_boxes(project, other, 0)}[box] is None
+    assert project.db.execute("SELECT COUNT(*) FROM box_fixes").fetchone()[0] == 2  # nothing is removed
+    assert client.post(f"/api/boxes/{box}/fix", json={"kind": "maybe"}).status_code == 400
+    assert client.post("/api/boxes/999999999/fix", json={"kind": "part"}).status_code == 404

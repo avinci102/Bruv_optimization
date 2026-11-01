@@ -18,6 +18,7 @@ import numpy as np
 
 from .config import Settings
 from .detect import Detection
+from .still import at_places
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -85,6 +86,12 @@ CREATE TABLE IF NOT EXISTS follows (
 CREATE TABLE IF NOT EXISTS follow_marks (
     follow_id INTEGER, frame_id INTEGER, state TEXT, det_id INTEGER, x REAL, y REAL, at TEXT,
     PRIMARY KEY (follow_id, frame_id));
+-- What a person said about a box while following (follow.py): part of a fish that has a box
+-- of its own (a tail, a fin), not a fish, or a second box on the same fish. The latest row
+-- for a box holds (kind NULL takes it back); rows are never removed. Kept for measuring the
+-- detector: nothing changes boxes or cards because of them.
+CREATE TABLE IF NOT EXISTS box_fixes (
+    id INTEGER PRIMARY KEY, at TEXT, det_id INTEGER, kind TEXT, follow_id INTEGER, reviewer TEXT);
 CREATE INDEX IF NOT EXISTS det_frame ON detections(frame_id);
 CREATE INDEX IF NOT EXISTS det_track ON detections(tracklet_id);
 CREATE INDEX IF NOT EXISTS track_fish ON tracklets(fish_id);
@@ -158,8 +165,18 @@ class Project:
         added = {
             "detections": {"link_cost": "REAL", "link_margin": "REAL", "history_sim": "REAL"},
             # family: an answer's family (families.py), kept apart from the species, which
-            # is optional (docs/SPEC.md §15).
-            "reviews": {"details": "TEXT", "family": "TEXT"},
+            # is optional (docs/SPEC.md §15). reviewer: who gave it, for answers pulled from
+            # the hosted review site (docs/SPEC.md §16); NULL for answers given on this PC.
+            "reviews": {"details": "TEXT", "family": "TEXT", "reviewer": "TEXT"},
+            # name: a follow pulled from the hosted review site keeps the name it had there
+            # (F<site id>-v<volunteer>); NULL for follows made on this PC (follow.name).
+            # start_frame: where the follow started; a follow can start from a box drawn
+            # around a fish the detector missed, so with no start_det.
+            "follows": {"name": "TEXT", "start_frame": "INTEGER"},
+            # w h: the size of a box drawn around the fish where it had none (x y: its middle).
+            # via: "suggested" (the box the page offered, accepted) or "rest" (gone for good).
+            # batch: the marks one "gone for good" made, taken back together.
+            "follow_marks": {"w": "REAL", "h": "REAL", "via": "TEXT", "batch": "INTEGER"},
         }
         for table, columns in added.items():
             have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
@@ -398,27 +415,40 @@ class Project:
     def det_changes(self) -> dict[int, float]:
         return dict(self.db.execute("SELECT det_id, change FROM det_change").fetchall())
 
+    def still_boxes(self, settings: Settings, min_score: float = 0.0) -> list[sqlite3.Row]:
+        """Every box that looks still (wide enough, hardly differing from the background),
+        wherever it is, scoring at least `min_score`."""
+        return self.db.execute(
+            """SELECT d.id, d.frame_id, d.x1, d.y1, d.x2, d.y2 FROM detections d JOIN det_change c ON c.det_id=d.id
+               WHERE d.x2 - d.x1 >= ? AND c.change < ? AND d.score >= ?""",
+            (settings.still_min_width, settings.still_max_change, min_score),
+        ).fetchall()
+
+    def _at_fixed_places(self, rows: list[sqlite3.Row], settings: Settings) -> list[sqlite3.Row]:
+        """With still_fixed_places, only the boxes at the places the still stage found."""
+        if not settings.still_fixed_places:
+            return rows
+        boxes = [(r["x1"], r["y1"], r["x2"], r["y2"]) for r in rows]
+        hit = at_places(boxes, self.get_meta("still_places") or [], settings.still_place_min_iou)
+        return [r for r, keep in zip(rows, hit) if keep]
+
     def still_ids(self, settings: Settings) -> set[int]:
         """Detections the still-object test hides (none if it's off or hasn't run)."""
         if not settings.still_filter:
             return set()
-        rows = self.db.execute(
-            """SELECT d.id FROM detections d JOIN det_change c ON c.det_id=d.id
-               WHERE d.x2 - d.x1 >= ? AND c.change < ?""",
-            (settings.still_min_width, settings.still_max_change),
-        )
-        return {r[0] for r in rows}
+        return {r["id"] for r in self._at_fixed_places(self.still_boxes(settings), settings)}
 
     def still_detections(self, settings: Settings, min_score: float) -> list[sqlite3.Row]:
         """The hidden still objects scoring at least `min_score`, in time order."""
         if not settings.still_filter:
             return []
-        return self.db.execute(
+        rows = self.db.execute(
             """SELECT d.*, c.change, f.t, f.path, f.width, f.height FROM detections d
                JOIN det_change c ON c.det_id=d.id JOIN frames f ON f.id=d.frame_id
                WHERE d.x2 - d.x1 >= ? AND c.change < ? AND d.score >= ? ORDER BY f.t, d.id""",
             (settings.still_min_width, settings.still_max_change, min_score),
         ).fetchall()
+        return self._at_fixed_places(rows, settings)
 
     # --- tracklets & fish ------------------------------------------------------------------
 
@@ -538,12 +568,14 @@ class Project:
     def label_fish(self, fish_id: int, status: str, details: dict | None = None, **fields) -> None:
         """Record an answer. `details` goes with it into the review log (e.g. the card's
         warnings, and that the reviewer confirmed them); so does `family` (an answer's
-        family, which the fish table has no column for)."""
+        family, which the fish table has no column for), `reviewer` (who answered, when it
+        wasn't given on this PC) and `at` (when it was given, if not now)."""
         if status not in STATUSES:
             raise ValueError(f"Bad status: {status}")
         species = fields.get("species") if status == "species" else None
         if status == "species" and not species:
             raise ValueError("A species is required")
+        at = fields.get("at") or _now()
         self.db.execute(
             """UPDATE fish SET status=?, species=?, type=?, sex=?, behavior=?, comment=?,
                  reviewed_at=? WHERE id=?""",
@@ -554,23 +586,26 @@ class Project:
                 fields.get("sex") or None,
                 fields.get("behavior") or None,
                 fields.get("comment") or None,
-                _now() if status != "pending" else None,
+                at if status != "pending" else None,
                 fish_id,
             ),
         )
         scope = [d["id"] for d in self.fish_detections(fish_id)] if status != "pending" else []
         family = fields.get("family") if status == "species" else None
         self.db.execute(
-            "INSERT INTO reviews(at, fish_id, status, species, scope, details, family) VALUES(?, ?, ?, ?, ?, ?, ?)",
-            (_now(), fish_id, status, species, json.dumps(scope), json.dumps(details) if details else None, family),
+            "INSERT INTO reviews(at, fish_id, status, species, scope, details, family, reviewer) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            (at, fish_id, status, species, json.dumps(scope), json.dumps(details) if details else None, family,
+             fields.get("reviewer")),
         )
         self.db.commit()
 
-    def log_suggestions(self, rows: list[tuple[int, int, float, str, str]]) -> None:
-        """(card, source card, similarity, decision, batch) for look-alikes a reviewer saw."""
+    def log_suggestions(self, rows: list[tuple[int, int, float, str, str]], at: str | None = None) -> None:
+        """(card, source card, similarity, decision, batch) for look-alikes a reviewer saw;
+        `at` is when they saw them, if not now (answers pulled from the hosted site)."""
+        at = at or _now()
         self.db.executemany(
             "INSERT INTO suggestion_log(at, fish_id, source, similarity, decision, batch) VALUES(?, ?, ?, ?, ?, ?)",
-            [(_now(), *row) for row in rows],
+            [(at, *row) for row in rows],
         )
         self.db.commit()
 

@@ -11,6 +11,7 @@ const state = {
   likeBatch: null,  // the last look-alikes answered together, for undo
   grid: null,  // the picture list shown over the page (look-alikes, or hidden still objects)
   shownAt: 0,  // when the card on screen was shown: time per card goes with each answer
+  preloadAt: 0, nextPictures: [],  // where the card's frames are fetched ahead from; the next card's pictures
 };
 
 // Seconds since the card on screen was shown, capped so a break doesn't count as work.
@@ -301,6 +302,9 @@ async function show(index) {
   $("f-comment").value = d.comment || "";
 
   renderFilmstrip(d);
+  state.nextPictures = [];
+  preloadCard(Math.max(0, d.filmstrip.findIndex((s) => d.best && s.det_id === d.best.det_id)));
+  preloadNext();
   renderPieces(d);
   renderFlags(d);
   renderLike(d);
@@ -338,6 +342,60 @@ function showFrame(item) {
   });
   box.hidden = false;
   $("frame-caption").textContent = `${item.clip} ${fmtTime(item.local_t)} · detector score ${b.score}`;
+}
+
+// The open card's frames are fetched ahead, nearest the one shown first, so ↑ and ↓ step
+// through them without waiting. The hosted site makes its pictures in the page and takes
+// the list in order (BRUV_preload); on the PC the browser fetches the nearest few from the
+// local server, which reads them from disk.
+const preloaded = new Map(); // on the PC: "/frame/12" -> Image, the last 200
+function preload(paths) {
+  if (window.BRUV_preload) return window.BRUV_preload(paths);
+  for (const path of paths.slice(0, 8)) {
+    if (preloaded.has(path)) continue;
+    const img = new Image();
+    img.src = path;
+    preloaded.set(path, img);
+    if (preloaded.size > 200) preloaded.delete(preloaded.keys().next().value);
+  }
+}
+
+// 0 … n-1, nearest `from` first.
+function nearestFirst(n, from) {
+  const order = [];
+  for (let k = 0; k < n; k++) {
+    if (from + k < n) order.push(from + k);
+    if (k > 0 && from - k >= 0) order.push(from - k);
+  }
+  return order;
+}
+
+function preloadCard(from = state.preloadAt) {
+  const d = state.detail;
+  if (!d) return;
+  state.preloadAt = from;
+  preload([...nearestFirst(d.filmstrip.length, from).map((i) => `/frame/${d.filmstrip[i].frame_id}`), ...state.nextPictures]);
+}
+
+// On the site, the next card's pictures are made while this one is answered, so it opens
+// at once. (On the PC they're already on disk.)
+async function preloadNext() {
+  const next = visibleCards()[state.index + 1];
+  if (!window.BRUV_preload || !next) return;
+  const shown = state.detail;
+  try {
+    const d = await api(`/api/fish/${next.id}`);
+    if (state.detail !== shown) return; // moved on meanwhile
+    const at = Math.max(0, d.filmstrip.findIndex((s) => d.best && s.det_id === d.best.det_id));
+    state.nextPictures = [
+      ...(d.best ? [`/crop/${d.best.det_id}`] : []),
+      ...nearestFirst(d.filmstrip.length, at).slice(0, 12).map((i) => `/frame/${d.filmstrip[i].frame_id}`),
+      ...d.filmstrip.map((s) => `/crop/${s.det_id}`),
+    ];
+    preloadCard();
+  } catch (e) {
+    // only a head start
+  }
 }
 
 function renderFilmstrip(d) {
@@ -782,6 +840,7 @@ function selectSighting(i) {
   state.selectedIndex = i;
   state.selected = d.filmstrip[i];
   showFrame(state.selected);
+  preloadCard(i);
   updateSplitButton();
 }
 

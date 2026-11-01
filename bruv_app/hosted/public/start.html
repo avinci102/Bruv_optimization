@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BRUV Fish ID — volunteers</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { --bg: #f4f6f8; --panel: #fff; --text: #17212b; --muted: #5d6b78; --border: #d5dde4; --accent: #11799a; --ok: #1d7a46; --bad: #b42318; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #11181f; --panel: #18222b; --text: #e6edf3; --muted: #93a1ad; --border: #2c3a46; --accent: #1f9bc0; } }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
+    main { max-width: 720px; margin: 40px auto; padding: 0 16px; }
+    section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 16px; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    h2 { font-size: 17px; margin: 0 0 10px; }
+    p { margin: 6px 0; }
+    .muted { color: var(--muted); }
+    input, textarea, select { font: inherit; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); }
+    input[type=text] { width: min(360px, 100%); }
+    textarea { width: 100%; min-height: 80px; box-sizing: border-box; }
+    button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .videos button { margin: 4px 6px 4px 0; }
+    #msg.error { color: var(--bad); }
+    #msg.ok { color: var(--ok); }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; }
+    th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      <h1>BRUV Fish ID</h1>
+      <p class="muted">Identify the fish in baited underwater video. Your answers are saved as you go.</p>
+      <p id="msg" role="status"></p>
+    </section>
+
+    <section id="signin" hidden>
+      <h2>Sign in</h2>
+      <p>Type your access pass (from your invitation) or the email address you were invited with.</p>
+      <form id="signin-form" class="row">
+        <input id="who" type="text" autocomplete="username" placeholder="BRUV-XXXX-XXXX or you@example.org" required>
+        <button class="primary" type="submit">Sign in</button>
+      </form>
+    </section>
+
+    <section id="pick" hidden>
+      <h2>Your videos</h2>
+      <p class="muted" id="hello"></p>
+      <div id="videos" class="videos"></div>
+      <p class="muted">Use a laptop or desktop for the review page: it's built around keyboard shortcuts. Following a fish works on a tablet too.</p>
+      <p><button id="signout" type="button">Sign out</button></p>
+    </section>
+
+    <section id="feedback" hidden>
+      <h2>How did this session go?</h2>
+      <form id="feedback-form">
+        <p class="row">
+          <label>Overall <select id="rating">
+            <option value="">—</option><option value="5">5 · great</option><option value="4">4</option>
+            <option value="3">3</option><option value="2">2</option><option value="1">1 · hard going</option>
+          </select></label>
+          <label>Video <select id="fb-video"></select></label>
+        </p>
+        <p><textarea id="fb-text" placeholder="What was slow, confusing or wrong? Which cards (their # numbers)?"></textarea></p>
+        <button class="primary" type="submit">Send feedback</button>
+      </form>
+    </section>
+
+    <section id="admin" hidden>
+      <h2>Coordinator</h2>
+      <div id="progress"></div>
+      <p class="row" id="exports"></p>
+    </section>
+  </main>
+  <script src="/start.js"></script>
+</body>
+</html>

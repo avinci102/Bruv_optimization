@@ -1,0 +1,10 @@
+# Cloudflare Pages settings for the hosted review site. Copy to wrangler.toml and fill in
+# database_id from `npx wrangler d1 create bruv-review` (docs/HOSTED.md).
+name = "bruv-review"
+pages_build_output_dir = "public"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bruv-review"
+database_id = "PASTE-THE-ID-HERE"
